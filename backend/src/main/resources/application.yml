@@ -1,0 +1,100 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: trip-planner
+
+  # 激活 local profile（application-local.yml 存 API Key，该文件已被 gitignore，不会提交）
+  profiles:
+    active: local
+
+  # Database Configuration（本机开发配置，Docker MySQL 映射 3307，避开本机 3306）
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3310/trip_planner?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    
+  # Redis Configuration
+  data:
+    redis:
+      url: ${REDIS_URL:redis://localhost:6379/0}
+      timeout: 5000ms
+      
+  # Jackson Configuration
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+      
+  # SQL Initialization
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+# MyBatis Plus Configuration
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# LLM Configuration (DashScope/Qwen)
+llm:
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api-key: ${LLM_API_KEY:}
+  model: qwen-plus
+  embedding-model: text-embedding-v3
+  # LLM 读超时（秒）：生成完整行程 JSON 的 prompt 很长，qwen-plus 偶尔需 60s+；配合 LlmClient 失败重试
+  timeout-seconds: 120
+  max-iterations: 3
+
+# Amap Configuration
+amap:
+  api-key: ${AMAP_API_KEY:}
+  base-url: https://restapi.amap.com/v3
+
+# Redis Cache Configuration
+redis:
+  enabled: ${REDIS_ENABLED:true}
+  map-ttl-seconds: 86400
+  weather-ttl-seconds: 1800
+  rag-ttl-seconds: 21600
+
+# Chroma 向量库（可选加速层）：默认开启；server 未启动/不可达时自动降级为内存余弦检索，行为完全一致。
+# 启动方式见 README「RAG 与向量库（Chroma）」（须 chromadb==0.6.3，勿用 1.x）。想彻底关闭设 CHROMA_ENABLED=false。
+chroma:
+  enabled: ${CHROMA_ENABLED:true}
+  base-url: ${CHROMA_BASE_URL:http://localhost:8000}
+  collection-prefix: ${CHROMA_COLLECTION_PREFIX:guide}
+  distance-func: ${CHROMA_DISTANCE:cosine}
+  timeout-ms: 5000
+
+# JWT 鉴权（用户系统）：secret 为 HS256 签名密钥，生产必须通过 JWT_SECRET 覆盖（≥32 字节）；
+# token 默认 7 天过期。除 /auth/** 外所有接口需带 Authorization: Bearer <token>。
+jwt:
+  secret: ${JWT_SECRET:ai-travel-assistant-demo-jwt-secret-key-change-in-production}
+  expiration-minutes: ${JWT_EXPIRATION_MINUTES:10080}
+
+# Known Cities
+known-cities: 北京,大理,成都,三亚,厦门,西安
+
+# CORS 允许来源（前端开发服务器，逗号分隔）
+cors:
+  allowed-origins: http://localhost:5173,http://127.0.0.1:5173,http://192.168.137.1:5173
+
+# Logging Configuration
+logging:
+  level:
+    com.yuntu.tripplanner: DEBUG
+    org.springframework.ai: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

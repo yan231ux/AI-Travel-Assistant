@@ -1,0 +1,35 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Application
+application-local.yml
+.env
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
+
+# Chroma vector store (local RAG data, rebuilt at runtime)
+backend/chroma-data*/
+
+# WorkBuddy AI memory (local notes/cache, not project source)
+.workbuddy/
