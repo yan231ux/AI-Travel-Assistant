@@ -4,10 +4,12 @@
 
 ## 技术栈
 
-- **框架**: Spring Boot 3.2.1
-- **数据库**: MySQL + MyBatis-Plus
-- **缓存**: Redis
-- **AI**: Spring AI + DashScope/Qwen
+- **框架**: Spring Boot 3.2.1（JDK 17）
+- **数据库**: MySQL 8 + MyBatis-Plus
+- **缓存**: Redis（可选，作为外部 API 结果缓存层）
+- **AI**: 直接调用 DashScope 通义千问 OpenAI 兼容接口（自封装 LlmClient / EmbeddingClient，**未引入 Spring AI**），默认模型 `qwen-plus`、向量模型 `text-embedding-v3`
+- **部署**: Docker Compose 编排 MySQL + Redis（`backend/docker-compose.yaml`）
+- **前端**: Vue 3 + Vite + Ant Design Vue + TypeScript
 - **其他**: Lombok, Jackson, Jsoup
 
 ## 项目结构
@@ -15,32 +17,36 @@
 ```
 src/main/java/com/yuntu/tripplanner/
 ├── TripPlannerApplication.java    # 启动类
-├── config/                        # 配置类
-│   ├── LLMConfig.java
-│   ├── AmapConfig.java
-│   ├── RedisConfig.java
-│   └── ...
+├── config/                        # 配置类（LLM / 高德 / Redis / JWT / CORS 等）
 ├── controller/                    # REST 控制器
-│   ├── TripController.java
-│   ├── WeatherController.java
-│   └── ExportController.java
+│   ├── AuthController.java        # 注册/登录（返回 JWT）
+│   ├── TripController.java        # 行程保存/查询/删除 + 非流式生成
+│   ├── TripStreamController.java  # SSE 流式行程生成（核心入口）
+│   ├── WeatherController.java     # 天气查询
+│   └── ExportController.java      # Markdown / PDF 导出
 ├── service/                       # 业务逻辑
-│   ├── ItineraryGenerator.java
-│   └── TripRecordService.java
+│   ├── AuthService.java           # 注册登录 + BCrypt + JWT 签发
+│   ├── CityValidator.java         # 城市校验（别名/错别字/假城市拦截，进 Agent 前关卡）
+│   ├── ItineraryGenerator.java    # 行程编排
+│   ├── ItineraryValidator.java    # 行程结果校验（跨天去重/预算/天气备选）
+│   ├── MapEnrichmentService.java  # 高德 POI/路线富化
+│   ├── RagService.java            # 本地攻略检索（BM25 + 向量 + RRF）
+│   ├── CacheService.java          # Redis 缓存外部 API 结果
+│   ├── TripRecordService.java     # 行程落库（按用户隔离）
+│   └── PdfExportService.java      # PDF 导出
 ├── agent/                         # ReAct Agent
-│   ├── TravelAgent.java
-│   ├── AgentThought.java
+│   ├── TravelAgent.java           # think→act→observe 循环（≤3 轮）
+│   ├── AgentThought.java          # Agent 思考轨迹数据
 │   └── ...
 ├── client/                        # 外部 API 客户端
-│   ├── AmapClient.java
-│   ├── OpenMeteoClient.java
-│   └── BingSearchClient.java
-├── model/                         # 数据模型
-│   ├── TripRequest.java
-│   ├── Itinerary.java
-│   └── ...
-└── repository/                    # 数据访问
-    └── TripRecordRepository.java
+│   ├── LlmClient.java             # DashScope 对话补全（OpenAI 兼容）
+│   ├── EmbeddingClient.java       # DashScope 文本向量化
+│   ├── AmapClient.java            # 高德 POI/地理编码/路线
+│   ├── OpenMeteoClient.java       # 天气
+│   ├── BingSearchClient.java      # 攻略网页检索
+│   └── ChromaVectorStore.java     # Chroma 向量库（不可达自动降级内存余弦）
+├── model/                         # 数据模型（Lombok @Data）
+└── repository/                    # 数据访问（MyBatis-Plus）
 ```
 
 ## 快速开始
@@ -50,34 +56,40 @@ src/main/java/com/yuntu/tripplanner/
 确保已安装：
 - JDK 17+
 - Maven 3.6+
-- MySQL 8.0+
-- Redis
+- Docker / Docker Compose（用来起 MySQL + Redis；不想用 Docker 也可本机自行安装 MySQL 8、Redis 7）
+- Node.js 18+（跑前端）
 
-### 2. 配置环境变量
+### 2. 启动基础设施（Docker）
+
+后端通过 `backend/docker-compose.yaml` 用 Docker 编排 MySQL 8 与 Redis 7：
 
 ```bash
-# LLM API Key（DashScope/Qwen）
+cd backend
+docker compose up -d        # 启动 MySQL(映射 3310) + Redis(6379)
+```
+
+> 数据库名 `trip_planner`，MySQL root 密码 `root`，与 `application.yml` 默认配置一致。
+> 不用 Docker 的话，本机自行安装 MySQL 8（端口 3310）与 Redis 7（端口 6379）并建库 `trip_planner` 即可。
+
+### 3. 配置环境变量
+
+只需配置两个 API Key（其余有默认值，见 `application.yml`）：
+
+```bash
+# LLM API Key（DashScope / 通义千问）
 export LLM_API_KEY=your_dashscope_api_key
 
 # 高德地图 API Key
 export AMAP_API_KEY=your_amap_api_key
-
-# 数据库配置
-export DB_HOST=localhost
-export DB_PORT=3306
-export DB_NAME=trip_planner
-export DB_USERNAME=root
-export DB_PASSWORD=your_password
-
-# Redis 配置
-export REDIS_URL=redis://localhost:6379/0
 ```
 
-### 3. 初始化数据库
+（可选覆盖项：`DB_USERNAME` / `DB_PASSWORD`（默认 root/root）、`REDIS_URL`（默认 `redis://localhost:6379/0`）、`JWT_SECRET`（生产必须覆盖，≥32 字节）、`CHROMA_ENABLED`（默认开）。）
 
-项目会自动执行 `schema.sql` 创建表结构。
+### 4. 初始化数据库
 
-### 4. 编译运行
+项目启动时 `application.yml` 中 `spring.sql.init.mode=always` 会自动执行 `schema.sql` 建表，**无需手工初始化**。
+
+### 5. 编译运行后端
 
 ```bash
 cd AI-Travel-Assistant
@@ -85,7 +97,17 @@ mvn clean install
 mvn spring-boot:run
 ```
 
-应用将在 `http://localhost:8080` 启动。
+后端将在 `http://localhost:8080` 启动。
+
+### 6. 运行前端
+
+```bash
+cd frontend
+npm install
+npm run dev          # Vite 开发服务器，默认 http://localhost:5173
+```
+
+前端通过 `src/services/api.ts` 中的 `VITE_API_BASE_URL` 指向后端地址（默认 `http://localhost:8080`）。
 
 ## 用户系统
 
@@ -112,8 +134,9 @@ JWT 密钥配置：`application.yml` 中 `jwt.secret`（生产环境务必用 `$
 ### 行程接口
 
 - `GET /trip` - 获取**当前用户**的历史行程列表
-- `POST /trip/generate` - 生成行程（无轨迹）
-- `POST /trip/generate-with-trace` - 生成行程（带Agent轨迹）
+- `POST /trip/generate-stream` - **SSE 流式生成行程**（`text/event-stream`，前端实时展示生成过程与 Agent 轨迹，**前端默认走这个入口**）
+- `POST /trip/generate` - 生成行程（一次性返回，无轨迹）
+- `POST /trip/generate-with-trace` - 生成行程（一次性返回，带 Agent 轨迹）
 - `POST /trip/save` - 保存行程（归属以 token 为准）
 - `GET /trip/{trip_id}` - 获取行程详情（仅本人）
 - `DELETE /trip/{trip_id}` - 删除行程（仅本人）
@@ -185,7 +208,7 @@ CHROMA_ENABLED=false
 
 ## 前端对接
 
-前端代码位于 `frontend/` 目录，需要修改 `src/services/api.ts` 中的 `VITE_API_BASE_URL` 指向后端地址。
+前端代码位于 `frontend/` 目录（Vue 3 + Vite + Ant Design Vue + TypeScript），需要修改 `src/services/api.ts` 中的 `VITE_API_BASE_URL` 指向后端地址（默认 `http://localhost:8080`）。
 
 ## License
 
