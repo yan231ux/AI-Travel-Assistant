@@ -57,6 +57,18 @@ public class RagService {
     private final Map<String, List<ChunkVec>> vectorsByCity = new ConcurrentHashMap<>();
 
     /**
+     * 有攻略的城市集合（单一真相源）：启动时从 guides/ 各 .md 的 H1 标题自动提取，
+     * 不再依赖 application.yml 的 known-cities 配置。新增城市攻略只需放一个 .md 文件。
+     */
+    private final Set<String> supportedCities = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 城市名 → 攻略文件名 stem（去掉 .md），用于 Chroma 集合名（保证 ASCII 安全）。
+     * 如 "成都" → "chengdu_guide"。
+     */
+    private final Map<String, String> cityToFileStem = new ConcurrentHashMap<>();
+
+    /**
      * 持久化向量缓存（可选）：Spring 环境注入后落库，服务重启直接加载、免重算；
      * 单元测试直接 new RagService(...) 时为 null → 仅内存构建，行为与原来一致。
      */
@@ -158,21 +170,54 @@ public class RagService {
             Resource[] resources = resolver.getResources("classpath*:guides/*.md");
             for (Resource resource : resources) {
                 String filename = resource.getFilename();
+                if (filename != null && filename.startsWith("_")) {
+                    continue; // 跳过模板/说明类文件（如 _TEMPLATE.md），不纳入攻略库
+                }
                 try (InputStream is = resource.getInputStream()) {
                     String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                    splitMarkdown(filename, content);
+                    String city = extractCity(content);
+                    if (city != null) {
+                        supportedCities.add(city);
+                        if (filename != null) {
+                            cityToFileStem.put(city, filename.replaceAll("\\.md$", ""));
+                        }
+                    } else {
+                        log.warn("攻略文件 {} 缺少 H1 城市标题，无法自动纳入支持城市", filename);
+                    }
+                    splitMarkdown(filename, city, content);
                 }
             }
-            log.info("RAG攻略库加载完成，共 {} 个片段", chunks.size());
+            log.info("RAG攻略库加载完成，共 {} 个片段；支持城市 {} 个：{}",
+                    chunks.size(), supportedCities.size(), supportedCities);
         } catch (IOException e) {
             log.error("加载攻略文件失败", e);
         }
     }
 
     /**
+     * 从攻略 Markdown 的 H1 标题提取规范城市名。
+     * 约定 H1 形如 "# 成都旅行攻略" / "# 北京旅游攻略"，去掉末尾的
+     * "旅行攻略/旅游攻略/攻略/市/省" 得到城市名（"成都"/"北京"）。
+     * 返回 null 表示该文件无合法 H1，不会被自动纳入支持城市。
+     */
+    private String extractCity(String content) {
+        for (String line : content.split("\n", -1)) {
+            String t = line.trim();
+            if (t.startsWith("# ") && !t.startsWith("## ")) {
+                String title = t.substring(2).trim();
+                String city = title.replaceAll("(旅行攻略|旅游攻略|攻略|市|省)$", "").trim();
+                if (!city.isEmpty()) {
+                    return city;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * 按 ## 和 ### 标题切分 Markdown
      */
-    private void splitMarkdown(String sourceName, String markdown) {
+    private void splitMarkdown(String sourceName, String city, String markdown) {
         String currentTitle = "文档开头";
         List<String> currentLines = new ArrayList<>();
 
@@ -180,7 +225,7 @@ public class RagService {
             String trimmed = line.trim();
             if (trimmed.startsWith("## ") || trimmed.startsWith("### ")) {
                 if (!currentLines.isEmpty()) {
-                    addChunk(sourceName, currentTitle, currentLines);
+                    addChunk(sourceName, city, currentTitle, currentLines);
                 }
                 currentTitle = trimmed.replaceAll("^#+\\s*", "").trim();
                 currentLines = new ArrayList<>();
@@ -189,13 +234,14 @@ public class RagService {
             }
         }
         if (!currentLines.isEmpty()) {
-            addChunk(sourceName, currentTitle, currentLines);
+            addChunk(sourceName, city, currentTitle, currentLines);
         }
     }
 
-    private void addChunk(String sourceName, String title, List<String> lines) {
+    private void addChunk(String sourceName, String city, String title, List<String> lines) {
         Map<String, String> chunk = new HashMap<>();
         chunk.put("source", sourceName);
+        chunk.put("city", city);
         chunk.put("title", title);
         chunk.put("text", String.join("\n", lines));
         chunk.put("tags", deriveTags(title, String.join("\n", lines)));
@@ -216,7 +262,42 @@ public class RagService {
      */
     public boolean isKnownCity(String destination) {
         if (destination == null) return false;
+        String norm = destination.replaceAll("(市|省)$", "");
+        if (supportedCities.contains(norm) || supportedCities.contains(destination)) {
+            return true;
+        }
+        for (String c : supportedCities) {
+            if (c.contains(norm) || norm.contains(c)) {
+                return true;
+            }
+        }
+        // 兜底：保留原 known-cities 配置门禁（KNOWN_CITIES_FALLBACK / application.yml）
         return knownCities.stream().anyMatch(c -> c.equals(destination) || destination.contains(c) || c.contains(destination));
+    }
+
+    /**
+     * 将用户输入的目的地解析为 supportedCities 中的规范城市名。
+     * 用于检索时定位该城市的攻略片段与 Chroma 集合；解析不到时返回去后缀后的原串兜底。
+     */
+    private String resolveCity(String destination) {
+        if (destination == null) return null;
+        String norm = destination.replaceAll("(市|省)$", "");
+        if (supportedCities.contains(norm)) return norm;
+        if (supportedCities.contains(destination)) return destination;
+        for (String c : supportedCities) {
+            if (c.contains(norm) || norm.contains(c)) return c;
+        }
+        return norm;
+    }
+
+    /**
+     * 生成 Chroma 集合名前缀：优先用文件名 stem（ASCII 安全），无映射时退化清洗城市名。
+     */
+    private String collectionPrefix(String destination) {
+        String city = resolveCity(destination);
+        String stem = city == null ? null : cityToFileStem.get(city);
+        if (stem != null) return stem;
+        return city == null ? "guide" : city.replaceAll("[^a-zA-Z0-9_]", "_");
     }
 
     /**
@@ -384,9 +465,10 @@ public class RagService {
      */
     private List<ChunkVec> getVectors(String destination) {
         return vectorsByCity.computeIfAbsent(destination, city -> {
-            String sourcePrefix = destinationToSource(city);
+            String resolved = resolveCity(destination);
             List<Map<String, String>> cityChunks = chunks.stream()
-                    .filter(c -> c.get("source").toLowerCase().contains(sourcePrefix))
+                    .filter(c -> resolved.equals(c.get("city")) || destination.equals(c.get("city"))
+                            || c.get("source").toLowerCase().contains(destinationToSource(destination)))
                     .toList();
             if (cityChunks.isEmpty()) {
                 return List.of();
@@ -591,7 +673,7 @@ public class RagService {
      * 成功返回该城市全部片段的 Chroma 排名（得分=余弦相似度）；任何失败返回 null（调用方降级内存余弦）。
      */
     private List<ScoredChunk> rankViaChroma(String destination, String query) {
-        String sourcePrefix = destinationToSource(destination);
+        String sourcePrefix = collectionPrefix(destination);
         List<ChunkVec> vectors = vectorsByCity.get(destination);
         if (vectors == null || vectors.isEmpty()) {
             return null;
@@ -689,7 +771,8 @@ public class RagService {
         }
 
         List<Map<String, String>> cityChunks = chunks.stream()
-                .filter(c -> c.get("source").toLowerCase().contains(destinationToSource(destination)))
+                .filter(c -> resolveCity(destination).equals(c.get("city")) || destination.equals(c.get("city"))
+                        || c.get("source").toLowerCase().contains(destinationToSource(destination)))
                 .toList();
         if (cityChunks.isEmpty()) {
             return List.of();
