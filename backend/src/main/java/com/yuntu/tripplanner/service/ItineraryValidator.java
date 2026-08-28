@@ -69,10 +69,12 @@ public class ItineraryValidator {
 
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
+    private final RagService ragService;
 
-    public ItineraryValidator(LlmClient llmClient, ObjectMapper objectMapper) {
+    public ItineraryValidator(LlmClient llmClient, ObjectMapper objectMapper, RagService ragService) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
+        this.ragService = ragService;
     }
 
     /**
@@ -87,12 +89,55 @@ public class ItineraryValidator {
         String ragText = collectedData.getRagData() == null
                 ? null : String.valueOf(collectedData.getRagData().get("guide"));
 
+        // 0. 真实 POI 地址映射：直接用高德 POI 的地址覆盖景点/酒店地址，杜绝 LLM 写错地理位置
+        Map<String, String> poiAddressMap = collectPoiAddressMap(collectedData);
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() != null) {
+                for (SpotItem spot : day.getSpots()) {
+                    if (spot.getName() == null) {
+                        continue;
+                    }
+                    String addr = bestPoiAddress(poiAddressMap, spot.getName());
+                    if (addr != null) {
+                        spot.setAddress(addr);
+                    }
+                }
+            }
+            if (day.getHotel() != null && day.getHotel().getName() != null) {
+                String addr = bestPoiAddress(poiAddressMap, day.getHotel().getName());
+                if (addr != null) {
+                    day.getHotel().setLocation(addr);
+                }
+            }
+        }
+
+        // 0.5 攻略卡片事实回写：地址/简介/门票用人工整理的攻略卡片强制覆盖（事实锚定）。
+        // 有攻略覆盖的景点，事实 100% 来自攻略，杜绝 LLM 张冠李戴。
+        applyGuideCardFacts(itinerary, request);
+
         // 1. 景点：跨天去重 + 真实性标注
         Set<String> usedSpots = new HashSet<>();
         List<String> spotPool = new ArrayList<>(poiSpotNames);
         for (DayPlan day : itinerary.getDays()) {
+            String hotelName = day.getHotel() != null ? day.getHotel().getName() : null;
             if (day.getSpots() == null) {
                 continue;
+            }
+            // 1.5 移除被错误地当作景点列出的酒店
+            if (hotelName != null) {
+                String hn = normalize(hotelName);
+                Iterator<SpotItem> it = day.getSpots().iterator();
+                while (it.hasNext()) {
+                    SpotItem s = it.next();
+                    if (s.getName() == null) {
+                        continue;
+                    }
+                    String sn = normalize(s.getName());
+                    if (sn.equals(hn) || sn.contains(hn) || hn.contains(sn)) {
+                        log.warn("已将酒店「{}」从景点列表中移除（酒店不应作为景点）", s.getName());
+                        it.remove();
+                    }
+                }
             }
             for (SpotItem spot : day.getSpots()) {
                 String norm = normalize(spot.getName());
@@ -126,10 +171,15 @@ public class ItineraryValidator {
                 continue;
             }
             for (MealItem meal : day.getMeals()) {
+                if (meal.getSource() == null) {
+                    meal.setSource(resolveSource(meal.getName(), poiMealNames, ragText));
+                }
                 String norm = normalize(meal.getName());
                 boolean chain = meal.getName() != null
                         && CHAIN_RESTAURANTS.stream().anyMatch(meal.getName()::contains);
-                if (isDuplicate(norm, usedMeals) || chain) {
+                // 重复、连锁、或不在 POI 餐厅池中的（且 POI 池仍有可用项）→ 用真实 POI 餐厅替换
+                boolean notInPoi = "LLM建议（需核实）".equals(meal.getSource());
+                if (isDuplicate(norm, usedMeals) || chain || (notInPoi && !mealPool.isEmpty())) {
                     // 连锁替换时先从候选池排除自身（POI 池可能含同名连锁店），避免"替换成自己"无效替换
                     if (chain) {
                         mealPool.removeIf(n -> n != null && normalize(n).equals(norm));
@@ -139,14 +189,11 @@ public class ItineraryValidator {
                         meal.setName(replacement);
                         meal.setSource("高德POI");
                         usedMeals.add(normalize(replacement));
-                    } else {
+                    } else if (chain || isDuplicate(norm, usedMeals)) {
                         meal.setSource("LLM建议（需核实）");
                     }
                 } else {
                     usedMeals.add(norm);
-                }
-                if (meal.getSource() == null) {
-                    meal.setSource(resolveSource(meal.getName(), poiMealNames, ragText));
                 }
             }
         }
@@ -173,10 +220,199 @@ public class ItineraryValidator {
         checkHotelNights(itinerary);
 
         // 7. 景点描述交叉检测：描述中出现其他地点名 → 警示（防 LLM 张冠李戴）
-        checkDescriptionMismatch(itinerary, poiSpotNames);
+        checkDescriptionMismatch(itinerary, poiSpotNames, poiAddressMap);
 
         // 8. 住宿人数合理性：多人出行按单间价计价（未按人数配房）→ 警示
         checkHotelCapacity(itinerary, request);
+
+        // 9. 清理 LLM 在 source_notes 中编造的预算核算（系统已单独展示「预算明细」）
+        cleanFakeBudgetNotes(itinerary);
+
+        // 10. 点名景点校验：用户明确要求的景点必须安排进行程，未安排的明确告知原因
+        checkRequestedSpots(itinerary, collectedData);
+    }
+
+    /**
+     * 点名景点校验：用户特殊需求中点名的景点若最终未出现在行程中，
+     * 在 source_notes 中明确说明"未能安排"，让用户知道原因而不是被静默忽略。
+     */
+    private void checkRequestedSpots(Itinerary itinerary, CollectedData collectedData) {
+        if (collectedData == null || collectedData.getRequestedSpots() == null
+                || collectedData.getRequestedSpots().isEmpty()) {
+            return;
+        }
+        Set<String> planned = new HashSet<>();
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() != null) {
+                for (SpotItem s : day.getSpots()) {
+                    if (s.getName() != null && !s.getName().isBlank()) {
+                        planned.add(normalize(s.getName()));
+                    }
+                }
+            }
+        }
+        List<String> missing = new ArrayList<>();
+        for (String r : collectedData.getRequestedSpots()) {
+            if (r == null || r.isBlank()) {
+                continue;
+            }
+            String rn = normalize(r);
+            boolean found = planned.stream().anyMatch(p -> p.contains(rn) || rn.contains(p));
+            if (!found) {
+                missing.add(r);
+            }
+        }
+        if (!missing.isEmpty()) {
+            if (itinerary.getSourceNotes() == null) {
+                itinerary.setSourceNotes(new ArrayList<>());
+            }
+            itinerary.getSourceNotes().add("⚠️ 你指定的景点未能全部安排：" + String.join("、", missing)
+                    + "（原因可能是数据源未收录或不在本城市，请核实）");
+            log.warn("点名景点未安排：{}", missing);
+        }
+    }
+
+    /**
+     * 攻略卡片事实回写：按景点名在攻略库中查找人工整理的卡片，
+     * 命中则用卡片的「位置/简介/门票」强制覆盖 LLM 生成的内容，并把来源标为「本地攻略」。
+     * 这是事实锚定的核心：有攻略覆盖的景点，地址与简介不可能再张冠李戴。
+     */
+    private void applyGuideCardFacts(Itinerary itinerary, TripRequest request) {
+        if (ragService == null || request.getDestination() == null) {
+            return;
+        }
+        int hit = 0;
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() == null) {
+                continue;
+            }
+            for (SpotItem spot : day.getSpots()) {
+                if (spot.getName() == null || spot.getName().isBlank()) {
+                    continue;
+                }
+                Map<String, String> card = ragService.findSpotCard(request.getDestination(), spot.getName());
+                if (card == null) {
+                    continue;
+                }
+                hit++;
+                if (card.get("location") != null && !card.get("location").isBlank()) {
+                    spot.setAddress(card.get("location"));
+                }
+                if (card.get("intro") != null && !card.get("intro").isBlank()) {
+                    spot.setDescription(card.get("intro"));
+                }
+                applyCardTicket(spot, card.get("ticket"));
+                spot.setSource("本地攻略");
+                log.info("攻略卡片事实回写：{} → 地址[{}]", spot.getName(), spot.getAddress());
+            }
+        }
+        if (hit > 0) {
+            log.info("攻略卡片事实回写完成：命中 {} 个景点", hit);
+        }
+    }
+
+    /**
+     * 门票事实回写：卡片写明"免费" → 门票置 0；卡片有明确价格 → 模型未填或填得明显偏高时按卡片价校正。
+     */
+    private void applyCardTicket(SpotItem spot, String ticket) {
+        if (ticket == null || ticket.isBlank()) {
+            return;
+        }
+        if (ticket.contains("免费")) {
+            spot.setEstimatedCost(0.0);
+            return;
+        }
+        Double price = extractFirstNumber(ticket);
+        if (price == null) {
+            return;
+        }
+        Double cur = spot.getEstimatedCost();
+        if (cur == null || cur <= 0 || cur > price * 1.5) {
+            spot.setEstimatedCost(price);
+        }
+    }
+
+    /** 从文本中提取第一个数字（门票"旺季60元/淡季40元"取 60 作参考价） */
+    private Double extractFirstNumber(String s) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d+(\\.\\d+)?").matcher(s);
+        return m.find() ? Double.parseDouble(m.group(0)) : null;
+    }
+
+    /**
+     * 从 POI 结果中构建「名称→地址」映射（覆盖所有分类：景点/餐厅/酒店等），
+     * 用于用真实地址覆盖 LLM 写错的景点/酒店地址。
+     */
+    private Map<String, String> collectPoiAddressMap(CollectedData collectedData) {
+        Map<String, String> map = new HashMap<>();
+        if (collectedData.getPoiResults() == null) {
+            return map;
+        }
+        for (Object value : collectedData.getPoiResults().values()) {
+            if (!(value instanceof List<?> list)) {
+                continue;  // 只处理列表类型
+            }
+            for (Object o : list) {
+                if (!(o instanceof Map<?, ?> m)) {
+                    continue;
+                }
+                Object n = m.get("name");
+                Object a = m.get("address");
+                if (n == null || a == null) {
+                    continue;
+                }
+                String name = n.toString();
+                String addr = a.toString();
+                if (!name.isBlank() && !addr.isBlank() && !"null".equals(addr)) {
+                    map.put(normalize(name), addr);
+                }
+            }
+        }
+        return map;
+    }
+
+    /**
+     * 从真实 POI 中匹配最贴合的地址：优先精确匹配，其次按名称包含关系取最长（最具体）的匹配。
+     * 例：「上海博物馆（东馆）」会优先命中「上海博物馆（东馆）」而非「上海博物馆」。
+     */
+    private String bestPoiAddress(Map<String, String> map, String name) {
+        if (name == null) {
+            return null;
+        }
+        String key = normalize(name);
+        if (map.containsKey(key)) {
+            return map.get(key);
+        }
+        String bestKey = null;
+        for (String k : map.keySet()) {
+            if (k.length() >= 2 && (k.contains(key) || key.contains(k))) {
+                if (bestKey == null || k.length() > bestKey.length()) {
+                    bestKey = k;
+                }
+            }
+        }
+        return bestKey == null ? null : map.get(bestKey);
+    }
+
+    /**
+     * 清理 source_notes 中由 LLM 编造的预算核算行：系统已在「预算明细」中给出真实金额，
+     * LLM 在 source_notes 里另写一套数字会与之一致性冲突，故移除「总额/核算/总预算」类说明。
+     */
+    private void cleanFakeBudgetNotes(Itinerary itinerary) {
+        if (itinerary.getSourceNotes() == null) {
+            return;
+        }
+        List<String> kept = new ArrayList<>();
+        for (String n : itinerary.getSourceNotes()) {
+            if (n == null) {
+                continue;
+            }
+            if (n.contains("总额") || n.contains("核算") || n.contains("总预算")) {
+                log.warn("移除 LLM 编造的预算说明：{}", n);
+                continue;
+            }
+            kept.add(n);
+        }
+        itinerary.setSourceNotes(kept);
     }
 
     /**
@@ -184,10 +420,15 @@ public class ItineraryValidator {
      * （如给"博物馆"写"综合度假村、贡多拉游船"）。若描述或地址中出现 POI 池/其他景点/酒店的名称
      * （且非自身），在当天 notes 加警示，不篡改内容。
      */
-    private void checkDescriptionMismatch(Itinerary itinerary, List<String> poiSpotNames) {
+    private void checkDescriptionMismatch(Itinerary itinerary, List<String> poiSpotNames,
+                                          Map<String, String> poiAddressMap) {
         Set<String> knownNames = new HashSet<>();
         if (poiSpotNames != null) {
             knownNames.addAll(poiSpotNames);
+        }
+        // 把所有 POI 名称（景点/餐厅/酒店等）也纳入"已知地点"，扩大张冠李戴检测覆盖面
+        if (poiAddressMap != null) {
+            knownNames.addAll(poiAddressMap.keySet());
         }
         // 行程内所有景点名 + 酒店名，作为"可能被张冠李戴提及"的已知地点
         for (DayPlan day : itinerary.getDays()) {
@@ -238,11 +479,18 @@ public class ItineraryValidator {
                     }
                 }
                 if (!mentioned.isEmpty()) {
+                    // 降级：删除描述中涉及其他地点名的句子，避免张冠李戴直接输出
+                    String cleaned = stripMentioned(spot.getDescription(), mentioned);
+                    if (cleaned != null && !cleaned.isBlank()) {
+                        spot.setDescription(cleaned);
+                    } else {
+                        spot.setDescription("（该景点简介暂未匹配到真实资料，请参考官方介绍）");
+                    }
                     if (day.getNotes() == null) {
                         day.setNotes(new ArrayList<>());
                     }
                     day.getNotes().add("⚠️ 景点「" + self + "」的描述或地址疑似混入其他地点内容（提及："
-                            + String.join("、", mentioned) + "），请核实");
+                            + String.join("、", mentioned) + "），已自动修正描述，请核实");
                 }
             }
         }
@@ -560,6 +808,35 @@ public class ItineraryValidator {
             }
         }
         return false;
+    }
+
+    /**
+     * 删除描述中提及「其他地点名」的句子，仅保留围绕本景点自身的描述。
+     * 用于张冠李戴降级：命中疑似混入时，先剥离错误句子，避免直接输出错误内容。
+     */
+    private String stripMentioned(String description, List<String> mentioned) {
+        if (description == null) {
+            return null;
+        }
+        String[] parts = description.split("[。！？；\n]+");
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            String t = p.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            boolean bad = false;
+            for (String m : mentioned) {
+                if (t.contains(m)) {
+                    bad = true;
+                    break;
+                }
+            }
+            if (!bad) {
+                sb.append(t).append("。");
+            }
+        }
+        return sb.length() > 0 ? sb.toString() : null;
     }
 
     /** 提取文本中的 JSON（第一个 { 到最后一个 }） */

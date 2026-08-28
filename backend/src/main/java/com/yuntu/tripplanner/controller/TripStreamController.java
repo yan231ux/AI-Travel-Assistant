@@ -7,6 +7,7 @@ import com.yuntu.tripplanner.model.AgentTraceResponse;
 import com.yuntu.tripplanner.model.AgentTraceStep;
 import com.yuntu.tripplanner.model.CityValidationResult;
 import com.yuntu.tripplanner.model.TripRequest;
+import com.yuntu.tripplanner.service.CacheService;
 import com.yuntu.tripplanner.service.CityValidator;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +20,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -30,22 +35,34 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * POST /trip/generate-stream 立即返回 SseEmitter，生成在 agentExecutor 独立线程上执行，
  * 每完成一个阶段推送一条 step，阶段间推送 progress，最后推送 itinerary + done。
  * 事件类型：progress / step / itinerary / done / error
+ *
+ * 相同行程参数在 TTL 内命中结果缓存时直接秒回：外部数据已有 Redis 缓存，
+ * 但 LLM 的 think/reflect/generate 是串行调用、才是耗时主因，结果缓存把整条链路省掉。
  */
 @Slf4j
 @RestController
 @RequestMapping("/trip")
 public class TripStreamController {
 
+    /** 生成结果缓存 TTL（秒）：与天气缓存一致，避免天气过期后返回陈旧行程 */
+    private static final long TRIP_CACHE_TTL_SECONDS = 30 * 60;
+
+    /** 缓存 key 版本号：生成逻辑改动后 bump，避免旧缓存污染新逻辑 */
+    private static final String TRIP_CACHE_VERSION = "v3";
+
     private final TravelAgent travelAgent;
     private final Executor agentExecutor;
     private final CityValidator cityValidator;
+    private final CacheService cacheService;
 
     public TripStreamController(TravelAgent travelAgent,
                                 @Qualifier("agentExecutor") Executor agentExecutor,
-                                CityValidator cityValidator) {
+                                CityValidator cityValidator,
+                                CacheService cacheService) {
         this.travelAgent = travelAgent;
         this.agentExecutor = agentExecutor;
         this.cityValidator = cityValidator;
+        this.cacheService = cacheService;
     }
 
     @PostMapping(value = "/generate-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -58,6 +75,14 @@ public class TripStreamController {
         }
         if (cityResult.normalizedCity() != null) {
             request.setDestination(cityResult.normalizedCity());
+        }
+
+        // 结果缓存：相同行程参数在 TTL 内直接秒回，不再重复跑 Agent（LLM 串行调用是耗时主因）
+        String cacheKey = buildTripCacheKey(request);
+        AgentTraceResponse cached = cacheService.get(cacheKey, AgentTraceResponse.class);
+        if (cached != null && cached.getItinerary() != null) {
+            log.info("行程生成缓存命中，直接返回: {}", cacheKey);
+            return ResponseEntity.ok(serveCached(cached));
         }
 
         // 0 = 无超时（生成可能超过默认 30s）
@@ -87,6 +112,10 @@ public class TripStreamController {
 
         CompletableFuture.runAsync(() -> {
             AgentTraceResponse resp = travelAgent.execute(request, callback);
+            // 生成成功后写入结果缓存（下次同参数直接秒回）
+            if (resp != null && Boolean.TRUE.equals(resp.getSuccess()) && resp.getItinerary() != null) {
+                cacheService.set(cacheKey, resp, TRIP_CACHE_TTL_SECONDS);
+            }
             try {
                 if (closed.get()) {
                     return; // 客户端已断开，直接收尾
@@ -110,6 +139,73 @@ public class TripStreamController {
         }, agentExecutor);
 
         return ResponseEntity.ok(emitter);
+    }
+
+    /**
+     * 缓存命中：构造一个"简化回放"的 SSE 流，推送提示 + 两条 step + 缓存行程，秒回。
+     */
+    private SseEmitter serveCached(AgentTraceResponse cached) {
+        SseEmitter emitter = new SseEmitter(0L);
+        try {
+            emitter.send(SseEmitter.event().name("progress")
+                    .data(Map.of("phase", "plan", "message", "相同参数已生成过，直接复用缓存结果")));
+
+            AgentTraceStep planStep = new AgentTraceStep();
+            planStep.setStep(1);
+            planStep.setAction("plan_search");
+            planStep.setThought("缓存命中：此行程参数（目的地/日期/预算/偏好）在 30 分钟内生成过，直接复用结果");
+            planStep.setToolCalls(new ArrayList<>());
+            emitter.send(SseEmitter.event().name("step").data(planStep));
+
+            AgentTraceStep genStep = new AgentTraceStep();
+            genStep.setStep(2);
+            genStep.setAction("generate");
+            genStep.setThought("从缓存读取上次生成的行程");
+            genStep.setObservation("命中缓存，跳过 Agent 循环，秒出结果");
+            emitter.send(SseEmitter.event().name("step").data(genStep));
+
+            emitter.send(SseEmitter.event().name("itinerary").data(cached.getItinerary()));
+            emitter.send(SseEmitter.event().name("done").data(Map.of(
+                    "token_usage", cached.getTokenUsage() == null ? new com.yuntu.tripplanner.model.TokenUsage() : cached.getTokenUsage(),
+                    "cached", true)));
+        } catch (Exception e) {
+            log.debug("缓存结果推送失败: {}", e.getMessage());
+        } finally {
+            try {
+                emitter.complete();
+            } catch (Exception ignored) {
+                // 已 complete 时抛 IllegalStateException，忽略
+            }
+        }
+        return emitter;
+    }
+
+    /**
+     * 生成结果缓存 key：对行程参数做 SHA-256 哈希，参数一致即复用同一份结果。
+     */
+    private String buildTripCacheKey(TripRequest r) {
+        String raw = String.join("|",
+                String.valueOf(r.getDestination()),
+                String.valueOf(r.getStartDate()),
+                String.valueOf(r.getEndDate()),
+                String.valueOf(r.getTravelers()),
+                String.valueOf(r.getBudget()),
+                String.valueOf(r.getHotelLevel()),
+                String.valueOf(r.getPace()),
+                String.valueOf(r.getPreferences()),
+                String.valueOf(r.getDietaryPreferences()),
+                String.valueOf(r.getSpecialNotes()));
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] h = md.digest(raw.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : h) {
+                sb.append(String.format("%02x", b));
+            }
+            return "trip:result:" + TRIP_CACHE_VERSION + ":" + sb;
+        } catch (Exception e) {
+            return "trip:result:" + TRIP_CACHE_VERSION + ":" + Integer.toHexString(raw.hashCode());
+        }
     }
 
     /**

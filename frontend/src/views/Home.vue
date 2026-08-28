@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from "vue";
 import { message } from "ant-design-vue";
+import dayjs, { type Dayjs } from "dayjs";
 
 import type { TripRequestPayload } from "../types";
 
@@ -56,38 +57,50 @@ function calcDays(start: string, end: string): number {
   return isNaN(d) || d < 1 ? 1 : Math.min(d, MAX_DAYS);
 }
 
-function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr);
-  d.setDate(d.getDate() + days - 1);
-  return formatDate(d);
+const todayStart = dayjs().startOf("day");
+
+// 日历选择器绑定的 dayjs 值（与 formState 字符串双向联动）
+const startDate = ref<Dayjs>(dayjs());
+const endDate = ref<Dayjs>(dayjs().add(2, "day"));
+
+// 开始日期：今天及以后可选（不能选过去时间）
+function disabledStartDate(current: Dayjs | null): boolean {
+  return !!current && current.isBefore(todayStart, "day");
+}
+
+// 结束日期：不能早于开始日期，且最长不超过 MAX_DAYS 天
+function disabledEndDate(current: Dayjs): boolean {
+  if (!current) return false;
+  if (current.isBefore(startDate.value, "day")) return true;
+  return current.isAfter(startDate.value.add(MAX_DAYS - 1, "day"), "day");
 }
 
 const dayCount = ref(calcDays(formState.startDate, formState.endDate));
 
-watch(
-  () => [formState.startDate, dayCount.value] as const,
-  ([start, dc], [oldStart, oldDc]) => {
-    const validDays = Math.max(1, Math.min(MAX_DAYS, dc));
-    if (validDays !== dc) {
-      dayCount.value = validDays;
-      return;
-    }
-    if (start !== oldStart || validDays !== oldDc) {
-      formState.endDate = addDays(start, validDays);
-    }
-  },
-  { immediate: false }
-);
-
-watch(
-  () => formState.endDate,
-  (end) => {
-    const dc = calcDays(formState.startDate, end);
-    if (dc !== dayCount.value && dc >= 1) {
-      dayCount.value = dc;
-    }
+// 开始/结束/天数三联动：改开始 → 自动修正结束；改天数 → 联动结束
+watch(startDate, (s) => {
+  if (endDate.value.isBefore(s, "day")) {
+    endDate.value = s;
   }
-);
+  formState.startDate = formatDate(s.toDate());
+  formState.endDate = formatDate(endDate.value.toDate());
+  dayCount.value = calcDays(formState.startDate, formState.endDate);
+});
+
+watch(endDate, (e) => {
+  formState.endDate = formatDate(e.toDate());
+  dayCount.value = calcDays(formState.startDate, formState.endDate);
+});
+
+watch(dayCount, (dc) => {
+  const valid = Math.max(1, Math.min(MAX_DAYS, dc));
+  if (valid !== dc) {
+    dayCount.value = valid;
+    return;
+  }
+  endDate.value = startDate.value.add(valid - 1, "day");
+  formState.endDate = formatDate(endDate.value.toDate());
+});
 
 function togglePreference(list: string[], value: string) {
   const idx = list.indexOf(value);
@@ -141,11 +154,23 @@ function handleSubmit() {
       <div class="ios-form-row ios-form-row--3col">
         <div class="ios-field">
           <label class="ios-label">开始日期</label>
-          <input v-model="formState.startDate" class="ios-input" />
+          <a-date-picker
+            v-model:value="startDate"
+            :disabled-date="disabledStartDate"
+            class="ios-input"
+            style="width: 100%"
+            placeholder="选择开始日期"
+          />
         </div>
         <div class="ios-field">
           <label class="ios-label">结束日期</label>
-          <input v-model="formState.endDate" class="ios-input" />
+          <a-date-picker
+            v-model:value="endDate"
+            :disabled-date="disabledEndDate"
+            class="ios-input"
+            style="width: 100%"
+            placeholder="选择结束日期"
+          />
         </div>
         <div class="ios-field">
           <label class="ios-label">人数</label>

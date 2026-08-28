@@ -23,6 +23,7 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
@@ -56,6 +57,16 @@ public class TravelAgent {
     private static final String TOOL_WEATHER = "weather_forecast";
     private static final String TOOL_AMAP_POI = "amap_poi";
     private static final String TOOL_RAG = "rag_guide";
+
+    /**
+     * think 计划缓存：同一目的地+偏好下工具计划基本不变，短时复用可省一次 LLM 调用。
+     * 内存缓存（计划对象小、无序列化开销），1 小时过期，超容量惰性清理。
+     */
+    private final Map<String, CachedPlan> planCache = new ConcurrentHashMap<>();
+    private static final long PLAN_CACHE_TTL_MS = 60 * 60 * 1000L;
+
+    /** 计划缓存条目：计划快照 + 过期时间 */
+    private record CachedPlan(SearchPlan plan, long expireAt) {}
 
     /**
      * 构建动态工具目录（RAG 支持城市从 RagService 实时读取，避免新增攻略后 prompt 仍写死 6 城）。
@@ -129,6 +140,10 @@ public class TravelAgent {
         List<String> errors = new ArrayList<>();
         // 本轮 LLM（think/reflect）真实 token 累加，局部变量避免并发竞态
         TokenUsage agentUsage = new TokenUsage();
+
+        // 预收集：解析用户特殊需求中点名的景点，为其发起定向 POI 查询，
+        // 让模型在生成时能拿到"攻略未收录但用户指定"的景点真实数据（任何失败降级不阻断）
+        collectRequestedSpots(request, collectedData);
 
         try {
             int maxIterations = llmConfig.getMaxIterations() != null ? llmConfig.getMaxIterations() : 3;
@@ -278,7 +293,7 @@ public class TravelAgent {
         SearchPlan plan = new SearchPlan();
 
         if (iteration == 0) {
-            plan = buildPlanFromLLM(request, usage);
+            plan = cachedPlanOrBuild(request, usage);
             if (plan.getToolCalls().isEmpty()) {
                 plan = buildDefaultPlan(request);
                 plan.setPlanDescription("LLM 计划解析失败，使用默认策略");
@@ -287,6 +302,62 @@ public class TravelAgent {
             buildGapFillPlan(request, collectedData, plan);
         }
         return plan;
+    }
+
+    /**
+     * think 计划缓存：同目的地+偏好（与日期/人数/预算无关，不影响工具选择）短时复用，
+     * 命中直接返回计划快照，省一次 LLM 调用；未命中则 LLM 生成并写入缓存。
+     */
+    private SearchPlan cachedPlanOrBuild(TripRequest request, TokenUsage usage) {
+        String key = buildPlanCacheKey(request);
+        long now = System.currentTimeMillis();
+        // 惰性清理过期项，防止无界增长
+        if (planCache.size() > 300) {
+            planCache.entrySet().removeIf(e -> e.getValue().expireAt() < now);
+        }
+        CachedPlan hit = planCache.get(key);
+        if (hit != null && hit.expireAt() > now) {
+            SearchPlan copy = copyPlan(hit.plan());
+            copy.setPlanDescription((copy.getPlanDescription() == null ? "" : copy.getPlanDescription()) + "；计划缓存命中");
+            log.info("think 计划缓存命中: {}", key);
+            return copy;
+        }
+        SearchPlan plan = buildPlanFromLLM(request, usage);
+        if (!plan.getToolCalls().isEmpty()) {
+            planCache.put(key, new CachedPlan(copyPlan(plan), now + PLAN_CACHE_TTL_MS));
+        }
+        return plan;
+    }
+
+    /**
+     * 计划缓存 key：只取影响"调哪些工具"的参数（工具选择与日期/人数/预算无关，排除以扩大命中面）
+     */
+    private String buildPlanCacheKey(TripRequest r) {
+        return String.join("|",
+                String.valueOf(r.getDestination()),
+                String.valueOf(r.getPreferences()),
+                String.valueOf(r.getPace()),
+                String.valueOf(r.getHotelLevel()),
+                String.valueOf(r.getDietaryPreferences()),
+                String.valueOf(r.getSpecialNotes()));
+    }
+
+    /** 深拷贝计划（SearchPlan 可变，缓存存取必须拷贝，避免并发修改污染缓存/调用方） */
+    private SearchPlan copyPlan(SearchPlan src) {
+        SearchPlan copy = new SearchPlan();
+        copy.setPlanDescription(src.getPlanDescription());
+        List<SearchPlan.ToolCall> tcs = new ArrayList<>();
+        if (src.getToolCalls() != null) {
+            for (SearchPlan.ToolCall tc : src.getToolCalls()) {
+                SearchPlan.ToolCall c = new SearchPlan.ToolCall();
+                c.setTool(tc.getTool());
+                c.setQuery(tc.getQuery());
+                c.setReason(tc.getReason());
+                tcs.add(c);
+            }
+        }
+        copy.setToolCalls(tcs);
+        return copy;
     }
 
     /**
@@ -484,6 +555,83 @@ public class TravelAgent {
     }
 
     /**
+     * 预收集：从用户特殊需求中解析"点名景点"，为其发起定向 POI 查询，
+     * 让模型在生成时能拿到攻略未收录但真实存在的景点数据。
+     * 点名景点来源 = 攻略卡片名反向匹配 ∪ 高德定向查询返回的 POI 名。
+     * 任何失败都降级（不阻断生成）。
+     */
+    private void collectRequestedSpots(TripRequest request, CollectedData collectedData) {
+        if (request.getSpecialNotes() == null || request.getSpecialNotes().isBlank()) {
+            return;
+        }
+        List<String> requested = new ArrayList<>();
+
+        // 1) 攻略卡片名反向匹配：用户文本里提到攻略里已有的景点（如"去四行仓库"）
+        try {
+            requested.addAll(ragService.findSpotCardNames(request.getDestination(), request.getSpecialNotes()));
+        } catch (Exception e) {
+            log.warn("攻略卡片名匹配失败（降级）: {}", e.getMessage());
+        }
+
+        // 2) 高德定向 POI 查询：把清洗后的特殊需求文本作为关键词精确查一次。
+        //    单独存"指定景点"类别，避免被 prepareDataSummary 的每类前 3 条截断。
+        String cleaned = cleanSpecialNotes(request.getSpecialNotes(), request.getDestination());
+        if (cleaned.length() >= 2) {
+            try {
+                List<Map<String, Object>> pois = amapClient.searchPoi(request.getDestination(), cleaned);
+                if (pois != null && !pois.isEmpty()) {
+                    List<Map<String, Object>> merged = new ArrayList<>();
+                    Set<String> names = new HashSet<>();
+                    Object existing = collectedData.getPoiResults().get("指定景点");
+                    if (existing instanceof List<?> list) {
+                        for (Object o : list) {
+                            if (o instanceof Map<?, ?> m) {
+                                String n = String.valueOf(m.get("name"));
+                                if (n != null && names.add(n)) {
+                                    merged.add(new HashMap<>((Map<String, Object>) m));
+                                }
+                            }
+                        }
+                    }
+                    for (Map<String, Object> p : pois) {
+                        String n = String.valueOf(p.get("name"));
+                        if (n != null && !"null".equals(n) && names.add(n)) {
+                            merged.add(p);
+                            requested.add(n);
+                        }
+                    }
+                    collectedData.getPoiResults().put("指定景点", merged);
+                }
+            } catch (Exception e) {
+                log.warn("指定景点定向查询失败（降级，不影响生成）: {}", e.getMessage());
+            }
+        }
+
+        if (!requested.isEmpty()) {
+            collectedData.setRequestedSpots(requested.stream().distinct().toList());
+            log.info("用户点名景点（定向查询+攻略匹配）：{}", collectedData.getRequestedSpots());
+        }
+    }
+
+    /**
+     * 清洗特殊需求文本：去城市名、标点、常见"想去/必去/安排"等引导词，
+     * 剩下来的核心短语交给高德做定向 POI 查询。
+     */
+    private String cleanSpecialNotes(String notes, String destination) {
+        String t = notes;
+        if (destination != null) {
+            t = t.replace(destination, "");
+        }
+        for (String w : new String[]{"一定要去", "必须去", "别忘了去", "记得去", "务必去", "想去", "要去", "必去",
+                "安排", "包括", "看看", "游玩", "参观", "顺便", "加上", "优先", "务必", "希望", "一定要", "记得", "去",
+                "除了", "攻略", "里的", "我还", "如果", "的话", "另外", "还有", "然后", "最后", "之后", "先", "再", "并",
+                "以及", "或者", "还是", "那里", "这里", "帮我", "想", "要", "和", "跟", "与"}) {
+            t = t.replace(w, "");
+        }
+        return t.replaceAll("[\\s，。、！？；：,.!?;:（）()\"'“”「」]+", "").trim();
+    }
+
+    /**
      * LLM 给定了 query 就用 LLM 的，否则用默认 query
      */
     private SearchPlan.ToolCall resolveQuery(SearchPlan.ToolCall parsed, String defaultQuery) {
@@ -652,23 +800,30 @@ public class TravelAgent {
             return thought;
         }
 
-        try {
-            String prompt = buildReflectPrompt(collectedData);
-            LlmClient.LlmResult result = callLlm(prompt, usage);
-            if (result != null && !result.content().isBlank()) {
-                thought.setThought(result.content().trim());
-            } else {
-                thought.setThought("反思调用失败，使用规则判断数据充分性");
-            }
-            // 规则已判足够：LLM 反思文本仅作过程展示，不影响是否足够的结论
-            thought.setEnough(true);
-        } catch (Exception e) {
-            log.warn("反思调用失败，使用规则判断: {}", e.getMessage());
-            thought.setThought("反思调用失败，使用规则判断数据充分性");
-            thought.setEnough(true);
-        }
-
+        // 规则已判定足够 → 不再白调一次 LLM 反思（它是纯展示、不参与结论，直接省掉串行往返）
+        thought.setThought(buildRuleSufficientText(collectedData));
+        thought.setEnough(true);
         return thought;
+    }
+
+    /**
+     * 规则判定"数据足够"时的展示文本（替代原 LLM 反思调用，省一次模型往返）
+     */
+    private String buildRuleSufficientText(CollectedData collectedData) {
+        List<String> parts = new ArrayList<>();
+        if (!collectedData.getPoiResults().isEmpty()) {
+            parts.add("POI " + collectedData.getPoiResults().size() + " 类");
+        }
+        if (!collectedData.getWeatherData().isEmpty()) {
+            parts.add("天气");
+        }
+        if (!collectedData.getRagData().isEmpty()) {
+            parts.add("RAG 本地攻略");
+        }
+        if (!collectedData.getSearchResults().isEmpty()) {
+            parts.add("搜索结果");
+        }
+        return "规则判断：数据已足够（" + String.join("、", parts) + "），无需继续补充，直接进入生成";
     }
 
     /**

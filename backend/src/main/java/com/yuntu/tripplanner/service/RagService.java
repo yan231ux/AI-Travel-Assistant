@@ -283,6 +283,156 @@ public class RagService {
     }
 
     /**
+     * 在该城市的攻略中按景点名称查找"景点卡片"（### 条目且带 **位置** 字段的块）。
+     * 命中返回结构化字段：location / ticket / duration / intro / note（可能缺字段）；
+     * 未命中返回 null。
+     *
+     * <p>用途：生成后事实回写（事实锚定）——让景点的地址/简介/门票来自人工整理的攻略，
+     * 而不是 LLM 凭记忆编造。匹配按规范化名称的相等/包含关系取最长（最具体）卡片。
+     */
+    public Map<String, String> findSpotCard(String destination, String spotName) {
+        if (destination == null || spotName == null || spotName.isBlank()) {
+            return null;
+        }
+        String norm = normalizeSpot(spotName);
+        if (norm.length() < 2) {
+            return null;
+        }
+        String city = resolveCity(destination);
+        Map<String, String> best = null;
+        int bestLen = -1;
+        for (Map<String, String> chunk : chunks) {
+            String chunkCity = chunk.get("city");
+            if (chunkCity == null || !isSameCity(city, chunkCity, destination)) {
+                continue;
+            }
+            String text = chunk.get("text");
+            // 只认"景点卡片"块：必须有 **位置** 字段（餐饮/住宿/贴士块没有，自动排除）
+            if (text == null || !text.contains("**位置**")) {
+                continue;
+            }
+            String title = chunk.get("title");
+            if (title == null) {
+                continue;
+            }
+            String cardName = stripCardNumber(title);
+            String cn = normalizeSpot(cardName);
+            if (cn.length() < 2) {
+                continue;
+            }
+            if (cn.equals(norm) || cn.contains(norm) || norm.contains(cn)) {
+                if (cn.length() > bestLen) {
+                    bestLen = cn.length();
+                    best = parseSpotCard(chunk);
+                }
+            }
+        }
+        return best;
+    }
+
+    /** 城市归属判定：规范城市名互相包含即视为同一城市 */
+    private boolean isSameCity(String resolvedCity, String chunkCity, String destination) {
+        if (chunkCity.equals(destination)) {
+            return true;
+        }
+        if (resolvedCity != null && (chunkCity.contains(resolvedCity) || resolvedCity.contains(chunkCity))) {
+            return true;
+        }
+        return destination.contains(chunkCity) || chunkCity.contains(destination);
+    }
+
+    /** 去掉卡片标题的数字编号前缀："2.10 外滩" → "外滩" */
+    private String stripCardNumber(String title) {
+        return title.replaceFirst("^\\d+(\\.\\d+)*\\s*", "").trim();
+    }
+
+    /** 名称规范化（仅用于匹配）：去空白、全半角括号、行政区划后缀 */
+    private String normalizeSpot(String s) {
+        if (s == null) {
+            return "";
+        }
+        String t = s.replaceAll("[\\s\\u3000（）()]", "");
+        return t.replaceAll("(风景区|景区|公园|古镇|老街|景点)$", "");
+    }
+
+    /**
+     * 从用户特殊需求文本中反向匹配该城市攻略里的景点卡片名。
+     * 匹配规则：卡片名去掉括号注释、去掉城市名前缀后，若其完整名或首/尾 4 字出现在文本中即命中。
+     * 例："我要去四行仓库" 命中卡片「上海四行仓库抗战纪念馆」。
+     */
+    public List<String> findSpotCardNames(String destination, String text) {
+        if (text == null || text.isBlank() || destination == null) {
+            return List.of();
+        }
+        String cleanText = text.replaceAll("[\\s，。、！？；：,.!?;:（）()\"'“”「」]", "");
+        String city = resolveCity(destination);
+        List<String> names = new ArrayList<>();
+        for (Map<String, String> chunk : chunks) {
+            String chunkCity = chunk.get("city");
+            if (chunkCity == null || !isSameCity(city, chunkCity, destination)) {
+                continue;
+            }
+            String chunkText = chunk.get("text");
+            if (chunkText == null || !chunkText.contains("**位置**")) {
+                continue;
+            }
+            String title = chunk.get("title");
+            if (title == null) {
+                continue;
+            }
+            String cardName = stripCardNumber(title);
+            if (cardName.length() < 2) {
+                continue;
+            }
+            // 去括号注释 + 去城市名前缀 + 去连接符，得到"景点核心名"
+            String core = cardName.replaceAll("[（(][^）)]*[）)]", "").trim();
+            core = core.replace(city, "").replace(destination, "")
+                    .replace("市", "").replace("省", "")
+                    .replace("&", "").replace("&amp;", "").replace("、", "").replace("/", "").trim();
+            if (core.length() < 2) {
+                continue;
+            }
+            boolean hit = cleanText.contains(core)                       // 用户文本包含核心名（"武康路""自然博物馆"）
+                    || core.contains(cleanText)                          // 用户说了完整名（"上海自然博物馆静安馆"）
+                    || core.length() >= 4 && cleanText.contains(core.substring(0, 4))          // 只说了前段（"去四行仓库"）
+                    || core.length() >= 4 && cleanText.contains(core.substring(core.length() - 4)); // 只说了后段
+            if (hit && !names.contains(cardName)) {
+                names.add(cardName);
+            }
+        }
+        return names;
+    }
+
+    /** 把卡片块文本解析成结构化字段（位置/门票/游玩时长/简介/注意） */
+    private Map<String, String> parseSpotCard(Map<String, String> chunk) {
+        Map<String, String> card = new HashMap<>();
+        card.put("name", stripCardNumber(chunk.get("title")));
+        String text = chunk.get("text");
+        if (text == null) {
+            return card;
+        }
+        for (String line : text.split("\n")) {
+            String t = line.trim();
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("^-?\\s*\\*\\*([^\\*]+)\\*\\*[:：]\\s*(.+)$").matcher(t);
+            if (!m.matches()) {
+                continue;
+            }
+            String key = m.group(1).trim();
+            String value = m.group(2).trim();
+            switch (key) {
+                case "位置" -> card.put("location", value);
+                case "门票" -> card.put("ticket", value);
+                case "游玩时长" -> card.put("duration", value);
+                case "简介" -> card.put("intro", value);
+                case "注意", "贴士" -> card.put("note", value);
+                default -> { /* 其他字段忽略 */ }
+            }
+        }
+        return card;
+    }
+
+    /**
      * 将用户输入的目的地解析为 supportedCities 中的规范城市名。
      * 用于检索时定位该城市的攻略片段与 Chroma 集合；解析不到时返回去后缀后的原串兜底。
      */

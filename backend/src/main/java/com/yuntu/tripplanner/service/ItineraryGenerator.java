@@ -28,8 +28,9 @@ import java.util.concurrent.TimeoutException;
 @Service
 public class ItineraryGenerator {
 
-    /** 主生成 LLM 调用超时（秒），防止模型慢响应导致前端无限卡“AI正在思考” */
-    private static final int GENERATION_TIMEOUT_SECONDS = 45;
+    /** 主生成 LLM 调用超时（秒），防止模型慢响应导致前端无限卡“AI正在思考”。
+     * 3 天 + 多偏好行程输出结构较大，实测 45 秒不足，放宽到 90 秒（前端 API 超时 120 秒）。 */
+    private static final int GENERATION_TIMEOUT_SECONDS = 90;
     /** JSON 修正 LLM 调用超时（秒），修正 prompt 较短，响应应更快 */
     private static final int CORRECT_JSON_TIMEOUT_SECONDS = 20;
 
@@ -173,10 +174,20 @@ public class ItineraryGenerator {
             summary.append("\n【天气预报】\n").append(collectedData.getWeatherData().toString()).append("\n");
         }
 
-        // RAG摘要
+        // RAG摘要：直接取攻略正文文本，避免以 Map.toString() 形式（{guide=...}）塞给模型
         if (!collectedData.getRagData().isEmpty()) {
-            summary.append("\n【本地攻略】\n");
-            summary.append(collectedData.getRagData().toString()).append("\n");
+            Object rag = collectedData.getRagData().get("guide");
+            if (rag != null) {
+                summary.append("\n【本地攻略】\n").append(rag.toString()).append("\n");
+            }
+        }
+
+        // 用户点名景点（最高优先级，必须安排进行程）
+        if (collectedData.getRequestedSpots() != null && !collectedData.getRequestedSpots().isEmpty()) {
+            summary.append("\n【用户点名景点】（用户明确要求，必须出现在行程中，不得遗漏）\n");
+            for (String s : collectedData.getRequestedSpots()) {
+                summary.append("- ").append(s).append("\n");
+            }
         }
 
         return summary.toString();
@@ -273,8 +284,12 @@ public class ItineraryGenerator {
                 8. 天气应对：若某天天气预报含 雷、暴、雨、雪、冰、大风 等字眼，当天只能安排室内景点（博物馆、美术馆、科技馆、商场、书店等），禁止安排户外景点
                 9. 返回纯JSON，不要包含```json和```标记
                 10. 每日备注（notes）中涉及天气的表述，必须严格使用【天气预报】表格中对应日期的天气描述原文（如"雷暴""小毛毛雨"），第N天只能引用表格中第N天的天气，不得自行改写或编造天气名称，也不得跨日期引用
-                11. 每个景点的 description 必须严格围绕该景点本身撰写（该景点的建筑特色、历史、游玩要点），禁止张冠李戴引用其他景点/酒店/娱乐项目的介绍内容（例如给"博物馆"写"综合度假村、贡多拉游船"，或给"炮台/公园"写"商场购物、酒店体验"都是错误的）；若仅提及邻近地点可简短带过，但不得作为描述主体
-                12. 酒店价格必须按人数合理估算：多人出行（如3人以上）通常需要多间房或家庭房，单晚价格不能只按一间房算完就不管人数；餐饮、门票按实际人数累加
+                11. 每个景点的 description 必须严格围绕该景点本身撰写（该景点的建筑特色、历史、游玩要点），禁止张冠李戴引用其他景点/酒店/娱乐项目的介绍内容（例如给"博物馆"写"综合度假村、贡多拉游船"，或给"炮台/公园"写"商场购物、酒店体验"都是错误的）；若仅提及邻近地点可简短带过，但不得作为描述主体。address 字段必须填该景点自身的真实地理位置，不得填相邻街区或别的地点的地址；若必须提及邻近地点，只能一句话带过，绝不能作为描述主体
+                12. 餐厅必须从【POI数据】的「餐厅」分类中选取真实餐厅名称（用户偏好含"美食/吃/餐厅"时务必优先使用），禁止自行编造餐厅；仅在「餐厅」分类为空时才允许推荐本地特色且须真实存在
+                13. 酒店价格建模：经济型约 150-250 元/间/晚，舒适型约 300-500 元/间/晚，豪华型约 600-1200 元/间/晚。多人出行需按房间数计算：房间数≈ceil(人数/2)，总住宿=房间数×单间价×晚数；餐饮、门票按实际 人数累加；单价需贴合所选档次，不得明显偏低
+14. source_notes（数据来源说明）只能说明数据来源（如「本地攻略命中 N 条」「酒店/餐厅来自高德POI」），禁止在其中核算或编造预算金额与总数；所有金额以系统「预算明细」为准，不要在 source_notes 里复述预算
+15. spots 字段只能放景点/地标，禁止把入住的酒店列为景点；酒店必须只写在 hotel 字段
+16. 【用户点名景点】中列出的景点是用户明确要求，必须出现在行程 spots 中，不得遗漏；若确因数据源未收录或不在本城市而无法安排，必须在 source_notes 中说明原因，禁止静默忽略
 
                 请开始生成：
                 """,
