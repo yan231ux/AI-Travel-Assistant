@@ -51,6 +51,21 @@ public class TripRecordService {
         
         return response;
     }
+
+    /**
+     * 获取用户最近 N 条行程（按创建时间倒序，用于构建长期记忆画像）。
+     * 只读行程主体，不加载 Agent 轨迹（画像不需要）。
+     */
+    public List<TripRecord> getRecentTrips(String userId, int limit) {
+        if (userId == null || userId.isBlank() || limit <= 0) {
+            return List.of();
+        }
+        LambdaQueryWrapper<TripRecord> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(TripRecord::getUserId, userId)
+                .orderByDesc(TripRecord::getCreatedAt)
+                .last("LIMIT " + limit);
+        return tripRecordRepository.selectList(queryWrapper);
+    }
     
     /**
      * 保存行程（userId 以服务端解析的登录用户为准，覆盖请求体中的 user_id，防伪造归属）。

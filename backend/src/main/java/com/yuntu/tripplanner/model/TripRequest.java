@@ -53,6 +53,18 @@ public class TripRequest {
     @JsonProperty("special_notes")
     private String specialNotes;
 
+    /**
+     * 当前登录用户 id（后端从 JWT 注入，前端不传，防伪造；用于用户记忆与缓存隔离）
+     */
+    @JsonIgnore
+    private String userId;
+
+    /**
+     * 用户记忆画像文本（后端生成前构建并注入，前端不传；空=无历史，不注入）
+     */
+    @JsonIgnore
+    private String userMemory;
+
     @AssertTrue(message = "结束日期必须晚于或等于开始日期")
     @JsonIgnore
     public boolean isDateRangeValid() {

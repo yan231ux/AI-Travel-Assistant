@@ -6,6 +6,7 @@ import com.yuntu.tripplanner.model.*;
 import com.yuntu.tripplanner.security.UserContext;
 import com.yuntu.tripplanner.service.CityValidator;
 import com.yuntu.tripplanner.service.TripRecordService;
+import com.yuntu.tripplanner.service.UserProfileService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -25,12 +26,35 @@ public class TripController {
     private final TravelAgent travelAgent;
     private final TripRecordService tripRecordService;
     private final CityValidator cityValidator;
+    private final UserProfileService userProfileService;
 
     public TripController(TravelAgent travelAgent, TripRecordService tripRecordService,
-                          CityValidator cityValidator) {
+                          CityValidator cityValidator, UserProfileService userProfileService) {
         this.travelAgent = travelAgent;
         this.tripRecordService = tripRecordService;
         this.cityValidator = cityValidator;
+        this.userProfileService = userProfileService;
+    }
+
+    /**
+     * 注入用户上下文：从 ThreadLocal 捕获当前登录用户 id（异步线程读不到，必须在主线程读），
+     * 并基于历史行程构建长期记忆画像文本。未登录或构建失败 → 静默降级，不影响生成。
+     */
+    private void attachUserContext(TripRequest request) {
+        String userId = UserContext.getUserId();
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        request.setUserId(userId);
+        try {
+            String memory = userProfileService.buildMemoryText(userId, request);
+            if (memory != null && !memory.isBlank()) {
+                request.setUserMemory(memory);
+                log.info("用户长期记忆注入：{}（{}）", userId, memory.length());
+            }
+        } catch (Exception e) {
+            log.warn("构建用户记忆失败（降级，不影响生成）: {}", e.getMessage());
+        }
     }
 
     /** 生成前城市名校验：失败抛异常 → 全局处理器回 400，不启动 Agent；成功可能用规范化名覆盖输入 */
@@ -65,6 +89,7 @@ public class TripController {
     @PostMapping("/generate")
     public ResponseEntity<?> generateTrip(@Valid @RequestBody TripRequest request) {
         validateDestination(request);
+        attachUserContext(request);
         try {
             log.info("生成行程请求: {}", request.getDestination());
 
@@ -94,6 +119,7 @@ public class TripController {
     @PostMapping("/generate-with-trace")
     public ResponseEntity<?> generateTripWithTrace(@Valid @RequestBody TripRequest request) {
         validateDestination(request);
+        attachUserContext(request);
         try {
             log.info("生成行程（带轨迹）请求: {}", request.getDestination());
 

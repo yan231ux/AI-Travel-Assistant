@@ -145,6 +145,9 @@ public class TravelAgent {
         // 让模型在生成时能拿到"攻略未收录但用户指定"的景点真实数据（任何失败降级不阻断）
         collectRequestedSpots(request, collectedData);
 
+        // 用户长期记忆画像（controller 已基于历史行程构建）：注入生成提示词实现个性化
+        collectedData.setUserMemory(request.getUserMemory());
+
         try {
             int maxIterations = llmConfig.getMaxIterations() != null ? llmConfig.getMaxIterations() : 3;
 
@@ -330,10 +333,12 @@ public class TravelAgent {
     }
 
     /**
-     * 计划缓存 key：只取影响"调哪些工具"的参数（工具选择与日期/人数/预算无关，排除以扩大命中面）
+     * 计划缓存 key：只取影响"调哪些工具"的参数（工具选择与日期/人数/预算无关，排除以扩大命中面）。
+     * 含 userId：不同用户记忆不同，计划里可能体现个性化，按用户隔离避免串味。
      */
     private String buildPlanCacheKey(TripRequest r) {
         return String.join("|",
+                String.valueOf(r.getUserId()),
                 String.valueOf(r.getDestination()),
                 String.valueOf(r.getPreferences()),
                 String.valueOf(r.getPace()),
@@ -921,6 +926,9 @@ public class TravelAgent {
         result.put("poi_results", collectedData.getPoiResults());
         result.put("weather_data", collectedData.getWeatherData());
         result.put("rag_data", collectedData.getRagData());
+        if (collectedData.getUserMemory() != null) {
+            result.put("user_memory", collectedData.getUserMemory());
+        }
         return result;
     }
 }

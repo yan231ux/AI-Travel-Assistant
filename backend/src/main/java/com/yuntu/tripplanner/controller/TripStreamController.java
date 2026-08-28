@@ -7,8 +7,10 @@ import com.yuntu.tripplanner.model.AgentTraceResponse;
 import com.yuntu.tripplanner.model.AgentTraceStep;
 import com.yuntu.tripplanner.model.CityValidationResult;
 import com.yuntu.tripplanner.model.TripRequest;
+import com.yuntu.tripplanner.security.UserContext;
 import com.yuntu.tripplanner.service.CacheService;
 import com.yuntu.tripplanner.service.CityValidator;
+import com.yuntu.tripplanner.service.UserProfileService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -54,15 +56,18 @@ public class TripStreamController {
     private final Executor agentExecutor;
     private final CityValidator cityValidator;
     private final CacheService cacheService;
+    private final UserProfileService userProfileService;
 
     public TripStreamController(TravelAgent travelAgent,
                                 @Qualifier("agentExecutor") Executor agentExecutor,
                                 CityValidator cityValidator,
-                                CacheService cacheService) {
+                                CacheService cacheService,
+                                UserProfileService userProfileService) {
         this.travelAgent = travelAgent;
         this.agentExecutor = agentExecutor;
         this.cityValidator = cityValidator;
         this.cacheService = cacheService;
+        this.userProfileService = userProfileService;
     }
 
     @PostMapping(value = "/generate-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -76,6 +81,9 @@ public class TripStreamController {
         if (cityResult.normalizedCity() != null) {
             request.setDestination(cityResult.normalizedCity());
         }
+
+        // 注入用户上下文：userId + 长期记忆画像（必须在主线程捕获 ThreadLocal，异步线程读不到）
+        attachUserContext(request);
 
         // 结果缓存：相同行程参数在 TTL 内直接秒回，不再重复跑 Agent（LLM 串行调用是耗时主因）
         String cacheKey = buildTripCacheKey(request);
@@ -181,10 +189,33 @@ public class TripStreamController {
     }
 
     /**
+     * 注入用户上下文：从 ThreadLocal 捕获当前登录用户 id（异步线程读不到，必须在主线程读），
+     * 并基于历史行程构建长期记忆画像文本。未登录或构建失败 → 静默降级，不影响生成。
+     */
+    private void attachUserContext(TripRequest request) {
+        String userId = UserContext.getUserId();
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        request.setUserId(userId);
+        try {
+            String memory = userProfileService.buildMemoryText(userId, request);
+            if (memory != null && !memory.isBlank()) {
+                request.setUserMemory(memory);
+                log.info("用户长期记忆注入：{}（{}）", userId, memory.length());
+            }
+        } catch (Exception e) {
+            log.warn("构建用户记忆失败（降级，不影响生成）: {}", e.getMessage());
+        }
+    }
+
+    /**
      * 生成结果缓存 key：对行程参数做 SHA-256 哈希，参数一致即复用同一份结果。
+     * 含 userId：个性化后不同用户的记忆不同，缓存必须按用户隔离，防止串味。
      */
     private String buildTripCacheKey(TripRequest r) {
         String raw = String.join("|",
+                String.valueOf(r.getUserId()),
                 String.valueOf(r.getDestination()),
                 String.valueOf(r.getStartDate()),
                 String.valueOf(r.getEndDate()),

@@ -79,8 +79,9 @@ public class ItineraryGenerator {
         mergeEmbeddingUsage(usage, collectedData);
         itinerary.setTokenUsage(usage);
 
-        // 5. 来源说明：标注 RAG 命中数
+        // 5. 来源说明：标注 RAG 命中数 + 用户历史记忆定制
         addRagSourceNote(itinerary, collectedData);
+        addUserMemoryNote(itinerary, collectedData);
 
         // 6. 补充高德地图信息（图片、坐标、地址）
         try {
@@ -188,6 +189,15 @@ public class ItineraryGenerator {
             for (String s : collectedData.getRequestedSpots()) {
                 summary.append("- ").append(s).append("\n");
             }
+        }
+
+        // 用户长期记忆（个性化）：基于历史行程的画像，让模型延续用户偏好、避免重复推荐
+        if (collectedData.getUserMemory() != null && !collectedData.getUserMemory().isBlank()) {
+            summary.append("\n【用户历史记忆】\n").append(collectedData.getUserMemory()).append("\n");
+            summary.append("要求：\n");
+            summary.append("1. 本次目的地若与用户历史行程重复，请安排新玩法或明确区分上次体验\n");
+            summary.append("2. 优先延续用户历史偏好的节奏与住宿档次（除非本次请求明确不同）\n");
+            summary.append("3. 只参考上述记忆，不得编造记忆之外的用户经历\n");
         }
 
         return summary.toString();
@@ -445,6 +455,23 @@ public class ItineraryGenerator {
             }
         } catch (Exception e) {
             log.debug("添加 RAG 来源说明失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 来源说明：标注本次已结合用户历史行程定制（个性化可见，结果页"数据来源说明"展示）
+     */
+    private void addUserMemoryNote(Itinerary itinerary, CollectedData collectedData) {
+        if (collectedData.getUserMemory() == null || collectedData.getUserMemory().isBlank()) {
+            return;
+        }
+        try {
+            if (itinerary.getSourceNotes() == null) {
+                itinerary.setSourceNotes(new ArrayList<>());
+            }
+            itinerary.getSourceNotes().add("✨ 已结合你的历史行程定制（延续偏好、避免重复推荐）");
+        } catch (Exception e) {
+            log.debug("添加用户记忆来源说明失败: {}", e.getMessage());
         }
     }
 
