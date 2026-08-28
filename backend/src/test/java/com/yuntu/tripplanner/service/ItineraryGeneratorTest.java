@@ -32,11 +32,14 @@ class ItineraryGeneratorTest {
     @Mock
     private MapEnrichmentService mapEnrichmentService;
 
+    @Mock
+    private ItineraryValidator itineraryValidator;
+
     private ItineraryGenerator generator;
 
     @BeforeEach
     void setUp() {
-        generator = new ItineraryGenerator(llmClient, new ObjectMapper(), mapEnrichmentService);
+        generator = new ItineraryGenerator(llmClient, new ObjectMapper(), mapEnrichmentService, itineraryValidator);
     }
 
     private TripRequest tripRequest() {
