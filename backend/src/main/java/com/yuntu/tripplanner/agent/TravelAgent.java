@@ -57,30 +57,38 @@ public class TravelAgent {
     private static final String TOOL_AMAP_POI = "amap_poi";
     private static final String TOOL_RAG = "rag_guide";
 
-    // 工具目录（注入prompt，让 LLM 决定调用哪些工具）
-    private static final String TOOL_CATALOG = """
-            可用工具目录（由你决定调用哪些）：
+    /**
+     * 构建动态工具目录（RAG 支持城市从 RagService 实时读取，避免新增攻略后 prompt 仍写死 6 城）。
+     */
+    private String buildToolCatalog() {
+        Set<String> cities = ragService.getSupportedCities();
+        String cityList = cities.isEmpty()
+                ? "暂无"
+                : String.join("/", cities);
+        return """
+                可用工具目录（由你决定调用哪些）：
 
-            1. web_search(query)
-               联网搜索目的地的最新攻略、景点、餐厅、交通等信息。
-               参数 query: 搜索关键词，如 "成都 历史景点 美食 推荐"
-               适合场景：获取攻略文章、实时信息、未收录城市的资料。
+                1. web_search(query)
+                   联网搜索目的地的最新攻略、景点、餐厅、交通等信息。
+                   参数 query: 搜索关键词，如 "成都 历史景点 美食 推荐"
+                   适合场景：获取攻略文章、实时信息、未收录城市的资料。
 
-            2. weather_forecast(location)
-               查询目的地未来天气预报（温度、降水概率、天气描述）。
-               参数 location: 目的地名称，如 "成都"。
-               适合场景：需要了解出行期间天气以安排室内/室外活动。
+                2. weather_forecast(location)
+                   查询目的地未来天气预报（温度、降水概率、天气描述）。
+                   参数 location: 目的地名称，如 "成都"。
+                   适合场景：需要了解出行期间天气以安排室内/室外活动。
 
-            3. amap_poi(destination, category)
-               查询高德地图POI，返回景点/餐厅/酒店的真实名称、地址、坐标、图片。
-               参数 destination: 目的地；category: 景点/餐厅/酒店/购物/交通。
-               适合场景：获取结构化地点数据（坐标+图片），用于地图展示。
+                3. amap_poi(destination, category)
+                   查询高德地图POI，返回景点/餐厅/酒店的真实名称、地址、坐标、图片。
+                   参数 destination: 目的地；category: 景点/餐厅/酒店/购物/交通。
+                   适合场景：获取结构化地点数据（坐标+图片），用于地图展示。
 
-            4. rag_guide(destination)
-               检索本地攻略知识库（仅支持：北京/大理/成都/三亚/厦门/西安）。
-               参数 destination: 目的地名称。
-               适合场景：目的地在知识库内时，获得人工整理的精准攻略片段。
-            """;
+                4. rag_guide(destination)
+                   检索本地攻略知识库（支持城市：%s）。
+                   参数 destination: 目的地名称。
+                   适合场景：目的地在知识库内时，必须优先调用，可获得人工整理的精准攻略片段。
+                """.formatted(cityList);
+    }
 
     public TravelAgent(LLMConfig llmConfig,
                        LlmClient llmClient,
@@ -337,6 +345,13 @@ public class TravelAgent {
                 for (String cat : poiCategories) {
                     plan.getToolCalls().add(createToolCall(TOOL_AMAP_POI, destination + " " + cat));
                 }
+            }
+
+            // 已知城市必须调 RAG：即使 LLM 漏选，也强制追加，保证有攻略的城市能命中本地知识库。
+            if (ragService.isKnownCity(destination)
+                    && plan.getToolCalls().stream().noneMatch(tc -> TOOL_RAG.equals(tc.getTool()))) {
+                plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
+                plan.setPlanDescription(plan.getPlanDescription() + "; 强制追加 rag_guide");
             }
         } catch (Exception e) {
             log.warn("LLM 计划失败，使用默认策略: {}", e.getMessage());
@@ -625,7 +640,7 @@ public class TravelAgent {
         boolean hasSearch = !collectedData.getSearchResults().isEmpty();
         boolean hasPoi = !collectedData.getPoiResults().isEmpty();
         boolean hasWeather = !collectedData.getWeatherData().isEmpty();
-        boolean hasRag = !collectedData.getRagData().isEmpty() || !ragService.isKnownCity(request.getDestination());
+        boolean hasRag = !collectedData.getRagData().isEmpty() || ragService.isKnownCity(request.getDestination());
 
         // 规则兜底：有 POI 且有搜索或 RAG 且有天气，视为足够
         boolean ruleEnough = hasPoi && (hasSearch || hasRag) && hasWeather;
@@ -688,7 +703,7 @@ public class TravelAgent {
                 只返回如下 JSON，不要包含其他说明文字：
                 {"tools": [{"tool": "web_search", "query": "成都 历史景点 美食 推荐"}, {"tool": "amap_poi", "query": "成都 景点"}, {"tool": "weather_forecast", "query": "成都"}]}
                 """,
-                TOOL_CATALOG,
+                buildToolCatalog(),
                 request.getDestination(),
                 request.getStartDate(),
                 request.getEndDate(),

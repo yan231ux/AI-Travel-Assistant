@@ -12,6 +12,10 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 行程生成器
@@ -23,6 +27,11 @@ import java.util.*;
 @Slf4j
 @Service
 public class ItineraryGenerator {
+
+    /** 主生成 LLM 调用超时（秒），防止模型慢响应导致前端无限卡“AI正在思考” */
+    private static final int GENERATION_TIMEOUT_SECONDS = 45;
+    /** JSON 修正 LLM 调用超时（秒），修正 prompt 较短，响应应更快 */
+    private static final int CORRECT_JSON_TIMEOUT_SECONDS = 20;
 
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
@@ -45,9 +54,9 @@ public class ItineraryGenerator {
         // 1. 准备数据摘要
         String dataSummary = prepareDataSummary(collectedData);
 
-        // 2. 构建生成提示词并调用 LLM（planner）
+        // 2. 构建生成提示词并调用 LLM（planner），带超时兜底
         String prompt = buildGenerationPrompt(request, dataSummary);
-        LlmClient.LlmResult result = llmClient.chat(prompt);
+        LlmClient.LlmResult result = chatWithTimeout(prompt, GENERATION_TIMEOUT_SECONDS);
         if (result == null) {
             throw new TripGenerationException("LLM 调用失败，无法生成行程");
         }
@@ -92,6 +101,28 @@ public class ItineraryGenerator {
         calculateBudget(itinerary);
 
         return itinerary;
+    }
+
+    /**
+     * 带超时的 LLM 调用：Future.get 防止模型偶发慢响应导致前端无限等待。
+     * 超时后抛出 TripGenerationException，由上层通过 SSE error 事件反馈给前端。
+     */
+    private LlmClient.LlmResult chatWithTimeout(String prompt, int timeoutSeconds) {
+        try {
+            return CompletableFuture.supplyAsync(() -> llmClient.chat(prompt))
+                    .get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            log.error("生成行程 LLM 调用超时（{}s）", timeoutSeconds, e);
+            throw new TripGenerationException("生成行程超时，请稍后重试");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("生成行程 LLM 调用被中断", e);
+            throw new TripGenerationException("生成行程被中断");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            log.error("生成行程 LLM 调用失败", cause);
+            throw new TripGenerationException("生成行程调用失败: " + cause.getMessage());
+        }
     }
 
     /**
@@ -362,7 +393,7 @@ public class ItineraryGenerator {
                 请只返回修正后的合法JSON，不要包含```json标记和任何说明文字。
                 """, schema, originalJson);
 
-        LlmClient.LlmResult result = llmClient.chat(prompt);
+        LlmClient.LlmResult result = chatWithTimeout(prompt, CORRECT_JSON_TIMEOUT_SECONDS);
         if (result != null && usage != null) {
             usage.setRewritePromptTokens(usage.getRewritePromptTokens() + result.promptTokens());
             usage.setRewriteCompletionTokens(usage.getRewriteCompletionTokens() + result.completionTokens());

@@ -258,6 +258,13 @@ public class RagService {
     }
 
     /**
+     * 返回当前已加载攻略的城市集合（目录驱动，启动后只增不减）。
+     */
+    public Set<String> getSupportedCities() {
+        return Set.copyOf(supportedCities);
+    }
+
+    /**
      * 判断目的地是否有本地攻略
      */
     public boolean isKnownCity(String destination) {
