@@ -51,9 +51,9 @@ mybatis-plus:
 llm:
   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api-key: ${LLM_API_KEY:}
-  model: qwen-plus
+  model: qwen-turbo
   embedding-model: text-embedding-v3
-  # LLM 读超时（秒）：生成完整行程 JSON 的 prompt 很长，qwen-plus 偶尔需 60s+；配合 LlmClient 失败重试
+  # LLM 读超时（秒）：qwen3.7-plus 是 35B 稠密生成慢（曾超时），改用 qwen-turbo 后通常 30s 内返回
   timeout-seconds: 120
   max-iterations: 3
 

@@ -30,7 +30,7 @@ public class ItineraryGenerator {
 
     /** 主生成 LLM 调用超时（秒），防止模型慢响应导致前端无限卡“AI正在思考”。
      * 3 天 + 多偏好行程输出结构较大，实测 45 秒不足，放宽到 90 秒（前端 API 超时 120 秒）。 */
-    private static final int GENERATION_TIMEOUT_SECONDS = 90;
+    private static final int GENERATION_TIMEOUT_SECONDS = 180;
     /** JSON 修正 LLM 调用超时（秒），修正 prompt 较短，响应应更快 */
     private static final int CORRECT_JSON_TIMEOUT_SECONDS = 20;
 
@@ -79,11 +79,17 @@ public class ItineraryGenerator {
         mergeEmbeddingUsage(usage, collectedData);
         itinerary.setTokenUsage(usage);
 
-        // 5. 来源说明：标注 RAG 命中数 + 用户历史记忆定制
+        // 5. 来源说明：完全由代码拼装，丢弃 LLM 自述（LLM 常编造"预算明细/总和XX元"等
+        //    与系统「预算明细」冲突的金额，v1.1 起多次补关键词仍漏网——根治：不让 LLM 写这个字段）。
+        //    补两条 POI 来源 / 天气应对的事实性固定句，恢复信息量但不开放 LLM 自由发挥。
+        itinerary.setSourceNotes(new ArrayList<>());
+        itinerary.getSourceNotes().add("由 ReAct Agent 基于真实数据生成");
+        itinerary.getSourceNotes().add("POI 数据均来自高德地图真实采集");
+        itinerary.getSourceNotes().add("天气应对严格依据天气预报原文执行");
         addRagSourceNote(itinerary, collectedData);
         addUserMemoryNote(itinerary, collectedData);
 
-        // 6. 补充高德地图信息（图片、坐标、地址）
+        // 6. 补充高德地图信息（图片、坐标、地址）；成功时 source_notes 由 MapEnrichmentService 内部统一追加
         try {
             mapEnrichmentService.enrich(itinerary);
         } catch (Exception e) {
@@ -291,14 +297,14 @@ public class ItineraryGenerator {
                 5. 预算分配要符合用户总预算，餐饮人均、交通费用要贴合实际，不得明显偏低或虚高
                 6. 每天安排2-4个主要景点
                 7. transport 中的 from_place / to_place 必须使用【POI数据】中的真实地点名称或明确地标（如"洪崖洞""解放碑"），禁止使用"出发点""市区""酒店附近"等模糊表述；mode 必须明确（步行/地铁/公交/打车/驾车）
-                8. 天气应对：若某天天气预报含 雷、暴、雨、雪、冰、大风 等字眼，当天只能安排室内景点（博物馆、美术馆、科技馆、商场、书店等），禁止安排户外景点
+                8. 天气应对：若某天天气预报含 雷暴、暴雨、大雨、中雨、暴雪、大风、台风 等字眼，当天只能安排室内景点（博物馆、美术馆、科技馆、商场、书店等），禁止安排户外景点（海滩、山景、公园、江畔、骑行道等）；只有小毛毛雨、小雨、多云等轻微天气时可按正常安排并提示带伞
                 9. 返回纯JSON，不要包含```json和```标记
                 10. 每日备注（notes）中涉及天气的表述，必须严格使用【天气预报】表格中对应日期的天气描述原文（如"雷暴""小毛毛雨"），第N天只能引用表格中第N天的天气，不得自行改写或编造天气名称，也不得跨日期引用
                 11. 每个景点的 description 必须严格围绕该景点本身撰写（该景点的建筑特色、历史、游玩要点），禁止张冠李戴引用其他景点/酒店/娱乐项目的介绍内容（例如给"博物馆"写"综合度假村、贡多拉游船"，或给"炮台/公园"写"商场购物、酒店体验"都是错误的）；若仅提及邻近地点可简短带过，但不得作为描述主体。address 字段必须填该景点自身的真实地理位置，不得填相邻街区或别的地点的地址；若必须提及邻近地点，只能一句话带过，绝不能作为描述主体
                 12. 餐厅必须从【POI数据】的「餐厅」分类中选取真实餐厅名称（用户偏好含"美食/吃/餐厅"时务必优先使用），禁止自行编造餐厅；仅在「餐厅」分类为空时才允许推荐本地特色且须真实存在
                 13. 酒店价格建模：经济型约 150-250 元/间/晚，舒适型约 300-500 元/间/晚，豪华型约 600-1200 元/间/晚。多人出行需按房间数计算：房间数≈ceil(人数/2)，总住宿=房间数×单间价×晚数；餐饮、门票按实际 人数累加；单价需贴合所选档次，不得明显偏低
 14. source_notes（数据来源说明）只能说明数据来源（如「本地攻略命中 N 条」「酒店/餐厅来自高德POI」），禁止在其中核算或编造预算金额与总数；所有金额以系统「预算明细」为准，不要在 source_notes 里复述预算
-15. spots 字段只能放景点/地标，禁止把入住的酒店列为景点；酒店必须只写在 hotel 字段
+15. spots 字段只能放景点/地标，禁止把入住的酒店、客栈、民宿、青年旅舍或任何餐厅/火锅店/饭店列为景点；酒店必须只写在 hotel 字段，餐厅必须只写在 meals 字段
 16. 【用户点名景点】中列出的景点是用户明确要求，必须出现在行程 spots 中，不得遗漏；若确因数据源未收录或不在本城市而无法安排，必须在 source_notes 中说明原因，禁止静默忽略
 
                 请开始生成：

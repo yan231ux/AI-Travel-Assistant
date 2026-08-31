@@ -67,6 +67,19 @@ public class CityValidator {
     /** 地理编码兜底（A）只认这些"行政区划级"别；其余（兴趣点/道路/山峰/海洋…）一律拒绝 */
     private static final List<String> SETTLEMENT_LEVEL_KEYWORDS = List.of("市", "区", "县", "镇", "乡", "街道", "村", "商圈", "省");
 
+    /**
+     * 常见形近/音近错别字 → 正确字。仅用于编辑距离<b>平局</b>时的决胜：
+     * 「夏门」与「澳门」「厦门」距离同为 1，白名单顺序（澳门在前）会误指「澳门」；
+     * 借助"夏→厦"映射让「厦门」胜出；同理「奥门」靠"奥→澳"仍正确指向「澳门」，两全。
+     */
+    private static final Map<Character, Character> TYPO_FIX = Map.ofEntries(
+            Map.entry('夏', '厦'), Map.entry('奥', '澳'), Map.entry('堵', '都'),
+            Map.entry('洲', '州'), Map.entry('诲', '海'), Map.entry('惊', '京'),
+            Map.entry('进', '津'), Map.entry('亲', '庆'), Map.entry('度', '都'),
+            Map.entry('按', '安'), Map.entry('汗', '汉'), Map.entry('纱', '沙'),
+            Map.entry('到', '岛'), Map.entry('丫', '亚'), Map.entry('三', '山'),
+            Map.entry('上', '山'), Map.entry('宛', '莞'), Map.entry('镇', '圳'));
+
     private static final List<String> KNOWN_CITIES_FALLBACK = DEFAULT_DESTINATIONS;
 
     private final AmapClient amapClient;
@@ -141,11 +154,21 @@ public class CityValidator {
     String findSuggestion(String input) {
         String best = null;
         int bestDist = Integer.MAX_VALUE;
+        int bestGlyph = -1;
         for (String c : knownCities) {
             int d = levenshtein(input, c);
             if (d < bestDist) {
                 bestDist = d;
                 best = c;
+                bestGlyph = glyphOverlap(input, c);
+            } else if (d == bestDist && d != Integer.MAX_VALUE) {
+                // 距离平局：优先"形近"候选（如「夏门」→ 厦/门 与 澳/门 距离同为 1，
+                // 但「厦」包含「夏」，应指「厦门」而非白名单顺序更靠前的「澳门」）
+                int g = glyphOverlap(input, c);
+                if (g > bestGlyph) {
+                    best = c;
+                    bestGlyph = g;
+                }
             }
         }
         if (best == null || bestDist == Integer.MAX_VALUE) {
@@ -159,6 +182,23 @@ public class CityValidator {
             return best;
         }
         return null;
+    }
+
+    /**
+     * 形近/音近决胜分（仅用于编辑距离平局时）：同字符 +1；
+     * 命中"错字→正字"映射（如 夏→厦）额外 +2，分数高者胜出。
+     */
+    static int glyphOverlap(String a, String b) {
+        int n = Math.min(a.length(), b.length());
+        int score = 0;
+        for (int i = 0; i < n; i++) {
+            if (a.charAt(i) == b.charAt(i)) {
+                score++;
+            } else if (TYPO_FIX.getOrDefault(a.charAt(i), (char) 0) == b.charAt(i)) {
+                score += 2;
+            }
+        }
+        return score;
     }
 
     /** 两个字符串的编辑距离（滚动数组版，O(n*m)） */

@@ -49,8 +49,8 @@ public class TripStreamController {
     /** 生成结果缓存 TTL（秒）：与天气缓存一致，避免天气过期后返回陈旧行程 */
     private static final long TRIP_CACHE_TTL_SECONDS = 30 * 60;
 
-    /** 缓存 key 版本号：生成逻辑改动后 bump，避免旧缓存污染新逻辑 */
-    private static final String TRIP_CACHE_VERSION = "v3";
+    /** 缓存 key 版本号：生成逻辑或 LLM 模型切换后 bump，避免旧缓存污染新逻辑/新模型 */
+    private static final String TRIP_CACHE_VERSION = "v5";
 
     private final TravelAgent travelAgent;
     private final Executor agentExecutor;

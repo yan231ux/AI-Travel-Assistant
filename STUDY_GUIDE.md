@@ -161,21 +161,23 @@
 | 16 | 城市名校验 | `service/CityValidator.java`（算法：别名/geocode/编辑距离） |
 | 17 | 用户系统 | `controller/AuthController.java` → `service/AuthService.java` → `security/JwtUtil.java`、`JwtAuthInterceptor.java`、`UserContext.java` |
 | 18 | 行程存取与隔离 | `service/TripRecordService.java` + `repository/` 几个接口 |
-| 19 | 配置类 | `config/WebConfig.java`(CORS+拦截器)、`AsyncConfig.java`(三个线程池)、`GlobalExceptionHandler.java`(异常→错误响应) |
-| 20 | 导出 | `controller/ExportController.java` → `service/PdfExportService.java` |
+| 19 | 结果校验与兜底 | `service/ItineraryValidator.java`（酒店去重、POI 地址覆盖、预算清理、指定景点检查） |
+| 20 | 长期记忆画像 | `service/UserProfileService.java`（读 `trip_record` 统计画像并注入生成 prompt） |
+| 21 | 配置类 | `config/WebConfig.java`(CORS+拦截器)、`AsyncConfig.java`(三个线程池)、`GlobalExceptionHandler.java`(异常→错误响应) |
+| 22 | 导出 | `controller/ExportController.java` → `service/PdfExportService.java` |
 
 ### 阶段 D：看前端（1~2 小时）
 
 | 顺序 | 文件 | 角色 |
 |---|---|---|
-| 21 | `frontend/src/main.ts` | Vue 应用创建 |
-| 22 | `frontend/src/App.vue` | 根组件：登录态 + 视图切换（**没有 router**，用 v-if 切） |
-| 23 | `frontend/src/services/api.ts` | ★网络层：axios 封装 + SSE 手动解析 |
-| 24 | `frontend/src/views/Home.vue` | 表单页 |
-| 25 | `frontend/src/views/AgentProcess.vue` | 生成过程页（live 流式 / replay 回放） |
-| 26 | `frontend/src/views/Result.vue` | 结果展示页 |
-| 27 | `frontend/src/views/History.vue` `Login.vue` | 历史列表 / 登录注册 |
-| 28 | `frontend/src/components/` | 子组件：推理面板、高德地图 |
+| 23 | `frontend/src/main.ts` | Vue 应用创建 |
+| 24 | `frontend/src/App.vue` | 根组件：登录态 + 视图切换（**没有 router**，用 v-if 切） |
+| 25 | `frontend/src/services/api.ts` | ★网络层：axios 封装 + SSE 手动解析 |
+| 26 | `frontend/src/views/Home.vue` | 表单页（含日历选择器） |
+| 27 | `frontend/src/views/AgentProcess.vue` | 生成过程页（live 流式 / replay 回放） |
+| 28 | `frontend/src/views/Result.vue` | 结果展示页 |
+| 29 | `frontend/src/views/History.vue` `Login.vue` | 历史列表 / 登录注册 |
+| 30 | `frontend/src/components/` | 子组件：推理面板、高德地图 |
 
 ---
 
@@ -475,7 +477,7 @@ public Itinerary generate(TripRequest request, CollectedData collectedData) {
 这个类做了四件事，按重要度：
 
 **(1) 加载攻略并切分**（构造器 `loadGuides`）：
-- 从 `resources/guides/*.md` 读攻略文件（北京/大理/成都/三亚/厦门/西安各一个）；
+- 从 `resources/guides/*.md` 读攻略文件（北京/上海/成都/重庆/杭州/丽江/三亚/大理/厦门/西安共 10 城）；
 - `splitMarkdown` 按 `##`/`###` 标题把一篇攻略切成多个片段（chunk），每个片段 = `{source(文件名), title(小节标题), text(正文), tags(打标)}`。
 
 **(2) 检索主流程** `search()`：
@@ -543,6 +545,31 @@ List<ScoredChunk> filtered = applyTagFilter(ranked, requiredTags);
 - `service/MapEnrichmentService.java`：拿行程里的地点名去高德查坐标/图片，回填到 `SpotItem`。
 - `service/TripRecordService.java`：行程的保存/列表/详情/删除，负责 JSON 序列化 + 用户隔离。
 - `service/PdfExportService.java` / `controller/ExportController.java`：把行程转 Markdown / 用工具生成 PDF，走 blob 下载。
+
+### 4.13 生成结果校验 `service/ItineraryValidator.java`（v1.1 新增）
+
+LLM 返回的 JSON 再“聪明”也可能犯低级错误：把酒店写进景点列表、给博物馆安上相邻商业街的地址、编一段不存在的预算说明。这个类就是**程序兜底**：
+
+- `checkDescriptionMismatch`：检测描述与景点名明显不符，命中后删除该句；
+- `replaceMealsWithRealPoi`：餐食必须从 POI 餐厅池里选，查不到就替换；
+- `forcePoiAddress`：用高德 POI 真实地址覆盖 spot/hotel 地址；
+- `removeHotelFromSpots`：酒店同名/包含的景点直接移除；
+- `cleanFakeBudgetNotes`：删除 LLM 在 `source_notes` 里编造的“总额/核算”等行；
+- `applyGuideCardFacts`：把 RAG 攻略卡片里的人工整理事实（位置/简介/门票）按景点名匹配并强制回写；
+- `verifyRequestedSpots`：用户点名景点未安排时，在结果里明确标注原因。
+
+> 答辩可以讲：**“我们不信任模型的自律，输出结构由程序兜底。”**
+
+### 4.14 长期记忆 `service/UserProfileService.java`（v1.2 新增）
+
+系统之前是“无状态”的——每次生成都是失忆。v1.2 让 Agent 能读用户自己的历史行程：
+
+1. 从 `trip_record` 按 userId 查该用户所有历史行程；
+2. 确定性统计画像：去过的城市列表、最近 3 条行程摘要、偏好节奏、住宿档次、餐饮口味、平均预算；
+3. 生成前把画像文本注入 `ItineraryGenerator` 的 prompt【用户历史记忆】段；
+4. 结果 `source_notes` 显示“已结合你的历史行程定制”。
+
+**工程注意**：`UserContext` 是 ThreadLocal，异步线程（Agent 执行线程）读不到。所以 `TripStreamController` / `TripController` 必须在**主线程**先把 userId 取出来，再通过 `TripRequest.userId` 传进 Agent。
 
 ---
 

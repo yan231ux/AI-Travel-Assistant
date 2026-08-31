@@ -211,21 +211,54 @@ public class MapEnrichmentService {
     }
 
     /**
-     * 优先选择名称匹配且带图片的 POI
+     * 优先选择名称匹配且带图片的 POI。
+     * ⚠️ 高德模糊匹配可能返回名称完全不沾边的 POI（导致图片/地址张冠李戴，
+     * 实测「东坡祠」拿到西湖景区的图、「大云寺」拿到书法图）。
+     * 因此只采用 POI 名与景点名有包含关系的；名称不匹配 → 返回 null（放弃补全，宁缺毋错）。
      */
     private Map<String, Object> pickBestPlace(String keyword, String city) {
         List<Map<String, Object>> results = amapClient.searchPoi(city, keyword);
         if (results == null || results.isEmpty()) {
             return null;
         }
-
+        String normKey = normalizePlaceName(keyword);
+        if (normKey.isEmpty()) {
+            return null;
+        }
+        List<Map<String, Object>> matched = new ArrayList<>();
+        for (Map<String, Object> r : results) {
+            Object nameObj = r.get("name");
+            if (nameObj == null) {
+                continue;
+            }
+            String poiName = normalizePlaceName(nameObj.toString());
+            if (poiName.isEmpty()) {
+                continue;
+            }
+            if (poiName.equals(normKey) || poiName.contains(normKey) || normKey.contains(poiName)) {
+                matched.add(r);
+            }
+        }
+        if (matched.isEmpty()) {
+            log.debug("POI 名称与景点「{}」不匹配，放弃补全（防张冠李戴）", keyword);
+            return null;
+        }
         // 优先返回带图片的
-        for (Map<String, Object> result : results) {
+        for (Map<String, Object> result : matched) {
             Object img = result.get("image_url");
             if (img != null && !img.toString().isEmpty()) {
                 return result;
             }
         }
-        return results.get(0);
+        return matched.get(0);
+    }
+
+    /** POI 名称规范化（匹配用）：去空白、全半角括号、常见景区后缀 */
+    private String normalizePlaceName(String s) {
+        if (s == null) {
+            return "";
+        }
+        String t = s.replaceAll("[\\s\\u3000（）()]", "");
+        return t.replaceAll("(风景名胜区|风景区|景区|公园|古镇|老街|景点)$", "");
     }
 }

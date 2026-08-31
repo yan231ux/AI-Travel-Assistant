@@ -75,17 +75,18 @@ class TravelAgentCallbackTest {
     }
 
     private void mockHappyPath() {
+        // 计划轮：LLM 给出 amap_poi + weather_forecast（reflect 规则足够时不再调 LLM）
         when(llmClient.chat(anyString())).thenReturn(
                 new LlmClient.LlmResult(
                         "{\"tools\":[{\"tool\":\"amap_poi\",\"query\":\"成都 景点\"},{\"tool\":\"weather_forecast\"}]}",
-                        10, 5),
-                new LlmClient.LlmResult("数据足够", 20, 8));
+                        10, 5));
         when(amapClient.searchPoi(anyString(), anyString()))
                 .thenReturn(List.of(Map.of("name", "武侯祠")));
         WeatherForecastResponse weather = new WeatherForecastResponse();
         weather.setDays(List.of(new WeatherForecastResponse.WeatherDay()));
         when(openMeteoClient.getWeatherForecast(any(), any(), any())).thenReturn(weather);
-        when(ragService.isKnownCity(anyString())).thenReturn(false);
+        // RAG 已知城市 → 规则判定足够（POI + RAG + 天气），一轮结束
+        when(ragService.isKnownCity(anyString())).thenReturn(true);
 
         Itinerary itinerary = new Itinerary();
         itinerary.setTripId("trip_成都_2026-05-01");

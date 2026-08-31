@@ -35,7 +35,7 @@ class LlmClientTest {
         LLMConfig config = new LLMConfig();
         config.setApiKey("test-key");
         config.setBaseUrl("http://localhost");
-        config.setModel("qwen-plus");
+        config.setModel("qwen-turbo");
         return new LlmClient(config);
     }
 

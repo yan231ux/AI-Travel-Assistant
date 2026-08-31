@@ -2,12 +2,14 @@
 
 基于 Spring Boot 3.x 的 AI 旅行规划系统，使用 ReAct Agent 架构。
 
+> **版本演进**：v1.0 初版 → v1.1 数据可信度治理（RAG 卡片事实回写、指定景点保障、三级缓存、前端日历选择器） → v1.2 长期记忆个性化（UserProfileService 基于历史行程画像注入）。当前默认使用 SSE 流式生成入口 `/trip/generate-stream`。
+
 ## 技术栈
 
 - **框架**: Spring Boot 3.2.1（JDK 17）
 - **数据库**: MySQL 8 + MyBatis-Plus
 - **缓存**: Redis（可选，作为外部 API 结果缓存层）
-- **AI**: 直接调用 DashScope 通义千问 OpenAI 兼容接口（自封装 LlmClient / EmbeddingClient，**未引入 Spring AI**），默认模型 `qwen-plus`、向量模型 `text-embedding-v3`
+- **AI**: 直接调用 DashScope 通义千问 OpenAI 兼容接口（自封装 LlmClient / EmbeddingClient，**未引入 Spring AI**），默认模型 `qwen-turbo`、向量模型 `text-embedding-v3`
 - **部署**: Docker Compose 编排 MySQL + Redis（`backend/docker-compose.yaml`）
 - **前端**: Vue 3 + Vite + Ant Design Vue + TypeScript
 - **其他**: Lombok, Jackson, Jsoup
@@ -172,7 +174,7 @@ JWT 密钥配置：`application.yml` 中 `jwt.secret`（生产环境务必用 `$
 1. **Bing 搜索**: 获取攻略信息
 2. **高德地图**: POI 搜索、地理编码、路线规划
 3. **Open-Meteo**: 天气预报
-4. **RAG 攻略库**: 本地攻略检索（支持6个城市）
+4. **RAG 攻略库**: 本地攻略检索（支持10个城市）
 
 ### RAG 与向量库（Chroma）
 

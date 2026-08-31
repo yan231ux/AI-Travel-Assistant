@@ -23,9 +23,9 @@ public class LLMConfig {
     private String apiKey;
     
     /**
-     * 模型名称
+     * 模型名称（qwen-plus 免费额度用完后切到 qwen3.7-plus：35B 稠密 / 100万上下文，兼容 OpenAI 协议）
      */
-    private String model = "qwen-plus";
+    private String model = "qwen-turbo";
     
     /**
      * 超时时间（秒）

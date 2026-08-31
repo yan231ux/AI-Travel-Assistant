@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuntu.tripplanner.agent.CollectedData;
 import com.yuntu.tripplanner.client.LlmClient;
 import com.yuntu.tripplanner.model.DayPlan;
+import com.yuntu.tripplanner.model.HotelItem;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.MealItem;
 import com.yuntu.tripplanner.model.SpotItem;
@@ -48,15 +49,32 @@ public class ItineraryValidator {
                     "大家乐", "翠华", "太兴", "谭仔", "北京楼", "美心", "添好运", "大快活",
                     "一风堂", "一兰", "吉野家", "味千", "萨莉亚", "快乐蜂", "绿茶");
 
-    /** 恶劣天气关键词（出现任一 → 当天按室内安排） */
-    private static final List<String> BAD_WEATHER_WORDS = List.of("雷", "暴", "雨", "雪", "冰", "大风", "台风", "沙尘");
+    /** 恶劣天气关键词（出现任一 → 当天按室内安排）。
+     *  拆细"雨"：雷暴/大雨/中雨才触发室内化，「小毛毛雨」「小雨」只带伞不误判。 */
+    private static final List<String> BAD_WEATHER_WORDS = List.of("雷", "暴", "雪", "冰", "大风", "台风", "沙尘", "暴雨", "大雨", "中雨");
+
+    /** 住宿场所关键词：景点列表中出现这些关键词的项是"酒店被误当景点"，直接移除 */
+    private static final List<String> LODGING_KEYWORDS =
+            List.of("酒店", "客栈", "旅馆", "民宿", "青旅", "青年旅舍", "公寓", "宾馆", "旅舍", "度假村", "招待所");
+
+    /**
+     * 经济定位住宿关键词：名称含这些词的住宿本质是经济型（床位/民宿/公寓），
+     * 若 LLM 把 hotel.level 标成 舒适型/高档型/豪华型 却选了这类店（如"高档型住青旅"），
+     * 必须按实际降级为经济型并警示，不能让用户花高档价住青旅。
+     */
+    private static final List<String> ECONOMY_LODGING_KEYWORDS =
+            List.of("青年旅舍", "青旅", "旅舍", "招待所", "民宿", "公寓", "旅馆", "客栈");
+
+    /** 餐饮场所关键词：餐厅被误当"主要景点"时直接移除（小吃街/美食街是街区不在此列） */
+    private static final List<String> DINING_KEYWORDS =
+            List.of("餐厅", "火锅", "饭店", "酒楼", "料理", "自助", "烤肉", "烧烤", "面馆", "餐吧", "食堂", "小吃店");
 
     /** 室内景点关键词（Plan B 替换时从候选池里挑） */
     private static final List<String> INDOOR_KEYWORDS =
             List.of("博物馆", "美术馆", "科技馆", "图书馆", "艺术馆", "展览", "商场", "购物", "书店", "剧院", "纪念馆", "会展", "馆");
 
-    /** 行政区划后缀（名称规范化去重用） */
-    private static final List<String> PLACE_SUFFIXES = List.of("风景区", "景区", "公园", "古镇", "老街", "景点");
+    /** 行政区划后缀（名称规范化去重用）；"风景名胜区"须在"风景区"之前（先匹配更长的） */
+    private static final List<String> PLACE_SUFFIXES = List.of("风景名胜区", "风景区", "景区", "公园", "古镇", "老街", "景点");
 
     /** 地理通名后缀：描述中合理提及的邻近地理区域（三亚湾/大东海/凤凰岛等）不视为"混入其他地点" */
     private static final List<String> GEO_SUFFIXES =
@@ -111,6 +129,9 @@ public class ItineraryValidator {
             }
         }
 
+        // 0.1 地址真实性硬校验（防"地址被其他景点占用"的张冠李戴，如四方街被写成木府官院巷49号）
+        verifySpotAddresses(itinerary, poiAddressMap);
+
         // 0.5 攻略卡片事实回写：地址/简介/门票用人工整理的攻略卡片强制覆盖（事实锚定）。
         // 有攻略覆盖的景点，事实 100% 来自攻略，杜绝 LLM 张冠李戴。
         applyGuideCardFacts(itinerary, request);
@@ -123,21 +144,38 @@ public class ItineraryValidator {
             if (day.getSpots() == null) {
                 continue;
             }
-            // 1.5 移除被错误地当作景点列出的酒店
-            if (hotelName != null) {
-                String hn = normalize(hotelName);
-                Iterator<SpotItem> it = day.getSpots().iterator();
-                while (it.hasNext()) {
-                    SpotItem s = it.next();
-                    if (s.getName() == null) {
-                        continue;
-                    }
-                    String sn = normalize(s.getName());
-                    if (sn.equals(hn) || sn.contains(hn) || hn.contains(sn)) {
-                        log.warn("已将酒店「{}」从景点列表中移除（酒店不应作为景点）", s.getName());
-                        it.remove();
-                    }
+            // 1.5 移除被错误地当作景点列出的酒店/餐厅
+            // 分两类：与当天酒店同名/互相包含（原逻辑，只覆盖同店）；名称含住宿/餐饮关键词的
+            //（覆盖"大隐国际青年旅舍""登巴客栈(XX店)""绿茶餐厅"等不同店名/餐厅混入场景）
+            // ⚠️ 酒店同名判定用"核心名"（去括号后的主体）：避免"可见时光·望达斯旅舍(杭州西湖湖滨河坊街店)"
+            //    这种长店名里带地理定位词（西湖/河坊街），把真实景点"西湖""河坊街"误删。
+            String hnCore = hotelName == null ? "" : normalize(hotelName.replaceAll("[（(][^）)]*[）)]", ""));
+            Iterator<SpotItem> it = day.getSpots().iterator();
+            List<String> removedByKind = new ArrayList<>();
+            while (it.hasNext()) {
+                SpotItem s = it.next();
+                if (s.getName() == null) {
+                    continue;
                 }
+                String sn = normalize(s.getName());
+                boolean isSameHotel = !hnCore.isEmpty()
+                        && (sn.equals(hnCore) || sn.contains(hnCore)
+                        || (hnCore.length() >= 2 && hnCore.contains(sn)));
+                boolean isLodging = LODGING_KEYWORDS.stream().anyMatch(sn::contains);
+                boolean isDining = DINING_KEYWORDS.stream().anyMatch(sn::contains);
+                if (isSameHotel || isLodging || isDining) {
+                    log.warn("已将非景点「{}」从景点列表移除（{}）", s.getName(),
+                            isDining ? "餐厅不应作为景点" : "酒店/住宿不应作为景点");
+                    removedByKind.add(s.getName());
+                    it.remove();
+                }
+            }
+            if (!removedByKind.isEmpty()) {
+                if (day.getNotes() == null) {
+                    day.setNotes(new ArrayList<>());
+                }
+                day.getNotes().add("⚠️ 已移除被误列为景点的「" + String.join("、", removedByKind)
+                        + "」（住宿/餐饮场所不应作为主要景点）");
             }
             for (SpotItem spot : day.getSpots()) {
                 String norm = normalize(spot.getName());
@@ -201,7 +239,7 @@ public class ItineraryValidator {
         // 3. Plan B：恶劣天气日 → 替换为室内候选（无候选则备注警示）
         applyPlanB(itinerary, collectedData, poiSpotNames, usedSpots, spotPool, ragText);
 
-        // 4. 交通：未由高德路线补全的项，标注为估算（LLM）
+        // 4. 交通：未由高德路线补全的项，标注为估算（LLM）；并统一时长格式
         for (DayPlan day : itinerary.getDays()) {
             if (day.getTransport() == null) {
                 continue;
@@ -210,14 +248,26 @@ public class ItineraryValidator {
                 if (t.getSource() == null) {
                     t.setSource("估算（LLM）");
                 }
+                // LLM 有时写"11.80 km / 28 分钟"混排，统一提取"X 分钟"（有分钟则取分钟，否则保留原文）
+                if (t.getDuration() != null && t.getDuration().contains("km")) {
+                    java.util.regex.Matcher m =
+                            java.util.regex.Pattern.compile("(\\d+\\s*分钟)").matcher(t.getDuration());
+                    if (m.find()) {
+                        t.setDuration(m.group(1));
+                    }
+                }
             }
         }
 
-        // 5. 预算合理性：偏差过大 → 回传 LLM 按预算修正一次
+        // 5. 预算合理性：偏差过大 → 回传 LLM 按预算修正一次；修正后若仍不符用户预算则诚实告知
         repairBudget(itinerary, request);
+        checkBudgetMismatch(itinerary, request);
 
         // 6. 酒店晚数自检：行程天数 vs 有价格的酒店天数，明显少算晚数时给出警示
         checkHotelNights(itinerary);
+
+        // 6.1 酒店档次与类型一致性：高档型不能住青旅（通用校验）
+        validateHotelLevelMatch(itinerary);
 
         // 7. 景点描述交叉检测：描述中出现其他地点名 → 警示（防 LLM 张冠李戴）
         checkDescriptionMismatch(itinerary, poiSpotNames, poiAddressMap);
@@ -394,9 +444,73 @@ public class ItineraryValidator {
     }
 
     /**
-     * 清理 source_notes 中由 LLM 编造的预算核算行：系统已在「预算明细」中给出真实金额，
-     * LLM 在 source_notes 里另写一套数字会与之一致性冲突，故移除「总额/核算/总预算」类说明。
+     * 地址真实性硬校验（张冠李戴治理的"聪明版"）：
+     * 地址必须"有出处"——① 本景点有真实 POI 地址 → 强制覆盖（杜绝"人民大道185号"类错误）；
+     * ② 本景点无真实地址，但当前地址命中「其他 POI 的地址」（地址被占用，如四方街=木府官院巷49号）
+     *    → 判定张冠李戴 → 置「（地址待核实）」并在备注警示；
+     * ③ 地址既无自身出处也未被占用（冷门景点）→ 无法判断，保留原样不误伤。
      */
+    private void verifySpotAddresses(Itinerary itinerary, Map<String, String> poiAddressMap) {
+        if (itinerary.getDays() == null || poiAddressMap == null || poiAddressMap.isEmpty()) {
+            return;
+        }
+        // address → 占用它的 POI 名（反向映射）
+        Map<String, String> ownerByAddr = new HashMap<>();
+        for (Map.Entry<String, String> e : poiAddressMap.entrySet()) {
+            String addr = normalize(e.getValue());
+            if (!addr.isEmpty() && !ownerByAddr.containsKey(addr)) {
+                ownerByAddr.put(addr, e.getKey());
+            }
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() == null) {
+                continue;
+            }
+            for (SpotItem spot : day.getSpots()) {
+                if (spot.getName() == null || spot.getName().isBlank()
+                        || spot.getAddress() == null || spot.getAddress().isBlank()) {
+                    continue;
+                }
+                String nameNorm = normalize(spot.getName());
+                String ownAddr = bestPoiAddress(poiAddressMap, spot.getName());
+                String curAddrNorm = normalize(spot.getAddress());
+
+                if (ownAddr != null && !normalize(ownAddr).equals(curAddrNorm)) {
+                    // ① 自身有真实地址且与当前不符（可能抄了别的景点）→ 用真实地址纠偏
+                    log.warn("地址纠偏：{} 地址由「{}」修正为「{}」", spot.getName(), spot.getAddress(), ownAddr);
+                    spot.setAddress(ownAddr);
+                    continue;
+                }
+                if (ownAddr == null) {
+                    // ② 无自身真实地址：检测当前地址是否被其他 POI 占用
+                    String owner = ownerByAddr.get(curAddrNorm);
+                    if (owner != null && !owner.equals(spot.getName())
+                            && !owner.contains(nameNorm) && !nameNorm.contains(owner)) {
+                        log.warn("地址张冠李戴：{} 的地址「{}」实为 {} 的地址，置为待核实",
+                                spot.getName(), spot.getAddress(), owner);
+                        spot.setAddress("（地址待核实）");
+                        if (day.getNotes() == null) {
+                            day.setNotes(new ArrayList<>());
+                        }
+                        day.getNotes().add("⚠️ 景点「" + spot.getName() + "」地址疑似错用「"
+                                + owner + "」的地址，已置为待核实");
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 清理 source_notes 中由 LLM 编造的预算核算行：系统已在「预算明细」中给出真实金额，
+     * LLM 在 source_notes 里另写一套数字会与之一致性冲突，故移除核算类说明。
+     * 覆盖：总额/核算/总预算/总和/合计/预算建模/元每间/预算明细/费用估算/应急预留/严格控制在
+     * 等（实测 LLM 会换着花样写：建模/明细/控制在…元内，枚举必须持续补齐）。
+     */
+    private static final List<String> FAKE_BUDGET_PATTERNS =
+            List.of("总额", "核算", "总预算", "总和", "合计", "预算建模", "预算模型", "价格核算",
+                    "元/间", "元×", "预算明细", "费用估算", "费用预估", "价格明细", "总费用",
+                    "应急预留", "严格控制在", "控制在", "均价", "人均");
+
     private void cleanFakeBudgetNotes(Itinerary itinerary) {
         if (itinerary.getSourceNotes() == null) {
             return;
@@ -406,7 +520,7 @@ public class ItineraryValidator {
             if (n == null) {
                 continue;
             }
-            if (n.contains("总额") || n.contains("核算") || n.contains("总预算")) {
+            if (FAKE_BUDGET_PATTERNS.stream().anyMatch(n::contains)) {
                 log.warn("移除 LLM 编造的预算说明：{}", n);
                 continue;
             }
@@ -470,12 +584,25 @@ public class ItineraryValidator {
                     if (self.contains(n) || n.contains(self)) {
                         continue;
                     }
-                    // 排除地理区域通名（"三亚湾""大东海""凤凰岛"等合理提及不算张冠李戴）
-                    if (isGeoName(n)) {
+                    // 地理区域类 POI（"三亚湾""大东海"）互相提及是正常的；
+                    // 但非地理类景点（东坡祠）描述里抄了地理类景点（惠州西湖）仍算错位
+                    if (isGeoName(n) && isGeoName(self)) {
+                        continue;
+                    }
+                    // 排除地理参照表达（"钟楼附近""鼓楼旁边"是位置描述，不是错位内容）
+                    if (isGeoReference(text, n)) {
                         continue;
                     }
                     if (text.contains(n)) {
                         mentioned.add(n);
+                    } else {
+                        // 简称漏检兜底：POI 名去掉"风景区/景区/公园"等后缀后的核心名
+                        //（如"惠州西湖风景名胜区"→"惠州西湖"）。LLM 抄内容常用简称，
+                        // 只匹配完整名会漏（实测：大云寺抄完整名被检出，东坡祠抄简称"惠州西湖"漏检）。
+                        String shortName = normalize(n);
+                        if (shortName.length() >= 2 && !shortName.equals(n) && text.contains(shortName)) {
+                            mentioned.add(shortName);
+                        }
                     }
                 }
                 if (!mentioned.isEmpty()) {
@@ -519,6 +646,110 @@ public class ItineraryValidator {
                         "⚠️ 系统检测：%d 人行程酒店约 %.0f 元/晚（约 %.0f 元/人/晚），可能未按人数分配多间房，请核实",
                         travelers, day.getHotel().getEstimatedCost(), perPersonPerNight));
                 return;
+            }
+        }
+    }
+
+    /**
+     * 预算不符检测：repairBudget 已尝试按用户预算压缩价格，但 LLM 受"不得改名称/结构"
+     * 约束，无法把 POI 真实价格（高档型酒店 800/晚）压到接近 0。修复后若估算仍远超用户预算，
+     * 必须诚实告知用户并给具体建议，否则用户会以为系统真给他安排了"30 元预算的高档型行程"。
+     */
+    private void checkBudgetMismatch(Itinerary itinerary, TripRequest request) {
+        if (request.getBudget() == null || request.getBudget() <= 0
+                || itinerary.getEstimatedBudget() == null) {
+            return;
+        }
+        double userBudget = request.getBudget();
+        double total = itinerary.getEstimatedBudget();
+        if (total <= userBudget * BUDGET_HIGH_RATIO) {
+            return;
+        }
+        double ratio = total / userBudget;
+        String msg;
+        if (ratio > 5) {
+            // 极端不符（如 30 元预算 vs 2735 元行程）——先程序强制降级酒店为经济型，
+            // 再诚实告知剩余缺口与建议（LLM 受"不得改名称"约束压不动 POI 真实价，程序来兜底）
+            int downgraded = downgradeHotelsToEconomy(itinerary);
+            String hotelAction = downgraded > 0
+                    ? String.format("已自动将 %d 晚酒店降为「经济型」（约 200 元/晚）", downgraded)
+                    : "已尝试压缩酒店价格";
+            msg = String.format(
+                    "⚠️ 您的预算 ¥%.0f 远低于行程估算 ¥%.0f（超 %.1f 倍）。%s，"
+                            + "但即使如此仍不足以覆盖行程，建议：① 提高预算；② 缩短行程天数；③ 改为日游不过夜",
+                    userBudget, total, ratio, hotelAction);
+        } else {
+            // 中度不符（1.5~5 倍）——温和提示
+            msg = String.format(
+                    "⚠️ 行程估算 ¥%.0f 已超出您的预算 ¥%.0f 约 %.0f%%。可考虑：提高预算 / 改选更经济的酒店档次 / 减少行程天数",
+                    total, userBudget, (ratio - 1) * 100);
+        }
+        if (itinerary.getSourceNotes() == null) {
+            itinerary.setSourceNotes(new ArrayList<>());
+        }
+        itinerary.getSourceNotes().add(msg);
+    }
+
+    /**
+     * 极端预算不符时的程序兜底：把行程中价格高于经济型上限的酒店强制降为经济型
+     * （约 200 元/晚），level 同步改为「经济型」。返回被降级的晚数。
+     * 随后上层 calculateBudget 会按新价格重算总预算。
+     */
+    private int downgradeHotelsToEconomy(Itinerary itinerary) {
+        int n = 0;
+        if (itinerary.getDays() == null) {
+            return 0;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getHotel() == null) {
+                continue;
+            }
+            HotelItem h = day.getHotel();
+            if (h.getEstimatedCost() != null && h.getEstimatedCost() > 250.0) {
+                h.setEstimatedCost(200.0);
+                if (h.getLevel() != null) {
+                    h.setLevel("经济型");
+                }
+                n++;
+                log.warn("预算严重不符：酒店「{}」强制降为经济型（200/晚）", h.getName());
+            }
+        }
+        return n;
+    }
+
+    /**
+     * 酒店档次与住宿类型一致性校验（通用，不针对任何城市）：
+     * LLM 可能把「青年旅舍/民宿/招待所」标成 舒适型/高档型/豪华型（如"高档型"却选"可见时光·望达斯旅舍"）。
+     * 青旅/民宿/公寓/客栈是经济定位，与高档/豪华档次矛盾 → 程序强制按实际降级为经济型（200/晚）
+     * 并警示，防止用户花高档价住青旅。
+     */
+    private void validateHotelLevelMatch(Itinerary itinerary) {
+        if (itinerary.getDays() == null) {
+            return;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getHotel() == null || day.getHotel().getName() == null) {
+                continue;
+            }
+            HotelItem h = day.getHotel();
+            String level = h.getLevel();
+            if (level == null || level.isBlank()) {
+                continue;
+            }
+            boolean isHighLevel = level.contains("舒适") || level.contains("高档") || level.contains("豪华");
+            boolean isEconomyType = ECONOMY_LODGING_KEYWORDS.stream().anyMatch(h.getName()::contains);
+            if (isHighLevel && isEconomyType) {
+                log.warn("档次不符：{}（{}）实为经济型住宿，强制降为经济型", h.getName(), level);
+                h.setLevel("经济型");
+                if (h.getEstimatedCost() == null || h.getEstimatedCost() > 250) {
+                    h.setEstimatedCost(200.0);
+                }
+                if (itinerary.getSourceNotes() == null) {
+                    itinerary.setSourceNotes(new ArrayList<>());
+                }
+                itinerary.getSourceNotes().add("⚠️ 系统检测：所选住宿「" + h.getName()
+                        + "」为青年旅舍/民宿类（经济定位），与您选择的「" + level + "」不匹配，已按实际调整为经济型（约 200 元/晚）。"
+                        + "如需高档型酒店，建议更换住宿选项");
             }
         }
     }
@@ -605,10 +836,20 @@ public class ItineraryValidator {
                 }
             }
             if (!anyIndoor) {
+                // 无室内候选可换：明确指出哪些是户外景点，避免"建议室内"与户外安排自相矛盾
+                List<String> outdoor = new ArrayList<>();
+                for (SpotItem spot : day.getSpots()) {
+                    if (spot.getName() != null
+                            && INDOOR_KEYWORDS.stream().noneMatch(spot.getName()::contains)) {
+                        outdoor.add(spot.getName());
+                    }
+                }
+                String detail = outdoor.isEmpty() ? ""
+                        : "（户外景点：" + String.join("、", outdoor) + "，雷雨时段请勿前往或改期）";
                 if (day.getNotes() == null) {
                     day.setNotes(new ArrayList<>());
                 }
-                day.getNotes().add("⚠️ 当日天气「" + badWeather + "」恶劣，建议以室内活动为主");
+                day.getNotes().add("⚠️ 当日天气「" + badWeather + "」恶劣，建议以室内活动为主" + detail);
             }
         }
     }
@@ -808,6 +1049,21 @@ public class ItineraryValidator {
             }
         }
         return false;
+    }
+
+    /**
+     * 是否为"地理参照"表达：地点名后紧跟 附近/旁边/旁/一带/周边 等方位词。
+     * 如「回民街地址：莲湖区钟楼附近」中的"钟楼附近"是位置参照，不是把钟楼内容错写到回民街。
+     * 若某景点描述真的混入了"大雁塔"内容（无方位词），仍会被正常检测。
+     */
+    private boolean isGeoReference(String text, String name) {
+        int idx = text.indexOf(name);
+        if (idx < 0) {
+            return false;
+        }
+        String after = text.substring(idx + name.length());
+        return after.startsWith("附近") || after.startsWith("旁边") || after.startsWith("旁")
+                || after.startsWith("一带") || after.startsWith("周边");
     }
 
     /**

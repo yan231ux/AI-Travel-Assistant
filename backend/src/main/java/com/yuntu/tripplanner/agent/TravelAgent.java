@@ -580,8 +580,13 @@ public class TravelAgent {
 
         // 2) 高德定向 POI 查询：把清洗后的特殊需求文本作为关键词精确查一次。
         //    单独存"指定景点"类别，避免被 prepareDataSummary 的每类前 3 条截断。
+        //    【过滤】只保留名称与 cleaned 共享核心词的 POI，避免高德返回大量"相关"但非用户独立指定的
+        //    子地点变体（如"故宫博物院-午门/神武门/钟表馆…"被误当 15 个"指定景点"）；
+        //    【限数】高德定向最多收 3 个进 requestedSpots，避免 requestedSpots 膨胀导致
+        //    checkRequestedSpots 报一堆"未安排"。
         String cleaned = cleanSpecialNotes(request.getSpecialNotes(), request.getDestination());
         if (cleaned.length() >= 2) {
+            String core = cleaned.length() >= 4 ? cleaned.substring(cleaned.length() - 4) : cleaned;
             try {
                 List<Map<String, Object>> pois = amapClient.searchPoi(request.getDestination(), cleaned);
                 if (pois != null && !pois.isEmpty()) {
@@ -598,11 +603,21 @@ public class TravelAgent {
                             }
                         }
                     }
+                    int poiRequestedCount = 0;
+                    final int MAX_POI_REQUESTED = 3;
                     for (Map<String, Object> p : pois) {
                         String n = String.valueOf(p.get("name"));
-                        if (n != null && !"null".equals(n) && names.add(n)) {
-                            merged.add(p);
+                        if (n == null || "null".equals(n) || !names.add(n)) {
+                            continue;
+                        }
+                        // 仅当 POI 名包含用户输入的核心词时，才视为用户真的"指定"了这个景点
+                        if (!n.contains(core)) {
+                            continue;
+                        }
+                        merged.add(p);
+                        if (poiRequestedCount < MAX_POI_REQUESTED) {
                             requested.add(n);
+                            poiRequestedCount++;
                         }
                     }
                     collectedData.getPoiResults().put("指定景点", merged);
@@ -612,9 +627,14 @@ public class TravelAgent {
             }
         }
 
+        // 总体去重 + 上限保护，避免极端情况下 requestedSpots 过长导致校验误报
         if (!requested.isEmpty()) {
-            collectedData.setRequestedSpots(requested.stream().distinct().toList());
-            log.info("用户点名景点（定向查询+攻略匹配）：{}", collectedData.getRequestedSpots());
+            List<String> distinct = requested.stream().distinct().toList();
+            if (distinct.size() > 5) {
+                distinct = distinct.subList(0, 5);
+            }
+            collectedData.setRequestedSpots(distinct);
+            log.info("用户点名景点（定向查询+攻略匹配，限 5）：{}", collectedData.getRequestedSpots());
         }
     }
 

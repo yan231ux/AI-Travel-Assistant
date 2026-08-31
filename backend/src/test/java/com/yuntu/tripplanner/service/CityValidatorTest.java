@@ -206,4 +206,13 @@ class CityValidatorTest {
         assertEquals(1, CityValidator.levenshtein("成堵", "成都"));
         assertEquals(3, CityValidator.levenshtein("abc", "def"));
     }
+
+    @Test
+    void ambiguousTypoResolvedBySimilarChar() {
+        // 「夏门」「奥门」与 厦门/澳门 编辑距离均为 1，靠形近/音近映射决胜而非白名单顺序
+        CityValidator wide = new CityValidator(amapClient, "");
+
+        assertEquals("厦门", wide.validate("夏门").suggestion(), "夏门 → 应建议厦门（而非白名单更靠前的澳门）");
+        assertEquals("澳门", wide.validate("奥门").suggestion(), "奥门 → 应建议澳门（对称场景不能被调序误伤）");
+    }
 }

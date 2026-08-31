@@ -74,20 +74,20 @@ class TravelAgentTest {
 
     @Test
     void runsFullLoopWithFourTraceTypesAndAggregatesTokens() {
-        // 计划轮：LLM 给出 amap_poi + weather_forecast
+        // 计划轮：LLM 给出 amap_poi + weather_forecast。
+        // 注：v1.1 起 reflect 在规则判定足够时不再调用 LLM，因此整个流程只有这一次 LLM 调用。
         when(llmClient.chat(anyString())).thenReturn(
                 new LlmClient.LlmResult(
                         "{\"tools\":[{\"tool\":\"amap_poi\",\"query\":\"成都 景点\"},{\"tool\":\"weather_forecast\"}]}",
-                        10, 5),
-                // 反思轮：数据足够
-                new LlmClient.LlmResult("数据足够", 20, 8));
+                        10, 5));
 
         when(amapClient.searchPoi(anyString(), anyString()))
                 .thenReturn(List.of(Map.of("name", "武侯祠")));
         WeatherForecastResponse weather = new WeatherForecastResponse();
         weather.setDays(List.of(new WeatherForecastResponse.WeatherDay()));
         when(openMeteoClient.getWeatherForecast(any(), any(), any())).thenReturn(weather);
-        when(ragService.isKnownCity(anyString())).thenReturn(false);
+        // RAG 已知城市 → 规则判定足够（POI + RAG + 天气），一轮结束
+        when(ragService.isKnownCity(anyString())).thenReturn(true);
 
         Itinerary itinerary = new Itinerary();
         itinerary.setTripId("trip_成都_2026-05-01");
@@ -107,9 +107,9 @@ class TravelAgentTest {
         assertTrue(actions.contains("assess"), "应包含 assess 轨迹");
         assertTrue(actions.contains("generate"), "应包含 generate 轨迹");
 
-        // think(10) + reflect(20) 聚合到 response.tokenUsage.promptTokens
-        assertEquals(30, response.getTokenUsage().getPromptTokens());
-        assertEquals(13, response.getTokenUsage().getCompletionTokens());
+        // think 仅一次（10/5）：reflect 规则足够时跳过 LLM 反思调用（v1.1 性能优化）
+        assertEquals(10, response.getTokenUsage().getPromptTokens());
+        assertEquals(5, response.getTokenUsage().getCompletionTokens());
     }
 
     @Test

@@ -357,14 +357,20 @@ public class RagService {
 
     /**
      * 从用户特殊需求文本中反向匹配该城市攻略里的景点卡片名。
-     * 匹配规则：卡片名去掉括号注释、去掉城市名前缀后，若其完整名或首/尾 4 字出现在文本中即命中。
-     * 例："我要去四行仓库" 命中卡片「上海四行仓库抗战纪念馆」。
+     * 匹配规则（严格版）：卡片名去掉括号注释、去掉城市名前缀后，用户文本完整包含核心名
+     * 或核心名完整包含用户文本，即视为命中。
+     * 例："我要去四行仓库" 命中卡片「上海四行仓库抗战纪念馆」（核心名包含用户文本）。
+     * 反例（已修）：早期版本用"首/尾 4 字"宽匹配，会把"想去自然博物馆"误中所有含"自然博物馆"的
+     * 卡片（玉见/森邻奇镜/华贝剧场…），导致 requestedSpots 膨胀、checkRequestedSpots 误报大量未安排。
      */
     public List<String> findSpotCardNames(String destination, String text) {
         if (text == null || text.isBlank() || destination == null) {
             return List.of();
         }
         String cleanText = text.replaceAll("[\\s，。、！？；：,.!?;:（）()\"'“”「」]", "");
+        if (cleanText.length() < 2) {
+            return List.of();
+        }
         String city = resolveCity(destination);
         List<String> names = new ArrayList<>();
         for (Map<String, String> chunk : chunks) {
@@ -392,10 +398,8 @@ public class RagService {
             if (core.length() < 2) {
                 continue;
             }
-            boolean hit = cleanText.contains(core)                       // 用户文本包含核心名（"武康路""自然博物馆"）
-                    || core.contains(cleanText)                          // 用户说了完整名（"上海自然博物馆静安馆"）
-                    || core.length() >= 4 && cleanText.contains(core.substring(0, 4))          // 只说了前段（"去四行仓库"）
-                    || core.length() >= 4 && cleanText.contains(core.substring(core.length() - 4)); // 只说了后段
+            // 严格匹配：用户文本完整包含核心名，或核心名完整包含用户文本（去停用词后仍整体包含）
+            boolean hit = cleanText.contains(core) || core.contains(cleanText);
             if (hit && !names.contains(cardName)) {
                 names.add(cardName);
             }
