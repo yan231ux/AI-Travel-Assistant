@@ -369,4 +369,37 @@ class ItineraryValidatorTest {
                 n.contains("已超出您的预算") && !n.contains("远低")),
                 "中度不符应给温和提示（不应用「远低」措辞）");
     }
+
+    @Test
+    void dedupeCrossSpotImageAndAddressReuse() {
+        // 惠州实测：高德把「博物馆」「大云寺」的图和地址都串成了「惠州西湖」的
+        //（名称含"博物馆""大云寺"挡不住 pickBestPlace）——行程级兜底必须清理串用
+        DayPlan d1 = day(1);
+        SpotItem xihu = spot("惠州西湖", "环城西路2号");
+        xihu.setImageUrl("http://xihu.jpg");
+        SpotItem museum = spot("惠州博物馆", "环城西路2号");
+        museum.setImageUrl("http://xihu.jpg");   // 串用西湖图
+        SpotItem dayun = spot("大云寺", "环城西路2号");
+        dayun.setImageUrl("http://xihu.jpg");     // 串用西湖图
+        d1.getSpots().addAll(List.of(xihu, museum, dayun));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1));
+        it.setSourceNotes(new ArrayList<>());
+
+        // poi 池为空 → 隔离验证"行程级 dedupe 兜底"本身（不依赖 verifySpotAddresses 的 POI 映射）
+        validator.validateAndRepair(it, request("惠州"), collectedWithPoi(Map.of(), null));
+
+        // 首个（owner=西湖）保持原样
+        assertEquals("http://xihu.jpg", xihu.getImageUrl());
+        assertEquals("环城西路2号", xihu.getAddress());
+        // 复用者：图片清空、地址标待核实
+        assertNull(museum.getImageUrl(), "博物馆串用的西湖图应被清空");
+        assertEquals("（地址待核实）", museum.getAddress(), "博物馆串用的西湖地址应标待核实");
+        assertNull(dayun.getImageUrl(), "大云寺串用的西湖图应被清空");
+        assertEquals("（地址待核实）", dayun.getAddress(), "大云寺串用的西湖地址应标待核实");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("数据交叉校验")),
+                "应在来源说明汇总交叉校验结果");
+    }
 }

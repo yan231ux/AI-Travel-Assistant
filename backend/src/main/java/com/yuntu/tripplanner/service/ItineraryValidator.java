@@ -280,6 +280,11 @@ public class ItineraryValidator {
 
         // 10. 点名景点校验：用户明确要求的景点必须安排进行程，未安排的明确告知原因
         checkRequestedSpots(itinerary, collectedData);
+
+        // 11. 行程级图片/地址串用去重兜底（张冠李戴最后一道防线，不依赖高德 POI 池）：
+        //     同一行程中多个"名称明显不同"的景点却共用同一张图或同一地址，说明被串用，
+        //     实测惠州「博物馆/大云寺」都复用了「惠州西湖」的图与地址；直接清空复用者图片、地址标待核实。
+        dedupeCrossSpotMedia(itinerary);
     }
 
     /**
@@ -1093,6 +1098,83 @@ public class ItineraryValidator {
             }
         }
         return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    /**
+     * 行程级图片/地址串用去重兜底（张冠李戴最后一道防线，不依赖高德 POI 池）。
+     * <p>当同一行程中多个景点"名称明显不同"却共用同一张图片 URL 或同一地址时，说明图片/地址被串用
+     * （实测：惠州「博物馆」「大云寺」都复用了「惠州西湖」的图与地址——高德自身把这类搜索结果和景区混在一起返回）。
+     * 处理：复用者图片直接清空（宁缺毋错，不显示错图）、地址标为待核实，并在 sourceNotes 汇总告知。
+     * <p>名称互为包含关系（同一景点不同称呼，如"西湖"与"惠州西湖"）视为同一景点，不处理；
+     * 地址维度额外排除地理通名结尾的景点（如"西湖"），避免误伤大景区内多个子景点共用大区域地址的情况。
+     */
+    private void dedupeCrossSpotMedia(Itinerary itinerary) {
+        List<SpotItem> all = new ArrayList<>();
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() != null) {
+                all.addAll(day.getSpots());
+            }
+        }
+        if (all.size() < 2) {
+            return;
+        }
+
+        List<String> warned = new ArrayList<>();
+
+        // 1) 图片去重：同一 imageUrl 被 ≥2 个不同景点使用 → 复用者清空图片
+        Map<String, SpotItem> imgOwner = new HashMap<>();
+        for (SpotItem spot : all) {
+            String img = spot.getImageUrl();
+            if (img == null || img.isBlank()) {
+                continue;
+            }
+            SpotItem owner = imgOwner.get(img);
+            if (owner == null) {
+                imgOwner.put(img, spot);
+            } else if (!namesRelated(owner.getName(), spot.getName())) {
+                log.warn("图片串用兜底：{}↔{} 共用同一图片，已清空后者", owner.getName(), spot.getName());
+                spot.setImageUrl(null);
+                warned.add("图片：「" + spot.getName() + "」与「" + owner.getName() + "」疑似串用，已移除");
+            }
+        }
+
+        // 2) 地址去重：同一 address 被 ≥2 个不同景点使用 → 复用者地址标待核实
+        Map<String, SpotItem> addrOwner = new HashMap<>();
+        for (SpotItem spot : all) {
+            String addr = spot.getAddress();
+            if (addr == null || addr.isBlank() || addr.equals("（地址待核实）")) {
+                continue;
+            }
+            SpotItem owner = addrOwner.get(addr);
+            if (owner == null) {
+                addrOwner.put(addr, spot);
+            } else if (!namesRelated(owner.getName(), spot.getName())) {
+                log.warn("地址串用兜底：{}↔{} 共用地址「{}」，后者标待核实", owner.getName(), spot.getName(), addr);
+                spot.setAddress("（地址待核实）");
+                warned.add("地址：「" + spot.getName() + "」与「" + owner.getName()
+                        + "」疑似共用「" + addr + "」，已标待核实");
+            }
+        }
+
+        if (!warned.isEmpty()) {
+            if (itinerary.getSourceNotes() == null) {
+                itinerary.setSourceNotes(new ArrayList<>());
+            }
+            itinerary.getSourceNotes().add("🔧 数据交叉校验：发现并修复 " + warned.size()
+                    + " 处景点图片/地址串用（" + String.join("；", warned) + "）");
+        }
+    }
+
+    /** 两景点名是否"指向同一地点"（互为包含）→ 视为同一景点，不去重 */
+    private boolean namesRelated(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        String na = normalize(a), nb = normalize(b);
+        if (na.isEmpty() || nb.isEmpty()) {
+            return false;
+        }
+        return na.equals(nb) || na.contains(nb) || nb.contains(na);
     }
 
     /** 提取文本中的 JSON（第一个 { 到最后一个 }） */
