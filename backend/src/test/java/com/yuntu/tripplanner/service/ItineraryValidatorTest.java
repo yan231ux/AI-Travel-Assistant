@@ -402,4 +402,56 @@ class ItineraryValidatorTest {
         assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("数据交叉校验")),
                 "应在来源说明汇总交叉校验结果");
     }
+
+    @Test
+    void warnsWhenHotelFarFromAllSpots() {
+        // 惠州实测：酒店选在惠东巽寮湾(海边)，景点全在惠城区/博罗，跨县约 50km+ → 应警示
+        DayPlan d1 = day(1);
+        SpotItem xihu = spot("西湖景区", "环城西路2号");
+        xihu.setLatitude(23.11); xihu.setLongitude(114.39);
+        SpotItem honghua = spot("红花湖", "上排红花湖路92号");
+        honghua.setLatitude(23.10); honghua.setLongitude(114.38);
+        d1.getSpots().addAll(List.of(xihu, honghua));
+
+        HotelItem hotel = new HotelItem();
+        hotel.setName("惠东巽寮湾屿海云天假日酒店");
+        hotel.setLatitude(22.68); hotel.setLongitude(114.85); // 惠东县海边，距城区~60km
+        d1.setHotel(hotel);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("惠州"), collectedWithPoi(Map.of(), null));
+
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("酒店") && n.contains("公里")),
+                "酒店距所有景点过远时应警示跨片区");
+    }
+
+    @Test
+    void noWarnWhenHotelNearSpots() {
+        // 同在城市片区内（酒店就在景点附近）→ 不应误报
+        DayPlan d1 = day(1);
+        SpotItem xihu = spot("西湖景区", "环城西路2号");
+        xihu.setLatitude(23.11); xihu.setLongitude(114.39);
+        SpotItem honghua = spot("红花湖", "上排红花湖路92号");
+        honghua.setLatitude(23.10); honghua.setLongitude(114.38);
+        d1.getSpots().addAll(List.of(xihu, honghua));
+
+        HotelItem hotel = new HotelItem();
+        hotel.setName("惠州西湖某酒店");
+        hotel.setLatitude(23.12); hotel.setLongitude(114.40); // 城区内，距景点<5km
+        d1.setHotel(hotel);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("惠州"), collectedWithPoi(Map.of(), null));
+
+        assertFalse(it.getSourceNotes().stream().anyMatch(n -> n.contains("距行程主要景点")),
+                "酒店就在景点附近不应误报跨片区");
+    }
 }

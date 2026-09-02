@@ -627,6 +627,12 @@ public class TravelAgent {
             }
         }
 
+        // 3) 用户需求中的地名片段提取（兜底）：用户说"体验红花湖骑行"时"红花湖"应作为必安排点。
+        //    轻量规则：提取含地理通名的 2-8 字片段（湖/山/寺/园/景区/岛/湾…），
+        //    避免只靠攻略/高德匹配漏掉用户口语里的地点（惠州实测：用户要"红花湖骑行"却生成了"海洋馆"）；
+        //    由 checkRequestedSpots 兜底：若模型未落实则提示"未能安排"，禁止静默忽略。
+        requested.addAll(extractMentionedPlaces(request.getSpecialNotes()));
+
         // 总体去重 + 上限保护，避免极端情况下 requestedSpots 过长导致校验误报
         if (!requested.isEmpty()) {
             List<String> distinct = requested.stream().distinct().toList();
@@ -634,8 +640,26 @@ public class TravelAgent {
                 distinct = distinct.subList(0, 5);
             }
             collectedData.setRequestedSpots(distinct);
-            log.info("用户点名景点（定向查询+攻略匹配，限 5）：{}", collectedData.getRequestedSpots());
+            log.info("用户点名景点（定向查询+攻略匹配+口语地名，限 5）：{}", collectedData.getRequestedSpots());
         }
+    }
+
+    /** 从用户需求文本轻量提取地名片段（含地理通名的 2-8 字），作为必安排点兜底层 */
+    private List<String> extractMentionedPlaces(String text) {
+        List<String> out = new ArrayList<>();
+        if (text == null || text.isBlank()) {
+            return out;
+        }
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "[\\u4e00-\\u9fa5]{1,6}(湖|山|寺|庙|园|景区|古城|古镇|老街|海滨|海岛|岛|湾|谷|草原|森林|江|河|瀑布|温泉|动物园|植物园|博物馆|纪念馆|书院|阁|塔|楼|关|洞|寨)");
+        java.util.regex.Matcher m = p.matcher(text);
+        while (m.find()) {
+            String name = m.group().trim();
+            if (name.length() >= 2) {
+                out.add(name);
+            }
+        }
+        return out;
     }
 
     /**

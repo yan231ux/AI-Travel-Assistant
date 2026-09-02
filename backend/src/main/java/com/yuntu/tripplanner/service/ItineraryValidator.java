@@ -85,6 +85,9 @@ public class ItineraryValidator {
     private static final double BUDGET_LOW_RATIO = 0.3;
     private static final double BUDGET_HIGH_RATIO = 1.5;
 
+    /** 酒店位置合理性阈值(km)：酒店到"所有"景点距离均超过此值 → 视为跨片区，警示 */
+    private static final double HOTEL_FAR_KM = 30.0;
+
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final RagService ragService;
@@ -285,6 +288,10 @@ public class ItineraryValidator {
         //     同一行程中多个"名称明显不同"的景点却共用同一张图或同一地址，说明被串用，
         //     实测惠州「博物馆/大云寺」都复用了「惠州西湖」的图与地址；直接清空复用者图片、地址标待核实。
         dedupeCrossSpotMedia(itinerary);
+
+        // 12. 酒店位置合理性：酒店经纬度与景点集群差距过大（跨区/跨县）→ 警示，
+        //     避免"住海边却玩城区"这类行程内地理不自洽（惠州实测：酒店选在惠东巽寮湾，景点全在惠城区/博罗）
+        checkHotelLocation(itinerary);
     }
 
     /**
@@ -1175,6 +1182,73 @@ public class ItineraryValidator {
             return false;
         }
         return na.equals(nb) || na.contains(nb) || nb.contains(na);
+    }
+
+    /**
+     * 酒店位置合理性校验（通用，不依赖具体城市）：酒店与各景点都有高德经纬度时，
+     * 若酒店到"所有"景点的距离都超过阈值（默认 30km），说明酒店与行程景点不在同一片区
+     * （如惠州实测：酒店选在惠东巽寮湾海边，景点全在惠城区/博罗县，跨县约 50km+），
+     * 主动警示让用户确认，避免"住海边却玩城区"的地理不自洽。
+     * 不强制改（用户可能确实想住某片区），只警示；景点/酒店经纬度不足时不误报。
+     */
+    private void checkHotelLocation(Itinerary itinerary) {
+        if (itinerary.getDays() == null) {
+            return;
+        }
+        // 收集有经纬度的景点（高德补全）
+        List<SpotItem> located = new ArrayList<>();
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() != null) {
+                for (SpotItem s : day.getSpots()) {
+                    if (s.getLatitude() != null && s.getLongitude() != null) {
+                        located.add(s);
+                    }
+                }
+            }
+        }
+        // 取第一个有经纬度的酒店
+        HotelItem hotel = null;
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getHotel() != null && day.getHotel().getLatitude() != null
+                    && day.getHotel().getLongitude() != null) {
+                hotel = day.getHotel();
+                break;
+            }
+        }
+        if (hotel == null || located.size() < 2) {
+            return; // 数据不足，不误报
+        }
+
+        boolean allFar = true;
+        double nearest = Double.MAX_VALUE;
+        for (SpotItem s : located) {
+            double d = haversineKm(hotel.getLatitude(), hotel.getLongitude(), s.getLatitude(), s.getLongitude());
+            nearest = Math.min(nearest, d);
+            if (d <= HOTEL_FAR_KM) {
+                allFar = false;
+                break;
+            }
+        }
+        if (allFar && nearest > HOTEL_FAR_KM) {
+            log.warn("酒店位置校验：{} 距行程主要景点约 {:.0f}km，疑似跨片区", hotel.getName(), nearest);
+            if (itinerary.getSourceNotes() == null) {
+                itinerary.setSourceNotes(new ArrayList<>());
+            }
+            itinerary.getSourceNotes().add(String.format(
+                    "⚠️ 系统检测：酒店「%s」距行程主要景点约 %.0f 公里（可能不在同一片区），请确认是否需要调整位置",
+                    hotel.getName(), nearest));
+        }
+    }
+
+    /** 球面距离（km），用于酒店-景点地理一致性判断 */
+    private static double haversineKm(double lat1, double lng1, double lat2, double lng2) {
+        final int R = 6371;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLng = Math.toRadians(lng2 - lng1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     /** 提取文本中的 JSON（第一个 { 到最后一个 }） */

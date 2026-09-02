@@ -23,4 +23,10 @@ public class HotelItem {
     
     @JsonProperty("address")
     private String address;
+    
+    @JsonProperty("latitude")
+    private Double latitude;
+    
+    @JsonProperty("longitude")
+    private Double longitude;
 }

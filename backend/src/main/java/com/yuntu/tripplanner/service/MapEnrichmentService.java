@@ -156,6 +156,13 @@ public class MapEnrichmentService {
         if (amapHotelAddress != null && !amapHotelAddress.isBlank()) {
             hotel.setAddress(amapHotelAddress);
         }
+        // 酒店经纬度同样补全（供校验层判断"酒店是否离景点过远"，如惠州实测住海边却玩城区）
+        Double lat = (Double) place.get("latitude");
+        Double lng = (Double) place.get("longitude");
+        if (lat != null && lng != null) {
+            hotel.setLatitude(lat);
+            hotel.setLongitude(lng);
+        }
         return true;
     }
 
