@@ -542,9 +542,14 @@ public class ItineraryValidator {
     }
 
     /**
-     * 景点描述/地址交叉检测：LLM 常把其他景点/酒店的内容写进某景点的 description
-     * （如给"博物馆"写"综合度假村、贡多拉游船"）。若描述或地址中出现 POI 池/其他景点/酒店的名称
-     * （且非自身），在当天 notes 加警示，不篡改内容。
+     * 景点描述交叉检测：LLM 常把其他景点/酒店的内容整句写进某景点的 description
+     * （如给"苍山"写"大雁塔是玄奘为保存佛经而建…"）。
+     * 只删除"以其他地点名为主语、整句介绍该地点属性"的抄写句（主语位判定）——
+     * "可俯瞰大理古城""比大理古城低8℃""才村→磻溪村→喜洲这一段最美"等句中，
+     * 其他地点名只是参照对象、不占主语位，属正常地理语境（有 RAG 城市攻略原文常见），保留；
+     * 命中真串用时删句并警示。不篡改合法内容、不扫当天备注（备注多为把多个地点串起来的行程描述）。
+     * 地址级错配由 POI 地址覆盖/占用校验与行程级图址去重兜底，不在此重复扫描
+     * （否则会误伤高德真实地址中合法出现的村/镇/路等地名）。
      */
     private void checkDescriptionMismatch(Itinerary itinerary, List<String> poiSpotNames,
                                           Map<String, String> poiAddressMap) {
@@ -580,57 +585,56 @@ public class ItineraryValidator {
                     continue;
                 }
                 String self = spot.getName();
-                List<String> mentioned = new ArrayList<>();
-                // 描述、地址与当日备注都可能被混入其他地点名（LLM 常把错位内容写进备注）
-                String text = (spot.getDescription() == null ? "" : spot.getDescription())
-                        + (spot.getAddress() == null ? "" : spot.getAddress())
-                        + (day.getNotes() == null ? "" : String.join(" ", day.getNotes()));
-                if (text.isBlank()) {
+                String desc = spot.getDescription();
+                if (desc == null || desc.isBlank()) {
                     continue;
                 }
+                // 候选：行程/POI 中其他地点名（含去掉"景区/古镇"等后缀的简称，如
+                // POI"惠州西湖风景名胜区"→"惠州西湖"，描述写简称也能检出）。排除自身
+                //（含互为包含/规范化同名）与"双地理区互提"（三亚湾提大东海属正常）。
+                List<String> candidates = new ArrayList<>();
                 for (String n : knownNames) {
                     if (n == null || n.isBlank()) {
                         continue;
                     }
-                    // 排除自身（描述提到自己的名字是正常的）
                     if (self.contains(n) || n.contains(self)) {
                         continue;
                     }
-                    // 地理区域类 POI（"三亚湾""大东海"）互相提及是正常的；
-                    // 但非地理类景点（东坡祠）描述里抄了地理类景点（惠州西湖）仍算错位
                     if (isGeoName(n) && isGeoName(self)) {
                         continue;
                     }
-                    // 排除地理参照表达（"钟楼附近""鼓楼旁边"是位置描述，不是错位内容）
-                    if (isGeoReference(text, n)) {
-                        continue;
+                    if (!candidates.contains(n)) {
+                        candidates.add(n);
                     }
-                    if (text.contains(n)) {
-                        mentioned.add(n);
-                    } else {
-                        // 简称漏检兜底：POI 名去掉"风景区/景区/公园"等后缀后的核心名
-                        //（如"惠州西湖风景名胜区"→"惠州西湖"）。LLM 抄内容常用简称，
-                        // 只匹配完整名会漏（实测：大云寺抄完整名被检出，东坡祠抄简称"惠州西湖"漏检）。
-                        String shortName = normalize(n);
-                        if (shortName.length() >= 2 && !shortName.equals(n) && text.contains(shortName)) {
-                            mentioned.add(shortName);
-                        }
+                    String shortForm = normalize(n);
+                    if (!shortForm.isEmpty() && !shortForm.equals(n)
+                            && !self.contains(shortForm) && !shortForm.contains(self)
+                            && !(isGeoName(shortForm) && isGeoName(self))
+                            && !candidates.contains(shortForm)) {
+                        candidates.add(shortForm);
                     }
                 }
-                if (!mentioned.isEmpty()) {
-                    // 降级：删除描述中涉及其他地点名的句子，避免张冠李戴直接输出
-                    String cleaned = stripMentioned(spot.getDescription(), mentioned);
-                    if (cleaned != null && !cleaned.isBlank()) {
-                        spot.setDescription(cleaned);
-                    } else {
-                        spot.setDescription("（该景点简介暂未匹配到真实资料，请参考官方介绍）");
-                    }
-                    if (day.getNotes() == null) {
-                        day.setNotes(new ArrayList<>());
-                    }
-                    day.getNotes().add("⚠️ 景点「" + self + "」的描述或地址疑似混入其他地点内容（提及："
-                            + String.join("、", mentioned) + "），已自动修正描述，请核实");
+                if (candidates.isEmpty()) {
+                    continue;
                 }
+                // 只删"以其他地点名为主语、整句介绍该地点"的抄写句（主语位判定）；
+                // "可俯瞰大理古城""比大理古城低8℃""才村→磻溪村→喜洲这一段最美"等
+                // 合法地理语境中，其他地点名不占主语位，一律保留。
+                List<String> removed = new ArrayList<>();
+                String cleaned = stripSubjectCopies(desc, candidates, removed);
+                if (cleaned == null || cleaned.isBlank()) {
+                    spot.setDescription("（该景点简介暂未匹配到真实资料，请参考官方介绍）");
+                } else if (!cleaned.equals(desc)) {
+                    spot.setDescription(cleaned);
+                }
+                if (removed.isEmpty()) {
+                    continue; // 未删任何抄写句（正常数据 no-op），不加警示
+                }
+                if (day.getNotes() == null) {
+                    day.setNotes(new ArrayList<>());
+                }
+                day.getNotes().add("⚠️ 景点「" + self + "」的描述疑似混入其他地点内容（提及："
+                        + String.join("、", removed) + "），已自动清理，请核实");
             }
         }
     }
@@ -1064,25 +1068,15 @@ public class ItineraryValidator {
     }
 
     /**
-     * 是否为"地理参照"表达：地点名后紧跟 附近/旁边/旁/一带/周边 等方位词。
-     * 如「回民街地址：莲湖区钟楼附近」中的"钟楼附近"是位置参照，不是把钟楼内容错写到回民街。
-     * 若某景点描述真的混入了"大雁塔"内容（无方位词），仍会被正常检测。
+     * 删除"主语抄写句"：某句话以"其他地点名"为主语、通篇描述该地点自身的属性
+     * （如给苍山写"大理古城是文献名邦…"），即 LLM 把别处内容整句抄进本景点简介 → 删整句。
+     * <p>与旧版"句子中出现其他地点名就删"不同：合法地理语境句
+     * （"可俯瞰大理古城""比大理古城低8-10°C""骑行途经喜洲古镇"等）中
+     * 其他地点名只是参照对象、不占主语位，会被保留——解决有 RAG 城市攻略原文被误删的问题。
+     *
+     * @return 清理后的描述；整段都被判定为抄写时返回 null（调用方降级为"暂未匹配真实资料"）
      */
-    private boolean isGeoReference(String text, String name) {
-        int idx = text.indexOf(name);
-        if (idx < 0) {
-            return false;
-        }
-        String after = text.substring(idx + name.length());
-        return after.startsWith("附近") || after.startsWith("旁边") || after.startsWith("旁")
-                || after.startsWith("一带") || after.startsWith("周边");
-    }
-
-    /**
-     * 删除描述中提及「其他地点名」的句子，仅保留围绕本景点自身的描述。
-     * 用于张冠李戴降级：命中疑似混入时，先剥离错误句子，避免直接输出错误内容。
-     */
-    private String stripMentioned(String description, List<String> mentioned) {
+    private String stripSubjectCopies(String description, List<String> mentioned, List<String> removed) {
         if (description == null) {
             return null;
         }
@@ -1095,9 +1089,11 @@ public class ItineraryValidator {
             }
             boolean bad = false;
             for (String m : mentioned) {
-                if (t.contains(m)) {
+                if (isSubjectCopy(t, m)) {
                     bad = true;
-                    break;
+                    if (!removed.contains(m)) {
+                        removed.add(m);
+                    }
                 }
             }
             if (!bad) {
@@ -1105,6 +1101,34 @@ public class ItineraryValidator {
             }
         }
         return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    /**
+     * 判断句子是否是"以其他地点为主语的抄写句"：
+     * 句子（去掉前导连接词/标点后）以该地点名开头，且其后紧跟该地点的属性描述词
+     * （是/位于/有/始建于…），说明整句在介绍"那个地点"而非本景点 → 属于串用。
+     * 反过来，若该名字不是句首主语（前面还有 俯瞰/远眺/比/距/骑行至 等参照成分，
+     * 如"可俯瞰大理古城""比大理古城低8℃"），属于正常地理语境，予以保留。
+     * 注意：候选名已含去后缀简称（惠州西湖风景名胜区→惠州西湖），句首是简称同样可命中。
+     * 距离/距/车程 等虽出现在名字之后，却描述"两地的相对距离"（关系语境），不列入删词。
+     */
+    private boolean isSubjectCopy(String sentence, String name) {
+        if (sentence == null || name == null || name.isEmpty()) {
+            return false;
+        }
+        // 去掉前导的连接词/标点（"另外，""同时，"等），看真正的主语
+        String core = sentence.replaceFirst("^[，。；、：\\s]*((另外|同时|此外|然后|接着|随后|最后|其中|比如|例如)[，,、]?)?\\s*", "");
+        if (!core.startsWith(name)) {
+            return false;
+        }
+        String after = core.substring(name.length());
+        // 紧接其后的若是"自身属性描述词"，说明整句是在介绍该地点本身
+        return after.startsWith("是") || after.startsWith("位于") || after.startsWith("坐落")
+                || after.startsWith("始建于") || after.startsWith("建于") || after.startsWith("因")
+                || after.startsWith("被") || after.startsWith("有") || after.startsWith("以")
+                || after.startsWith("拥有") || after.startsWith("其") || after.startsWith("门票")
+                || after.startsWith("面积") || after.startsWith("占地")
+                || after.startsWith("从") || after.startsWith("在");
     }
 
     /**

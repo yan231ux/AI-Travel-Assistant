@@ -454,4 +454,51 @@ class ItineraryValidatorTest {
         assertFalse(it.getSourceNotes().stream().anyMatch(n -> n.contains("距行程主要景点")),
                 "酒店就在景点附近不应误报跨片区");
     }
+
+    @Test
+    void keepsRelationalDescriptionsButRemovesTrueSubjectCopies() {
+        // 大理实测修复：攻略原文里"提到其他地点但只是地理参照"的句子曾被整句误删——
+        // "可俯瞰大理古城""比大理古城低8-10°C""才村→磻溪村→喜洲古镇这一段最美"。
+        // 新逻辑按"主语位"判定：其他地点名不占句首主语位 → 合法语境保留；
+        // 真正以其他地点为主语、整句介绍该地点的抄写（三塔简介混入"大理古城是南诏都城…"）仍清理。
+        DayPlan d1 = day(1);
+        SpotItem cangshan = spot("苍山", "大理市大理镇");
+        cangshan.setDescription("苍山十九峰连绵，可俯瞰大理古城与洱海全景。山顶气温比大理古城低8-10°C，建议带外套。");
+        SpotItem langdao = spot("洱海生态廊道", "大理市银桥镇磻溪村");
+        langdao.setDescription("才村→磻溪村→喜洲古镇这一段是廊道风景最好的路段，全程约46公里。骑行是最佳打开方式。");
+        SpotItem santata = spot("崇圣寺三塔", "大理市三塔路");
+        santata.setDescription("大理古城是南诏与大理国的都城，素有文献名邦之称。");
+        d1.getSpots().addAll(List.of(cangshan, langdao, santata));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("大理");
+        it.setDays(List.of(d1));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> poi = Map.of("景点", List.of(
+                Map.of("name", "大理古城", "address", "大理市复兴路"),
+                Map.of("name", "苍山", "address", "大理市大理镇"),
+                Map.of("name", "洱海生态廊道", "address", "大理市银桥镇磻溪村"),
+                Map.of("name", "崇圣寺三塔", "address", "大理市三塔路"),
+                Map.of("name", "才村", "address", "大理市大理镇才村"),
+                Map.of("name", "磻溪村", "address", "大理市银桥镇磻溪村"),
+                Map.of("name", "喜洲古镇", "address", "大理市喜洲镇")));
+        validator.validateAndRepair(it, request("大理"), collectedWithPoi(poi, null));
+
+        // 合法地理语境句全部保留
+        assertTrue(cangshan.getDescription().contains("可俯瞰大理古城"),
+                "「可俯瞰大理古城」是合法视角语境，不得删");
+        assertTrue(cangshan.getDescription().contains("比大理古城低"),
+                "「比大理古城低8-10°C」是合法对比语境，不得删");
+        assertTrue(langdao.getDescription().contains("才村→磻溪村→喜洲古镇"),
+                "「才村→磻溪村→喜洲古镇这一段最美」是合法路线语境，不得删");
+        // 真正的主语位抄写句仍被清理
+        assertFalse(santata.getDescription().contains("大理古城"),
+                "「大理古城是南诏都城…」是以其他景点为主语的整句抄写，必须清理");
+        // 警示只针对真串用，不误伤保留句
+        assertTrue(d1.getNotes().stream().anyMatch(n -> n.contains("崇圣寺三塔") && n.contains("疑似混入")),
+                "真串用应报警示");
+        assertFalse(d1.getNotes().stream().anyMatch(n -> n.contains("苍山」") || n.contains("洱海生态廊道」")),
+                "合法语境景点不应被误报警示");
+    }
 }

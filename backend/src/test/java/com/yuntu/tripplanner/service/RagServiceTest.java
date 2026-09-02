@@ -9,6 +9,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -75,5 +76,18 @@ class RagServiceTest {
         // 向量检索结果带"相关度"标记，关键词结果不带
         assertTrue(results.get(0).contains("相关度"));
         assertEquals(123, usage.getEmbeddingPromptTokens());
+    }
+
+    @Test
+    void findsSunPalaceCardFromDaliGuide() {
+        // 大理实测修复：LLM 曾把「杨丽萍太阳宫」地址错配成西岸"才村路"——攻略库原无该卡片，
+        // 事实锚定落空、无法纠正。新增 2.14 卡片后必须能命中，并把真实位置
+        //（双廊镇玉几岛，洱海东岸）回写给行程。
+        Map<String, String> card = ragService.findSpotCard("大理", "杨丽萍太阳宫");
+        assertNotNull(card, "攻略库须含「杨丽萍太阳宫」卡片");
+        assertEquals("大理市双廊镇玉几岛", card.get("location"),
+                "太阳宫真实位置在双廊镇玉几岛（东岸），必须事实回写");
+        assertTrue(card.containsKey("intro") && !card.get("intro").isBlank(),
+                "卡片应含可回写的简介");
     }
 }
