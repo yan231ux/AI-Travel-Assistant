@@ -52,6 +52,15 @@ watch(
 const showHeroImage = computed(() => !!props.item.image_url && !heroImgFailed.value);
 const showTags = computed(() => (props.item.tags || []).slice(0, 3));
 
+/**
+ * 个性化匹配度百分比：仅当有确定性推荐理由（personalized 排序产物）才展示，
+ * 无画像的热门/城市精选流不显示，避免"假装强个性化"（UI 方案 §6.4）。
+ */
+const matchPercent = computed<number | null>(() => {
+  if (!props.item.recommend_reason || typeof props.item.score !== "number") return null;
+  return Math.round(Math.min(1, Math.max(0, props.item.score)) * 100);
+});
+
 /* ---------- 收藏（幂等；busy 防重复点击） ---------- */
 const collected = ref(!!props.item.is_collected);
 const favBusy = ref(false);
@@ -167,13 +176,17 @@ function addToPlan() {
         <span class="spot-card__city">{{ item.city }}</span>
       </div>
 
+      <div v-if="matchPercent !== null" class="spot-card__match">
+        与你的偏好匹配度 {{ matchPercent }}%
+      </div>
+
       <div v-if="showTags.length" class="spot-card__tags">
         <span v-for="t in showTags" :key="t" class="spot-card__tag">{{ t }}</span>
       </div>
 
       <p v-if="item.description && !compact" class="spot-card__desc">{{ item.description }}</p>
 
-      <p v-if="item.recommend_reason" class="spot-card__reason">🎯 {{ item.recommend_reason }}</p>
+      <p v-if="item.recommend_reason" class="spot-card__reason">{{ item.recommend_reason }}</p>
     </div>
 
     <!-- 反馈操作条 -->
@@ -225,15 +238,17 @@ function addToPlan() {
 .spot-card {
   display: flex;
   flex-direction: column;
-  background: #FFFFFF;
-  border-radius: 14px;
+  background: var(--surface-white);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  transition: box-shadow 0.2s ease;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s ease, transform 0.15s var(--ease);
 }
 
 .spot-card:hover {
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .spot-card__hero {
@@ -256,10 +271,10 @@ function addToPlan() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #dbe7f5, #e8f0fb);
+  background: linear-gradient(135deg, rgba(47, 119, 112, 0.1), rgba(230, 184, 92, 0.09));
   font-size: 40px;
   font-weight: 700;
-  color: #b7c9e0;
+  color: rgba(47, 119, 112, 0.35);
 }
 
 .badge {
@@ -274,9 +289,9 @@ function addToPlan() {
   backdrop-filter: blur(4px);
 }
 
-.badge--verified { background: rgba(52, 199, 89, 0.92); }
-.badge--guide { background: rgba(0, 122, 255, 0.92); }
-.badge--poi { background: rgba(142, 142, 147, 0.85); }
+.badge--verified { background: var(--success); }
+.badge--guide { background: var(--brand-teal); }
+.badge--poi { background: rgba(23, 33, 31, 0.55); }
 
 .spot-card__body {
   padding: 12px 14px 6px;
@@ -294,7 +309,7 @@ function addToPlan() {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1C1C1E;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -302,8 +317,22 @@ function addToPlan() {
 
 .spot-card__city {
   font-size: 12px;
-  color: #8E8E93;
+  color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* 个性化匹配度徽标（仅 personalized 排序产物展示，UI 方案 §6.4） */
+.spot-card__match {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(217, 119, 93, 0.1);
+  color: var(--brand-coral);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
 }
 
 .spot-card__tags {
@@ -316,8 +345,8 @@ function addToPlan() {
 .spot-card__tag {
   padding: 2px 8px;
   border-radius: 10px;
-  background: rgba(0, 122, 255, 0.07);
-  color: #185FA5;
+  background: rgba(47, 119, 112, 0.07);
+  color: var(--brand-deep);
   font-size: 11px;
 }
 
@@ -325,7 +354,7 @@ function addToPlan() {
   margin: 8px 0 0;
   font-size: 12.5px;
   line-height: 1.6;
-  color: #6E6E73;
+  color: var(--text-secondary);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -336,8 +365,8 @@ function addToPlan() {
   margin: 8px 0 0;
   font-size: 12px;
   line-height: 1.5;
-  color: #185FA5;
-  background: rgba(0, 122, 255, 0.05);
+  color: var(--brand-deep);
+  background: rgba(47, 119, 112, 0.06);
   border-radius: 8px;
   padding: 5px 8px;
 }
@@ -349,12 +378,12 @@ function addToPlan() {
 }
 
 .act {
-  border: 1px solid #E2E2E7;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 12px;
-  background: #FFFFFF;
-  color: #3C3C43;
+  background: var(--surface-white);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -362,22 +391,22 @@ function addToPlan() {
 .act:active { transform: scale(0.96); }
 .act:disabled { opacity: 0.6; cursor: default; }
 
-.act--plan { color: #007AFF; border-color: rgba(0, 122, 255, 0.35); }
-.act--fav { color: #E8590C; }
-.act--fav-on { background: rgba(232, 89, 12, 0.08); border-color: rgba(232, 89, 12, 0.3); }
-.act--dislike { color: #8E8E93; }
-.act--ignored { color: #34C759; border-color: rgba(52, 199, 89, 0.4); cursor: default; }
+.act--plan { color: var(--brand-teal); border-color: rgba(47, 119, 112, 0.35); }
+.act--fav { color: var(--brand-coral); }
+.act--fav-on { background: rgba(217, 119, 93, 0.08); border-color: rgba(217, 119, 93, 0.3); }
+.act--dislike { color: var(--text-muted); }
+.act--ignored { color: var(--success); border-color: rgba(60, 140, 112, 0.4); cursor: default; }
 
 .dislike-box {
   margin: 0 12px 12px;
   padding: 10px;
-  border-radius: 10px;
-  background: #F7F7FA;
+  border-radius: var(--radius-md);
+  background: rgba(23, 33, 31, 0.04);
 }
 
 .dislike-box__title {
   font-size: 12px;
-  color: #3C3C43;
+  color: var(--text-secondary);
   font-weight: 500;
   margin-bottom: 8px;
 }
@@ -392,9 +421,9 @@ function addToPlan() {
   border: none;
   border-radius: 14px;
   padding: 4px 10px;
-  background: #FFFFFF;
-  border: 1px solid #E2E2E7;
-  color: #3C3C43;
+  background: var(--surface-white);
+  border: 1px solid var(--border-soft);
+  color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
 }
@@ -405,7 +434,7 @@ function addToPlan() {
   margin-top: 8px;
   border: none;
   background: none;
-  color: #8E8E93;
+  color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
 }

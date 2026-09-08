@@ -10,11 +10,11 @@ import { displayName } from "../stores/session";
 import type { PostItem, ProfileSummary, RecommendationFeed } from "../types";
 
 /**
- * 首页 Dashboard（产品化阶段一，PRODUCT_EVOLUTION_PLAN §4；阶段三加社区攻略位）。
+ * 首页 Dashboard（UI 视觉升级方案 §6.2/6.3：首屏主任务 + 信息分层）。
  *
- * 职责：让个性化能力被用户看见 —— 画像摘要卡（实时聚合 summary，Q5 修复数据源）、
- * 三个主入口（生成我的行程/发现景点 + 历史/收藏）、按城市预览的"为你推荐"、
- * 社区攻略"为你推荐"（阶段三：GET /community/posts?sort=recommended，无画像自动降级热门）。
+ * 职责：让个性化能力被用户看见 ——
+ * 首屏 Hero（问候 + 画像胶囊 + 主任务"开始规划"）、四个入口、
+ * 按城市预览的"为你推荐"、社区攻略预览。
  * 推荐卡收藏/不感兴趣后自动刷新对应流，演示"反馈 → 画像版本变化 → 排序变化"闭环。
  */
 const router = useRouter();
@@ -150,36 +150,43 @@ function skeletons(n: number) {
 
 <template>
   <section class="dashboard">
-    <!-- 欢迎 + 画像摘要卡（点击去偏好页完善） -->
-    <div
-      class="ios-card dash-profile"
-      role="button"
-      tabindex="0"
-      @click="go('profile')"
-      @keyup.enter="go('profile')"
-    >
-      <div class="dash-profile__head">
-        <div>
-          <h2 class="dash-profile__greet">{{ greeting }}</h2>
-          <p class="dash-profile__sub" v-if="summaryLoaded">
-            <template v-if="hasNoProfile">我还不了解你的偏好 —— 点这里告诉我，推荐会更懂你</template>
-            <template v-else>系统记得你的偏好，行程与推荐会自动贴合</template>
-          </p>
+    <!-- ===== 首屏 Hero：主任务「开始规划」 + 画像胶囊（方案 §6.2） ===== -->
+    <div class="hero">
+      <div class="hero__main">
+        <p class="hero__eyebrow">AI 行程规划 · 个性化推荐</p>
+        <h2 class="hero__greet font-serif">{{ greeting }}</h2>
+        <p class="hero__sub">
+          <template v-if="summaryLoaded && hasNoProfile">先告诉我你的偏好，推荐会更懂你</template>
+          <template v-else>准备好去哪里了吗？告诉 AI，剩下的交给它。</template>
+        </p>
+
+        <div class="hero__actions">
+          <button type="button" class="hero__cta" @click="go('plan')">开始规划一次旅行</button>
+          <button
+            type="button"
+            class="hero__secondary"
+            role="button"
+            tabindex="0"
+            @click="go('profile')"
+          >
+            完善偏好 ›
+          </button>
         </div>
-        <span class="dash-profile__more">完善偏好 ›</span>
+
+        <div v-if="summaryChips.length" class="hero__chips">
+          <span v-for="chip in summaryChips" :key="chip" class="hero__chip">✓ {{ chip }}</span>
+        </div>
       </div>
 
-      <div v-if="summaryChips.length" class="ios-chips dash-profile__chips">
-        <span v-for="chip in summaryChips" :key="chip" class="ios-chip ios-chip--mem">{{ chip }}</span>
-      </div>
-
-      <div v-if="summary" class="dash-profile__stats">
+      <!-- 个人状态（三级信息：历史/城市沉淀，点击去我的） -->
+      <div v-if="summary" class="hero__stats" role="button" tabindex="0" @click="go('profile')">
         <div class="stat">
-          <div class="stat__value">{{ summary.trip_count }}</div>
+          <div class="stat__value font-num">{{ summary.trip_count }}</div>
           <div class="stat__label">历史行程</div>
         </div>
+        <div class="stat__sep" />
         <div class="stat">
-          <div class="stat__value">{{ summary.visited_cities?.length ?? 0 }}</div>
+          <div class="stat__value font-num">{{ summary.visited_cities?.length ?? 0 }}</div>
           <div class="stat__label">去过的城市</div>
         </div>
         <div class="stat stat--cities">
@@ -189,31 +196,27 @@ function skeletons(n: number) {
       </div>
     </div>
 
-    <!-- 快捷入口 -->
+    <!-- ===== 四个入口（一级任务延伸） ===== -->
     <div class="dash-cta">
-      <button type="button" class="cta cta--primary" @click="go('plan')">
-        <span class="cta__icon">✈️</span>
+      <button type="button" class="cta" @click="go('plan')">
         <span class="cta__title">生成我的行程</span>
         <span class="cta__desc">AI 实时规划 · 结合你的偏好</span>
       </button>
       <button type="button" class="cta" @click="go('recommendations')">
-        <span class="cta__icon">🗺️</span>
         <span class="cta__title">发现景点</span>
         <span class="cta__desc">个性化推荐 + 城市攻略</span>
       </button>
       <button type="button" class="cta" @click="go('history')">
-        <span class="cta__icon">🧳</span>
         <span class="cta__title">历史行程</span>
         <span class="cta__desc">回看已保存的计划</span>
       </button>
       <button type="button" class="cta" @click="go('favorites')">
-        <span class="cta__icon">💛</span>
         <span class="cta__title">我的收藏</span>
         <span class="cta__desc">收藏过的景点</span>
       </button>
     </div>
 
-    <!-- 为你推荐 -->
+    <!-- ===== 为你推荐（城市切换 + 个性化排序流） ===== -->
     <div class="rec-block">
       <div class="rec-block__head">
         <h3 class="rec-block__title">{{ previewCity ? `「${previewCity}」为你推荐` : "为你推荐" }}</h3>
@@ -267,10 +270,10 @@ function skeletons(n: number) {
       </div>
     </div>
 
-    <!-- 社区攻略 · 为你推荐（阶段三：帖子行为闭环与社区入口，画像为空自动降级热门） -->
+    <!-- ===== 社区攻略 · 为你推荐 ===== -->
     <div class="rec-block">
       <div class="rec-block__head">
-        <h3 class="rec-block__title">📖 社区攻略 · 为你推荐</h3>
+        <h3 class="rec-block__title">社区攻略 · 为你推荐</h3>
         <button type="button" class="rec-block__more" @click="go('community')">进入社区 ›</button>
       </div>
 
@@ -297,226 +300,293 @@ function skeletons(n: number) {
 <style scoped>
 .dashboard {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 
-.ios-card {
-  border-radius: 14px;
-  background: #FFFFFF;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+/* ===== Hero（局部深色智能模块：明亮内容区 + 局部深色，方案三节） ===== */
+.hero {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: end;
+  padding: 30px 32px 26px;
+  border-radius: var(--radius-lg);
+  background: var(--brand-deep);
+  color: #f7f5ef;
 }
 
-/* 画像摘要卡 */
-.dash-profile {
-  padding: 20px;
-  cursor: pointer;
-  border: 0.5px solid rgba(0, 122, 255, 0.16);
-  transition: box-shadow 0.2s ease;
+/* 极简装饰：低透明度同心圆 + 珊瑚小点，呼应"地图/日出" */
+.hero::before {
+  content: "";
+  position: absolute;
+  right: -90px;
+  top: -130px;
+  width: 340px;
+  height: 340px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 0 54%, rgba(247, 245, 239, 0.06) 55% 56%, transparent 57%),
+    radial-gradient(circle, transparent 0 74%, rgba(247, 245, 239, 0.05) 75% 76%, transparent 77%);
+  pointer-events: none;
 }
 
-.dash-profile:hover {
-  box-shadow: 0 2px 10px rgba(0, 122, 255, 0.12);
+.hero__main {
+  position: relative;
+  min-width: 0;
 }
 
-.dash-profile__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.dash-profile__greet {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  color: #1C1C1E;
-}
-
-.dash-profile__sub {
-  margin: 6px 0 0;
-  font-size: 12.5px;
-  color: #8E8E93;
-}
-
-.dash-profile__more {
-  flex-shrink: 0;
+.hero__eyebrow {
+  margin: 0 0 8px;
   font-size: 12px;
-  color: #007AFF;
+  letter-spacing: 0.16em;
+  color: var(--brand-sun);
 }
 
-.dash-profile__chips {
-  margin-top: 14px;
+.hero__greet {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #f7f5ef;
 }
 
-.ios-chip {
-  border: 1px solid #D1D1D6;
-  border-radius: 20px;
-  padding: 6px 14px;
-  background: #FFFFFF;
-  font-size: 13px;
-  color: #1C1C1E;
+.hero__sub {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: rgba(247, 245, 239, 0.72);
 }
 
-.ios-chip--mem {
-  background: rgba(0, 122, 255, 0.06);
-  border-color: rgba(0, 122, 255, 0.18);
-  color: #185FA5;
-}
-
-.dash-profile__stats {
+.hero__actions {
   display: flex;
-  gap: 28px;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.hero__cta {
+  border: none;
+  border-radius: 999px;
+  padding: 11px 26px;
+  background: var(--brand-coral);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(217, 119, 93, 0.35);
+  transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease);
+}
+.hero__cta:hover {
+  box-shadow: 0 8px 22px rgba(217, 119, 93, 0.45);
+  transform: translateY(-1px);
+}
+.hero__cta:active {
+  transform: scale(0.98);
+}
+
+.hero__secondary {
+  border: none;
+  background: none;
+  padding: 8px 2px;
+  font-size: 13.5px;
+  color: rgba(247, 245, 239, 0.8);
+  cursor: pointer;
+  border-bottom: 1px solid rgba(247, 245, 239, 0.35);
+  transition: color 0.2s var(--ease);
+}
+.hero__secondary:hover {
+  color: #fff;
+  border-color: var(--brand-coral);
+}
+
+.hero__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.hero__chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(247, 245, 239, 0.12);
+  border: 1px solid rgba(247, 245, 239, 0.2);
+  color: rgba(247, 245, 239, 0.92);
+  font-size: 12px;
+}
+
+/* 个人状态（Hero 右下） */
+.hero__stats {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  background: rgba(247, 245, 239, 0.08);
+  border: 1px solid rgba(247, 245, 239, 0.12);
+  cursor: pointer;
+  transition: background 0.2s var(--ease);
+  max-width: 320px;
+}
+.hero__stats:hover {
+  background: rgba(247, 245, 239, 0.14);
 }
 
 .stat__value {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: #f7f5ef;
+  line-height: 1.1;
 }
 
 .stat__value--sm {
   font-size: 13px;
   font-weight: 600;
-  line-height: 1.4;
-  max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .stat__label {
-  margin-top: 2px;
-  font-size: 11.5px;
-  color: #8E8E93;
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(247, 245, 239, 0.6);
 }
 
 .stat--cities {
-  flex: 1;
   min-width: 0;
+  flex: 1;
 }
 
-/* 快捷入口 */
+.stat__sep {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(247, 245, 239, 0.15);
+}
+
+/* ===== 入口 ===== */
 .dash-cta {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 14px;
 }
 
 .cta {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 16px;
-  border: none;
-  border-radius: 14px;
-  background: #FFFFFF;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  gap: 3px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-white);
+  box-shadow: var(--shadow-sm);
   text-align: left;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.2s ease;
+  transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
 }
-
 .cta:hover {
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(47, 119, 112, 0.35);
+  transform: translateY(-1px);
 }
-
 .cta:active {
   transform: scale(0.98);
 }
 
-.cta--primary {
-  background: linear-gradient(135deg, #007AFF, #4DA3FF);
-  color: #FFFFFF;
-}
-
-.cta__icon {
-  font-size: 18px;
-}
-
 .cta__title {
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 650;
+  color: var(--text-primary);
 }
 
 .cta__desc {
-  font-size: 11.5px;
-  opacity: 0.75;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-/* 为你推荐 */
+/* ===== 推荐/攻略块 ===== */
 .rec-block__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 4px 2px 10px;
+  margin: 6px 2px 12px;
 }
 
 .rec-block__ops {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   flex-shrink: 0;
 }
 
 .rec-block__title {
   margin: 0;
-  font-size: 17px;
+  font-size: 19px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
 }
 
 .rec-block__more {
   border: none;
   background: none;
-  color: #007AFF;
+  color: var(--brand-teal);
   font-size: 13px;
+  font-weight: 550;
   cursor: pointer;
+  transition: color 0.2s var(--ease);
+}
+.rec-block__more:hover {
+  color: var(--brand-deep);
 }
 
 .rec-block__cities {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .city-chip {
-  border: 1px solid #E2E2E7;
-  border-radius: 16px;
-  padding: 5px 13px;
-  background: #FFFFFF;
-  color: #3C3C43;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 5px 14px;
+  background: var(--surface-white);
+  color: var(--text-secondary);
   font-size: 12.5px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.18s var(--ease);
 }
-
+.city-chip:hover {
+  border-color: var(--brand-teal);
+  color: var(--brand-teal);
+}
 .city-chip--active {
-  background: #007AFF;
-  border-color: #007AFF;
-  color: #FFFFFF;
+  background: var(--brand-coral);
+  border-color: var(--brand-coral);
+  color: #fff;
+  font-weight: 600;
 }
 
 .spot-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .post-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .skel {
-  height: 280px;
-  border-radius: 14px;
-  background: linear-gradient(100deg, #EFEFF4 40%, #F8F8FA 50%, #EFEFF4 60%);
+  height: 300px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(100deg, rgba(23, 33, 31, 0.05) 40%, rgba(23, 33, 31, 0.02) 50%, rgba(23, 33, 31, 0.05) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -529,23 +599,64 @@ function skeletons(n: number) {
 .rec-empty {
   padding: 40px 20px;
   text-align: center;
-  border-radius: 14px;
-  background: #FFFFFF;
-  color: #8E8E93;
+  border-radius: var(--radius-lg);
+  background: var(--surface-white);
+  color: var(--text-muted);
   font-size: 14px;
 }
 
 .rec-empty__link {
   border: none;
   background: none;
-  color: #007AFF;
+  color: var(--brand-teal);
   cursor: pointer;
   font-size: 14px;
+}
+
+/* ===== 响应式（方案 §6.2/§8） ===== */
+@media (max-width: 1024px) {
+  .hero {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .hero__stats {
+    max-width: none;
+    align-items: center;
+  }
 }
 
 @media (max-width: 900px) {
   .dash-cta {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .hero {
+    padding: 24px 20px 20px;
+  }
+
+  .hero__greet {
+    font-size: 24px;
+  }
+
+  .hero__stats {
+    gap: 12px;
+    padding: 12px 14px;
+  }
+
+  .dash-cta {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .cta {
+    padding: 13px 14px;
+  }
+
+  .rec-block__ops {
+    gap: 8px;
   }
 }
 </style>

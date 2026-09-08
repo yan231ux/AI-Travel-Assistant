@@ -241,11 +241,11 @@ async function toggleDislike() {
   font-size: 12px;
 }
 .p-card__type {
-  color: #3478f6;
+  color: var(--brand-teal);
   font-weight: 600;
 }
 .p-card__city {
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .p-card__status {
   margin-left: auto;
@@ -254,29 +254,29 @@ async function toggleDislike() {
   border-radius: 999px;
 }
 .st--draft {
-  background: #eef0f4;
-  color: #6b7280;
+  background: rgba(23, 33, 31, 0.05);
+  color: var(--text-secondary);
 }
 .st--pending {
-  background: #fff6e6;
-  color: #b26a00;
+  background: rgba(201, 138, 45, 0.12);
+  color: var(--warning);
 }
 .st--published {
-  background: #e7f6ec;
-  color: #1a7f37;
+  background: rgba(60, 140, 112, 0.1);
+  color: var(--success);
 }
 .st--rejected {
-  background: #ffeceb;
-  color: #c92a2a;
+  background: rgba(198, 93, 81, 0.08);
+  color: var(--danger);
 }
 .st--hidden {
-  background: #eef0f4;
-  color: #6b7280;
+  background: rgba(23, 33, 31, 0.05);
+  color: var(--text-secondary);
 }
 .p-card__title {
   font-size: 15px;
   font-weight: 600;
-  color: #1c1c1e;
+  color: var(--text-primary);
   margin: 0;
   line-height: 1.4;
   display: -webkit-box;
@@ -286,7 +286,7 @@ async function toggleDislike() {
 }
 .p-card__summary {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--text-secondary);
   margin: 0;
   line-height: 1.5;
   display: -webkit-box;
@@ -300,11 +300,11 @@ async function toggleDislike() {
   flex-wrap: wrap;
   gap: 10px;
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .p-card__author {
   font-weight: 500;
-  color: #3478f6;
+  color: var(--brand-teal);
   cursor: pointer;
 }
 .p-card__author:hover {
@@ -324,26 +324,26 @@ async function toggleDislike() {
   padding: 5px 12px;
   font-size: 13px;
   background: rgba(0, 0, 0, 0.04);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .act--on {
-  background: rgba(52, 120, 246, 0.1);
-  color: #3478f6;
+  background: rgba(47, 119, 112, 0.08);
+  color: var(--brand-teal);
 }
 .act--dislike {
   margin-left: auto;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .act--dislike.act--on {
-  background: rgba(255, 149, 0, 0.12);
-  color: #c2410c;
+  background: rgba(201, 138, 45, 0.12);
+  color: var(--warning);
 }
 .p-card__reason {
   margin: 0;
   font-size: 12px;
-  color: #b26a00;
-  background: rgba(255, 179, 0, 0.1);
+  color: var(--warning);
+  background: rgba(201, 138, 45, 0.1);
   border-radius: 8px;
   padding: 5px 10px;
 }
