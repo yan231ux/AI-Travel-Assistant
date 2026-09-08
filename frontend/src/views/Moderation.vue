@@ -749,7 +749,7 @@ onMounted(async () => {
 .md-title {
   font-size: 20px;
   margin: 0;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .md-tabs {
   display: flex;
@@ -762,11 +762,11 @@ onMounted(async () => {
   padding: 6px 14px;
   font-size: 13px;
   background: rgba(0, 0, 0, 0.04);
-  color: #6b7280;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .md-tab--on {
-  background: #1c1c1e;
+  background: var(--text-primary);
   color: #fff;
 }
 .md-seg {
@@ -783,12 +783,12 @@ onMounted(async () => {
   padding: 5px 16px;
   font-size: 13px;
   background: transparent;
-  color: #6b7280;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .md-seg__btn--on {
   background: #fff;
-  color: #1c1c1e;
+  color: var(--text-primary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 .md-badge {
@@ -799,21 +799,21 @@ onMounted(async () => {
   border-radius: 999px;
 }
 .md-badge--ok {
-  background: #e7f6ec;
-  color: #1a7f37;
+  background: #rgba(60, 140, 112, 0.1);
+  color: var(--success);
 }
 .md-badge--no {
-  background: #ffeceb;
-  color: #c92a2a;
+  background: #rgba(198, 93, 81, 0.08);
+  color: var(--danger);
 }
 .md-badge--admin {
-  background: #eef2ff;
-  color: #4f46e5;
+  background: #rgba(47, 119, 112, 0.08);
+  color: var(--brand-deep);
 }
 .md-empty {
   text-align: center;
   padding: 40px 0;
-  color: #8e8e93;
+  color: var(--text-muted);
   background: #fff;
   border-radius: 14px;
 }
@@ -840,7 +840,7 @@ onMounted(async () => {
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 600;
-  color: #1c1c1e;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -848,7 +848,7 @@ onMounted(async () => {
 .md-item__meta {
   margin: 0;
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .md-item__ops {
   display: flex;
@@ -862,16 +862,16 @@ onMounted(async () => {
   font-size: 13px;
   font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .btn--ok {
-  background: #e7f6ec;
-  color: #1a7f37;
+  background: #rgba(60, 140, 112, 0.1);
+  color: var(--success);
 }
 .btn--no {
-  background: #ffeceb;
-  color: #c92a2a;
+  background: #rgba(198, 93, 81, 0.08);
+  color: var(--danger);
 }
 .btn:disabled {
   opacity: 0.6;
@@ -925,7 +925,7 @@ onMounted(async () => {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .md-exp-form__row {
   display: flex;
@@ -935,7 +935,7 @@ onMounted(async () => {
 .md-exp-form__hint {
   margin: 0;
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .md-input {
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -945,7 +945,7 @@ onMounted(async () => {
   font-family: inherit;
   min-width: 0;
   background: #fff;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .md-input--select {
   cursor: pointer;
@@ -961,7 +961,7 @@ onMounted(async () => {
 }
 .md-mon-head__label {
   font-size: 13px;
-  color: #3c3c43;
+  color: var(--text-secondary);
 }
 .md-mon {
   background: #fff;
@@ -988,11 +988,11 @@ onMounted(async () => {
 }
 .md-kpi b {
   font-size: 18px;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .md-kpi span {
   font-size: 11px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .md-mon__rows {
   display: flex;
@@ -1001,8 +1001,8 @@ onMounted(async () => {
 }
 .md-tag {
   display: inline-block;
-  background: #eef2ff;
-  color: #4f46e5;
+  background: #rgba(47, 119, 112, 0.08);
+  color: var(--brand-deep);
   font-size: 11px;
   padding: 1px 8px;
   border-radius: 999px;

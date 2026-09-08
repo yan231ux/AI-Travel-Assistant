@@ -112,26 +112,26 @@ onMounted(() => {
   margin: 0 0 4px;
   font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .history-header__desc {
   margin: 0;
   font-size: 14px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 /* 卡片 */
 .ios-card {
   padding: 20px;
   border-radius: 12px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .ios-empty {
   text-align: center;
-  color: #8E8E93;
+  color: var(--text-muted);
   font-size: 14px;
   padding: 40px 20px;
 }
@@ -150,8 +150,8 @@ onMounted(() => {
 .ios-btn:active { transform: scale(0.97); }
 .ios-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.ios-btn--primary { background: #007AFF; color: #FFFFFF; }
-.ios-btn--danger { background: #FF3B30; color: #FFFFFF; }
+.ios-btn--primary { background: var(--brand-teal); color: var(--surface-white); }
+.ios-btn--danger { background: var(--danger); color: var(--surface-white); }
 .ios-btn--sm { padding: 6px 14px; font-size: 13px; }
 
 /* 列表 */
@@ -170,25 +170,25 @@ onMounted(() => {
 .history-card__dest {
   font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .history-card__id {
   font-size: 12px;
-  color: #8E8E93;
+  color: var(--text-muted);
   word-break: break-all;
 }
 
 .history-card__summary {
   margin: 0;
   font-size: 14px;
-  color: #3C3C43;
+  color: var(--text-secondary);
   line-height: 1.6;
 }
 
 .history-card__time {
   font-size: 12px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .history-card__actions {

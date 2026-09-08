@@ -141,7 +141,7 @@ onMounted(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  background: linear-gradient(135deg, #1c1c1e 0%, #2d3a55 100%);
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-primary) 100%);
   border-radius: 16px;
   padding: 20px 22px;
   color: #fff;
@@ -167,7 +167,7 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 500;
   background: rgba(0, 0, 0, 0.06);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .ct-head .btn {
@@ -176,7 +176,7 @@ onMounted(() => {
 }
 .ct-head .btn--primary {
   background: #fff;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .ct-cities {
   display: flex;
@@ -189,12 +189,12 @@ onMounted(() => {
   padding: 5px 14px;
   font-size: 13px;
   background: #fff;
-  color: #5b6472;
+  color: var(--text-secondary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
   cursor: pointer;
 }
 .city-chip--on {
-  background: #1c1c1e;
+  background: var(--text-primary);
   color: #fff;
 }
 .ct-block {
@@ -211,19 +211,19 @@ onMounted(() => {
   margin: 0;
   font-size: 17px;
   font-weight: 700;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .ct-block__more {
   border: none;
   background: none;
-  color: #3478f6;
+  color: var(--brand-teal);
   font-size: 13px;
   cursor: pointer;
 }
 .ct-empty {
   text-align: center;
   padding: 36px 0;
-  color: #8e8e93;
+  color: var(--text-muted);
   background: #fff;
   border-radius: 14px;
   font-size: 13px;
@@ -232,7 +232,7 @@ onMounted(() => {
 .link-btn {
   border: none;
   background: none;
-  color: #3478f6;
+  color: var(--brand-teal);
   font-size: 13px;
   cursor: pointer;
   padding: 0 2px;

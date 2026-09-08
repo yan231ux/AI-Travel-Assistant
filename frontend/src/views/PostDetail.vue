@@ -377,7 +377,7 @@ onMounted(() => void load());
 .pd-state {
   text-align: center;
   padding: 48px 16px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .pd-card {
   background: #fff;
@@ -399,8 +399,8 @@ onMounted(() => void load());
   justify-content: center;
   font-size: 64px;
   font-weight: 700;
-  color: #b7c9e0;
-  background: linear-gradient(135deg, #eef3fb, #f7f9fc);
+  color: #rgba(47, 119, 112, 0.35);
+  background: linear-gradient(135deg, #rgba(47, 119, 112, 0.06), #rgba(23, 33, 31, 0.03));
 }
 .pd-body {
   padding: 18px 20px 14px;
@@ -416,38 +416,38 @@ onMounted(() => void load());
   flex-wrap: wrap;
 }
 .pd-type {
-  background: rgba(52, 120, 246, 0.1);
-  color: #3478f6;
+  background: rgba(47, 119, 112, 0.1);
+  color: var(--brand-teal);
   padding: 3px 10px;
   border-radius: 999px;
   font-weight: 600;
 }
 .pd-city {
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 .pd-status {
-  background: #fff6e6;
-  color: #b26a00;
+  background: #rgba(201, 138, 45, 0.12);
+  color: var(--warning);
   padding: 2px 8px;
   border-radius: 999px;
 }
 .pd-reject {
-  color: #c92a2a;
+  color: var(--danger);
 }
 .pd-title {
   font-size: 22px;
   margin: 0;
-  color: #1c1c1e;
+  color: var(--text-primary);
   line-height: 1.35;
 }
 .pd-author {
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
   margin: 0;
 }
 
 .pd-author__link {
-  color: #3478f6;
+  color: var(--brand-teal);
   font-weight: 500;
   cursor: pointer;
 }
@@ -456,7 +456,7 @@ onMounted(() => void load());
   text-decoration: underline;
 }
 .pd-summary {
-  color: #5b6472;
+  color: var(--text-secondary);
   font-size: 14px;
   margin: 0;
   background: rgba(0, 0, 0, 0.03);
@@ -467,12 +467,12 @@ onMounted(() => void load());
   white-space: pre-wrap;
   line-height: 1.8;
   font-size: 15px;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .pd-sec-title {
   font-size: 14px;
   font-weight: 600;
-  color: #1c1c1e;
+  color: var(--text-primary);
   margin: 0 0 8px;
 }
 .pd-spots__list {
@@ -481,9 +481,9 @@ onMounted(() => void load());
   gap: 8px;
 }
 .pd-spot-chip {
-  border: 1px solid rgba(52, 120, 246, 0.25);
-  background: rgba(52, 120, 246, 0.06);
-  color: #3478f6;
+  border: 1px solid rgba(47, 119, 112, 0.25);
+  background: rgba(47, 119, 112, 0.06);
+  color: var(--brand-teal);
   border-radius: 999px;
   padding: 5px 12px;
   font-size: 13px;
@@ -507,20 +507,20 @@ onMounted(() => void load());
   padding: 7px 16px;
   font-size: 14px;
   background: rgba(0, 0, 0, 0.05);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .act--like {
-  background: rgba(255, 59, 48, 0.1);
-  color: #ff3b30;
+  background: rgba(198, 93, 81, 0.1);
+  color: var(--danger);
 }
 .act--fav {
   background: rgba(255, 159, 10, 0.14);
-  color: #b26a00;
+  color: var(--warning);
 }
 .act--dis {
   background: rgba(0, 0, 0, 0.08);
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 .act--report {
   margin-left: auto;
@@ -532,16 +532,16 @@ onMounted(() => void load());
   font-size: 13px;
   font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .btn--primary {
-  background: #3478f6;
+  background: var(--brand-teal);
   color: #fff;
 }
 .btn--danger {
-  background: rgba(255, 59, 48, 0.1);
-  color: #ff3b30;
+  background: rgba(198, 93, 81, 0.1);
+  color: var(--danger);
 }
 .pd-report {
   background: #fff;
@@ -565,16 +565,16 @@ onMounted(() => void load());
 .chip {
   border: 1px solid rgba(0, 0, 0, 0.1);
   background: #fff;
-  color: #3c3c43;
+  color: var(--text-secondary);
   border-radius: 999px;
   padding: 5px 14px;
   font-size: 13px;
   cursor: pointer;
 }
 .chip--on {
-  border-color: #3478f6;
-  background: rgba(52, 120, 246, 0.08);
-  color: #3478f6;
+  border-color: var(--brand-teal);
+  background: rgba(47, 119, 112, 0.08);
+  color: var(--brand-teal);
 }
 .pd-report__ops {
   display: flex;
@@ -600,7 +600,7 @@ onMounted(() => void load());
   font-size: 14px;
 }
 .cmt-empty {
-  color: #8e8e93;
+  color: var(--text-muted);
   font-size: 13px;
   text-align: center;
   padding: 18px 0;
@@ -624,16 +624,16 @@ onMounted(() => void load());
 }
 .cmt-item__name {
   font-weight: 600;
-  color: #3c3c43;
+  color: var(--text-secondary);
 }
 .cmt-item__time {
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .cmt-item__del {
   margin-left: auto;
   border: none;
   background: none;
-  color: #ff3b30;
+  color: var(--danger);
   font-size: 12px;
   cursor: pointer;
 }
@@ -641,7 +641,7 @@ onMounted(() => void load());
   margin: 4px 0 0;
   font-size: 14px;
   line-height: 1.6;
-  color: #1c1c1e;
+  color: var(--text-primary);
   white-space: pre-wrap;
 }
 </style>

@@ -184,13 +184,13 @@ function skeletons(n: number) {
   margin: 0;
   font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .fav-head__desc {
   margin: 6px 0 0;
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .fav-grid {
@@ -202,7 +202,7 @@ function skeletons(n: number) {
 .fav-card {
   display: flex;
   flex-direction: column;
-  background: #FFFFFF;
+  background: var(--surface-white);
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -230,10 +230,10 @@ function skeletons(n: number) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #fdeee0, #fdf5ec);
+  background: linear-gradient(135deg, #rgba(217, 119, 93, 0.1), #rgba(201, 138, 45, 0.08));
   font-size: 34px;
   font-weight: 700;
-  color: #e8c4a0;
+  color: #rgba(217, 119, 93, 0.3);
 }
 
 .fav-card__city {
@@ -243,7 +243,7 @@ function skeletons(n: number) {
   padding: 2px 8px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.45);
-  color: #FFFFFF;
+  color: var(--surface-white);
   font-size: 11px;
 }
 
@@ -255,7 +255,7 @@ function skeletons(n: number) {
   margin: 0;
   font-size: 14.5px;
   font-weight: 600;
-  color: #1C1C1E;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -264,16 +264,16 @@ function skeletons(n: number) {
 .fav-card__date {
   margin: 4px 0 0;
   font-size: 11.5px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .fav-card__remove {
   margin: 8px 12px 12px;
-  border: 1px solid #E2E2E7;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
   padding: 6px 0;
-  background: #FFFFFF;
-  color: #E8590C;
+  background: var(--surface-white);
+  color: var(--brand-coral);
   font-size: 12.5px;
   cursor: pointer;
 }
@@ -284,7 +284,7 @@ function skeletons(n: number) {
 .skel {
   height: 210px;
   border-radius: 14px;
-  background: linear-gradient(100deg, #EFEFF4 40%, #F8F8FA 50%, #EFEFF4 60%);
+  background: linear-gradient(100deg, #rgba(23, 33, 31, 0.04) 40%, #rgba(23, 33, 31, 0.02) 50%, #rgba(23, 33, 31, 0.04) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -298,8 +298,8 @@ function skeletons(n: number) {
   padding: 56px 20px;
   text-align: center;
   border-radius: 14px;
-  background: #FFFFFF;
-  color: #8E8E93;
+  background: var(--surface-white);
+  color: var(--text-muted);
   font-size: 14px;
 }
 
@@ -312,8 +312,8 @@ function skeletons(n: number) {
   border: none;
   border-radius: 10px;
   padding: 9px 22px;
-  background: #007AFF;
-  color: #FFFFFF;
+  background: var(--brand-teal);
+  color: var(--surface-white);
   font-size: 14px;
   cursor: pointer;
 }
@@ -324,11 +324,11 @@ function skeletons(n: number) {
 }
 
 .load-more__btn {
-  border: 1px solid #E2E2E7;
+  border: 1px solid var(--border-soft);
   border-radius: 10px;
   padding: 9px 24px;
-  background: #FFFFFF;
-  color: #007AFF;
+  background: var(--surface-white);
+  color: var(--brand-teal);
   font-size: 14px;
   cursor: pointer;
 }
@@ -336,7 +336,7 @@ function skeletons(n: number) {
 .load-more__btn:disabled { opacity: 0.6; }
 
 .load-more__end {
-  color: #C7C7CC;
+  color: #rgba(23, 33, 31, 0.18);
   font-size: 13px;
 }
 </style>

@@ -3,26 +3,10 @@ import { createRouter, createWebHistory } from "vue-router";
 import AppLayout from "../layouts/AppLayout.vue";
 import { isLoggedIn } from "../stores/session";
 import { latestItinerary } from "../stores/trip";
-import AgentProcess from "../views/AgentProcess.vue";
-import CityTopic from "../views/CityTopic.vue";
-import Community from "../views/Community.vue";
-import Favorites from "../views/Favorites.vue";
-import History from "../views/History.vue";
-import Home from "../views/Home.vue";
-import Login from "../views/Login.vue";
-import Moderation from "../views/Moderation.vue";
-import MyPosts from "../views/MyPosts.vue";
-import PlannerView from "../views/PlannerView.vue";
-import PostDetail from "../views/PostDetail.vue";
-import PostEditor from "../views/PostEditor.vue";
-import ProfileView from "../views/ProfileView.vue";
-import Recommendations from "../views/Recommendations.vue";
-import Result from "../views/Result.vue";
-import SpotDetail from "../views/SpotDetail.vue";
-import UserHome from "../views/UserHome.vue";
 
 /**
- * 路由表（产品化改造批次 C 起，对齐 PRODUCT_EVOLUTION_PLAN §3.1/§14.1）：
+ * 路由表（产品化改造批次 C 起，对齐 PRODUCT_EVOLUTION_PLAN §3.1/§14.1；
+ * UI 升级方案 §9/§10：页面组件全部动态 import() 分包，首屏只载登录页与布局）：
  * - /login 公开；已登录访问自动跳首页 /
  * - / 首页 Dashboard（登录后默认落地，不再重定向到规划表单）
  * - /plan 行程生成表单、/agent /result /history /profile 保留
@@ -37,30 +21,63 @@ const router = createRouter({
     {
       path: "/login",
       name: "login",
-      component: Login,
+      component: () => import("../views/Login.vue"),
       meta: { public: true },
     },
     {
       path: "/",
       component: AppLayout,
       children: [
-        { path: "", name: "dashboard", component: Home },
-        { path: "plan", name: "plan", component: PlannerView },
-        { path: "agent", name: "agent", component: AgentProcess },
-        { path: "result", name: "result", component: Result },
-        { path: "history", name: "history", component: History },
-        { path: "profile", name: "profile", component: ProfileView },
-        { path: "recommendations", name: "recommendations", component: Recommendations },
-        { path: "spots/:id", name: "spot-detail", component: SpotDetail, props: true },
-        { path: "favorites", name: "favorites", component: Favorites },
-        { path: "community", name: "community", component: Community },
-        { path: "city/:name", name: "city-topic", component: CityTopic, props: true },
-        { path: "users/:id", name: "user-home", component: UserHome, props: true },
-        { path: "community/posts/:id", name: "post-detail", component: PostDetail, props: true },
-        { path: "community/create", name: "post-create", component: PostEditor },
-        { path: "community/edit/:id", name: "post-edit", component: PostEditor, props: true },
-        { path: "my-posts", name: "my-posts", component: MyPosts },
-        { path: "moderation", name: "moderation", component: Moderation },
+        { path: "", name: "dashboard", component: () => import("../views/Home.vue") },
+        { path: "plan", name: "plan", component: () => import("../views/PlannerView.vue") },
+        { path: "agent", name: "agent", component: () => import("../views/AgentProcess.vue") },
+        { path: "result", name: "result", component: () => import("../views/Result.vue") },
+        { path: "history", name: "history", component: () => import("../views/History.vue") },
+        { path: "profile", name: "profile", component: () => import("../views/ProfileView.vue") },
+        {
+          path: "recommendations",
+          name: "recommendations",
+          component: () => import("../views/Recommendations.vue"),
+        },
+        {
+          path: "spots/:id",
+          name: "spot-detail",
+          component: () => import("../views/SpotDetail.vue"),
+          props: true,
+        },
+        { path: "favorites", name: "favorites", component: () => import("../views/Favorites.vue") },
+        { path: "community", name: "community", component: () => import("../views/Community.vue") },
+        {
+          path: "city/:name",
+          name: "city-topic",
+          component: () => import("../views/CityTopic.vue"),
+          props: true,
+        },
+        {
+          path: "users/:id",
+          name: "user-home",
+          component: () => import("../views/UserHome.vue"),
+          props: true,
+        },
+        {
+          path: "community/posts/:id",
+          name: "post-detail",
+          component: () => import("../views/PostDetail.vue"),
+          props: true,
+        },
+        {
+          path: "community/create",
+          name: "post-create",
+          component: () => import("../views/PostEditor.vue"),
+        },
+        {
+          path: "community/edit/:id",
+          name: "post-edit",
+          component: () => import("../views/PostEditor.vue"),
+          props: true,
+        },
+        { path: "my-posts", name: "my-posts", component: () => import("../views/MyPosts.vue") },
+        { path: "moderation", name: "moderation", component: () => import("../views/Moderation.vue") },
       ],
     },
   ],

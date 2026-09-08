@@ -148,17 +148,17 @@ onMounted(() => void load());
 .mp-head__title {
   margin: 0;
   font-size: 20px;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .mp-head__desc {
   margin: 4px 0 0;
   font-size: 13px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .mp-empty {
   text-align: center;
   padding: 48px 0;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .mp-list {
   display: flex;
@@ -185,28 +185,28 @@ onMounted(() => void load());
   border-radius: 999px;
 }
 .mp-status--draft {
-  background: #eef0f4;
-  color: #6b7280;
+  background: #rgba(23, 33, 31, 0.05);
+  color: var(--text-secondary);
 }
 .mp-status--pending_review {
-  background: #fff6e6;
-  color: #b26a00;
+  background: #rgba(201, 138, 45, 0.12);
+  color: var(--warning);
 }
 .mp-status--published {
-  background: #e7f6ec;
-  color: #1a7f37;
+  background: #rgba(60, 140, 112, 0.1);
+  color: var(--success);
 }
 .mp-status--rejected {
-  background: #ffeceb;
-  color: #c92a2a;
+  background: #rgba(198, 93, 81, 0.08);
+  color: var(--danger);
 }
 .mp-status--hidden {
-  background: #eef0f4;
-  color: #6b7280;
+  background: #rgba(23, 33, 31, 0.05);
+  color: var(--text-secondary);
 }
 .mp-reject {
   font-size: 12px;
-  color: #c92a2a;
+  color: var(--danger);
 }
 .mp-ops__btns {
   margin-left: auto;
@@ -220,15 +220,15 @@ onMounted(() => void load());
   font-size: 13px;
   font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .btn--primary {
-  background: #3478f6;
+  background: var(--brand-teal);
   color: #fff;
 }
 .btn--danger {
-  color: #3c3c43;
+  color: var(--text-secondary);
 }
 .btn:disabled {
   opacity: 0.6;

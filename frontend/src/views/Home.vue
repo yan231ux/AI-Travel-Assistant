@@ -584,11 +584,12 @@ function skeletons(n: number) {
 }
 
 .skel {
-  height: 300px;
+  height: 220px;
   border-radius: var(--radius-lg);
   background: linear-gradient(100deg, rgba(23, 33, 31, 0.05) 40%, rgba(23, 33, 31, 0.02) 50%, rgba(23, 33, 31, 0.05) 60%);
   background-size: 200% 100%;
-  animation: shimmer 1.2s infinite;
+  animation: shimmer 1.6s linear infinite;
+  pointer-events: none;
 }
 
 @keyframes shimmer {

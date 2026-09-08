@@ -339,7 +339,7 @@ onMounted(() => void loadForEdit());
 .pe-state {
   text-align: center;
   padding: 48px 0;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .pe-card {
   background: #fff;
@@ -353,21 +353,21 @@ onMounted(() => void loadForEdit());
 .pe-title {
   font-size: 20px;
   margin: 0;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .pe-hint {
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
   margin: 0 0 4px;
 }
 .pe-label {
   font-size: 13px;
   font-weight: 600;
-  color: #3c3c43;
+  color: var(--text-secondary);
   margin-top: 6px;
 }
 .pe-req {
-  color: #ff3b30;
+  color: var(--danger);
 }
 .pe-input {
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -404,13 +404,13 @@ onMounted(() => void loadForEdit());
   border-radius: 999px;
   padding: 6px 14px;
   font-size: 13px;
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .pe-type--on {
-  border-color: #3478f6;
-  background: rgba(52, 120, 246, 0.08);
-  color: #3478f6;
+  border-color: var(--brand-teal);
+  background: rgba(47, 119, 112, 0.08);
+  color: var(--brand-teal);
   font-weight: 600;
 }
 .pe-spots {
@@ -419,9 +419,9 @@ onMounted(() => void loadForEdit());
   gap: 8px;
 }
 .pe-spot {
-  border: 1px solid rgba(52, 120, 246, 0.3);
-  background: rgba(52, 120, 246, 0.08);
-  color: #3478f6;
+  border: 1px solid rgba(47, 119, 112, 0.3);
+  background: rgba(47, 119, 112, 0.08);
+  color: var(--brand-teal);
   border-radius: 999px;
   padding: 5px 12px;
   font-size: 13px;
@@ -431,7 +431,7 @@ onMounted(() => void loadForEdit());
   align-self: flex-start;
   border: none;
   background: none;
-  color: #3478f6;
+  color: var(--brand-teal);
   font-size: 13px;
   cursor: pointer;
   padding: 2px 0;
@@ -446,7 +446,7 @@ onMounted(() => void loadForEdit());
 .pe-cand {
   border: 1px solid rgba(0, 0, 0, 0.1);
   background: #fff;
-  color: #3c3c43;
+  color: var(--text-secondary);
   border-radius: 999px;
   padding: 5px 12px;
   font-size: 13px;
@@ -467,11 +467,11 @@ onMounted(() => void loadForEdit());
   border-radius: 10px;
   overflow: hidden;
   border: 1px dashed rgba(0, 0, 0, 0.18);
-  background: #fafafa;
+  background: #rgba(23, 33, 31, 0.02);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #8e8e93;
+  color: var(--text-muted);
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -500,11 +500,11 @@ onMounted(() => void loadForEdit());
   font-size: 14px;
   font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .btn--primary {
-  background: #3478f6;
+  background: var(--brand-teal);
   color: #fff;
 }
 .btn:disabled {

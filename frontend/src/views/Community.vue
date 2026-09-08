@@ -190,12 +190,12 @@ watch(currentCity, () => changeTab());
 .cm-head__title {
   margin: 0;
   font-size: 22px;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .cm-head__desc {
   margin: 4px 0 0;
   font-size: 13px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .cm-head__actions {
   display: flex;
@@ -208,11 +208,11 @@ watch(currentCity, () => changeTab());
   font-size: 13px;
   font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
-  color: #3c3c43;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .btn--primary {
-  background: #3478f6;
+  background: var(--brand-teal);
   color: #fff;
 }
 .btn--ghost {
@@ -237,11 +237,11 @@ watch(currentCity, () => changeTab());
   padding: 6px 14px;
   font-size: 13px;
   background: rgba(0, 0, 0, 0.04);
-  color: #6b7280;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .cm-tab--active {
-  background: #1c1c1e;
+  background: var(--text-primary);
   color: #fff;
 }
 .cm-filter-row {
@@ -263,12 +263,12 @@ watch(currentCity, () => changeTab());
   padding: 5px 14px;
   font-size: 13px;
   background: transparent;
-  color: #8e8e93;
+  color: var(--text-muted);
   cursor: pointer;
 }
 .cm-sort--active {
-  background: #ffffff;
-  color: #1c1c1e;
+  background: var(--surface-white);
+  color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 .cm-city-select {
@@ -277,7 +277,7 @@ watch(currentCity, () => changeTab());
   padding: 6px 10px;
   font-size: 13px;
   background: #fff;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .cm-grid {
   display: grid;
@@ -287,7 +287,7 @@ watch(currentCity, () => changeTab());
 .skel {
   height: 220px;
   border-radius: 14px;
-  background: linear-gradient(90deg, #eef0f4 25%, #f7f8fa 50%, #eef0f4 75%);
+  background: linear-gradient(90deg, #rgba(23, 33, 31, 0.05) 25%, #rgba(23, 33, 31, 0.03) 50%, #rgba(23, 33, 31, 0.05) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -302,7 +302,7 @@ watch(currentCity, () => changeTab());
 .cm-empty {
   text-align: center;
   padding: 48px 16px;
-  color: #8e8e93;
+  color: var(--text-muted);
   font-size: 14px;
   background: #fff;
   border-radius: 14px;

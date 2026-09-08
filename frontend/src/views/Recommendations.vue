@@ -215,22 +215,22 @@ function skeletons(n: number) {
   margin: 0;
   font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .discover-head__desc {
   margin: 6px 0 0;
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .discover-head__refresh {
   border: none;
   border-radius: 10px;
   padding: 7px 14px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  color: #007AFF;
+  color: var(--brand-teal);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -247,20 +247,20 @@ function skeletons(n: number) {
 }
 
 .city-chip {
-  border: 1px solid #E2E2E7;
+  border: 1px solid var(--border-soft);
   border-radius: 16px;
   padding: 6px 14px;
-  background: #FFFFFF;
-  color: #3C3C43;
+  background: var(--surface-white);
+  color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .city-chip--active {
-  background: #007AFF;
-  border-color: #007AFF;
-  color: #FFFFFF;
+  background: var(--brand-teal);
+  border-color: var(--brand-teal);
+  color: var(--surface-white);
 }
 
 .sort-tabs {
@@ -279,22 +279,22 @@ function skeletons(n: number) {
   border-radius: 8px;
   padding: 6px 16px;
   background: transparent;
-  color: #8E8E93;
+  color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
 }
 
 .sort-tab--active {
-  background: #FFFFFF;
-  color: #1C1C1E;
+  background: var(--surface-white);
+  color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .sort-tabs__tip {
   margin-left: 8px;
   font-size: 12px;
-  color: #34C759;
+  color: var(--success);
 }
 
 .spot-grid {
@@ -306,7 +306,7 @@ function skeletons(n: number) {
 .skel {
   height: 300px;
   border-radius: 14px;
-  background: linear-gradient(100deg, #EFEFF4 40%, #F8F8FA 50%, #EFEFF4 60%);
+  background: linear-gradient(100deg, #rgba(23, 33, 31, 0.04) 40%, #rgba(23, 33, 31, 0.02) 50%, #rgba(23, 33, 31, 0.04) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -320,8 +320,8 @@ function skeletons(n: number) {
   padding: 48px 20px;
   text-align: center;
   border-radius: 14px;
-  background: #FFFFFF;
-  color: #8E8E93;
+  background: var(--surface-white);
+  color: var(--text-muted);
   font-size: 14px;
   line-height: 1.8;
 }
@@ -330,7 +330,7 @@ function skeletons(n: number) {
 .load-more__end {
   border: none;
   background: none;
-  color: #007AFF;
+  color: var(--brand-teal);
   cursor: pointer;
   font-size: 14px;
 }
@@ -341,11 +341,11 @@ function skeletons(n: number) {
 }
 
 .load-more__btn {
-  border: 1px solid #E2E2E7;
+  border: 1px solid var(--border-soft);
   border-radius: 10px;
   padding: 9px 24px;
-  background: #FFFFFF;
-  color: #007AFF;
+  background: var(--surface-white);
+  color: var(--brand-teal);
   font-size: 14px;
   cursor: pointer;
 }
@@ -355,7 +355,7 @@ function skeletons(n: number) {
 }
 
 .load-more__end {
-  color: #C7C7CC;
+  color: #rgba(23, 33, 31, 0.18);
   font-size: 13px;
 }
 </style>

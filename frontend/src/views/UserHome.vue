@@ -136,7 +136,7 @@ onMounted(() => {
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #3478f6, #7c4dff);
+  background: linear-gradient(135deg, var(--brand-teal), var(--brand-teal));
   color: #fff;
   font-size: 24px;
   font-weight: 700;
@@ -152,12 +152,12 @@ onMounted(() => {
   margin: 0;
   font-size: 20px;
   font-weight: 700;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .uh-card__sub {
   margin: 4px 0 0;
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .uh-card__stats {
   display: flex;
@@ -171,11 +171,11 @@ onMounted(() => {
 }
 .uh-stat b {
   font-size: 16px;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .uh-stat span {
   font-size: 12px;
-  color: #8e8e93;
+  color: var(--text-muted);
 }
 .uh-btn {
   border: none;
@@ -183,14 +183,14 @@ onMounted(() => {
   padding: 8px 20px;
   font-size: 14px;
   font-weight: 600;
-  background: #1c1c1e;
+  background: var(--text-primary);
   color: #fff;
   cursor: pointer;
   flex-shrink: 0;
 }
 .uh-btn--following {
   background: rgba(0, 0, 0, 0.06);
-  color: #3c3c43;
+  color: var(--text-secondary);
 }
 .uh-btn:disabled {
   opacity: 0.6;
@@ -204,12 +204,12 @@ onMounted(() => {
   margin: 0;
   font-size: 17px;
   font-weight: 700;
-  color: #1c1c1e;
+  color: var(--text-primary);
 }
 .uh-empty {
   text-align: center;
   padding: 40px 0;
-  color: #8e8e93;
+  color: var(--text-muted);
   background: #fff;
   border-radius: 14px;
   font-size: 13px;
@@ -218,7 +218,7 @@ onMounted(() => {
 .uh-link {
   border: none;
   background: none;
-  color: #3478f6;
+  color: var(--brand-teal);
   font-size: 13px;
   cursor: pointer;
   padding: 0 2px;

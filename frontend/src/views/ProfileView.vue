@@ -411,7 +411,7 @@ onMounted(() => {
 .ios-card {
   padding: 20px;
   border-radius: 12px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
@@ -424,19 +424,19 @@ onMounted(() => {
   border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
   font-size: 15px;
   font-weight: 600;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .ios-empty {
   padding: 24px;
   text-align: center;
   font-size: 14px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .ios-muted {
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .ios-field {
@@ -449,7 +449,7 @@ onMounted(() => {
 .ios-label {
   font-size: 13px;
   font-weight: 500;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .ios-chips {
@@ -459,12 +459,12 @@ onMounted(() => {
 }
 
 .ios-chip {
-  border: 1px solid #D1D1D6;
+  border: 1px solid var(--border-soft);
   border-radius: 20px;
   padding: 6px 14px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   font-size: 13px;
-  color: #1C1C1E;
+  color: var(--text-primary);
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: inherit;
@@ -475,9 +475,9 @@ onMounted(() => {
 }
 
 .ios-chip--active {
-  border-color: #007AFF;
-  background: #007AFF;
-  color: #FFFFFF;
+  border-color: var(--brand-teal);
+  background: var(--brand-teal);
+  color: var(--surface-white);
 }
 
 .ios-btn {
@@ -489,7 +489,7 @@ onMounted(() => {
   cursor: pointer;
   transition: all 0.2s ease;
   background: rgba(0, 0, 0, 0.04);
-  color: #1C1C1E;
+  color: var(--text-primary);
   font-family: inherit;
 }
 
@@ -498,8 +498,8 @@ onMounted(() => {
 }
 
 .ios-btn--primary {
-  background: #007AFF;
-  color: #FFFFFF;
+  background: var(--brand-teal);
+  color: var(--surface-white);
 }
 
 .ios-btn--primary:disabled {
@@ -528,13 +528,13 @@ onMounted(() => {
   margin: 0 0 4px;
   font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .profile-head__desc {
   margin: 0;
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .pref-lines {
@@ -546,7 +546,7 @@ onMounted(() => {
 .pref-line {
   font-size: 14px;
   line-height: 1.6;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .pref-line__src {
@@ -556,21 +556,21 @@ onMounted(() => {
   border-radius: 10px;
   font-size: 12px;
   background: rgba(0, 0, 0, 0.05);
-  color: #6E6E73;
+  color: var(--text-secondary);
 }
 
 .pref-line__src--active {
-  background: rgba(0, 122, 255, 0.1);
-  color: #007AFF;
+  background: rgba(47, 119, 112, 0.1);
+  color: var(--brand-teal);
 }
 
 .pref-line__cat {
-  color: #1C1C1E;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .pref-line__tags {
-  color: #3C3C43;
+  color: var(--text-secondary);
 }
 
 .ios-chip-row {
@@ -600,10 +600,10 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border: 1px dashed #C7C7CC;
+  border: 1px dashed #rgba(23, 33, 31, 0.18);
   border-radius: 20px;
   padding: 2px 6px 2px 12px;
-  background: #FFFFFF;
+  background: var(--surface-white);
 }
 
 .ios-chip-input {
@@ -611,7 +611,7 @@ onMounted(() => {
   outline: none;
   width: 96px;
   font-size: 13px;
-  color: #1C1C1E;
+  color: var(--text-primary);
   background: transparent;
   font-family: inherit;
 }
@@ -621,8 +621,8 @@ onMounted(() => {
   border-radius: 50%;
   width: 22px;
   height: 22px;
-  background: #007AFF;
-  color: #FFFFFF;
+  background: var(--brand-teal);
+  color: var(--surface-white);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -638,21 +638,21 @@ onMounted(() => {
 .stats-item {
   padding: 14px 12px;
   border-radius: 10px;
-  background: #F2F2F7;
+  background: #rgba(23, 33, 31, 0.05);
   text-align: center;
 }
 
 .stats-item__value {
   font-size: 22px;
   font-weight: 700;
-  color: #007AFF;
+  color: var(--brand-teal);
   line-height: 1.2;
 }
 
 .stats-item__label {
   margin-top: 6px;
   font-size: 12px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 /* 个人中心入口 */
@@ -670,7 +670,7 @@ onMounted(() => {
   padding: 14px 10px;
   border: none;
   border-radius: 14px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.2s ease;
@@ -691,7 +691,7 @@ onMounted(() => {
 .hub__text {
   font-size: 14px;
   font-weight: 500;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 @media (max-width: 768px) {
