@@ -559,7 +559,7 @@ onMounted(() => {
 
 .pref-line__src {
   flex-shrink: 0;
-  align-self: center;
+  align-self: flex-start; /* 与类别名顶端对齐：1 行/2 行行数不同时徽章不漂移 */
   padding: 2px 9px;
   border-radius: 999px;
   font-size: 11.5px;
@@ -567,6 +567,10 @@ onMounted(() => {
   background: rgba(0, 0, 0, 0.05);
   color: var(--text-secondary);
   white-space: nowrap;
+  /* 让胶囊内边距在多行情况下也维持一致的视觉高度 */
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .pref-line__src--active {
