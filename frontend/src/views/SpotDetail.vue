@@ -23,6 +23,13 @@ const loading = ref(true);
 const error = ref("");
 const heroImgFailed = ref(false); // 主图 URL 失效（404/加载失败）→ 降级为首字占位，避免破图
 
+/* 收藏 / 不感兴趣 状态（必须在 load() 之前声明：watch({ immediate:true }) 会同步触发 load，TDZ 会直接抛） */
+const collected = ref(false);
+const favBusy = ref(false);
+const pendingDislike = ref(false);
+const dislikeBusy = ref(false);
+const ignored = ref(false);
+
 const QUALITY_META: Record<string, { label: string; desc: string }> = {
   VERIFIED: { label: "已核验", desc: "内容经本地攻略人工核实，可信度高" },
   GUIDE_MATCHED: { label: "攻略收录", desc: "简介来自本地 RAG 攻略库，非模型编造" },
@@ -59,9 +66,6 @@ watch(
 );
 
 /* ---------- 收藏 ---------- */
-const collected = ref(false);
-const favBusy = ref(false);
-
 async function toggleFavorite() {
   if (favBusy.value || !detail.value) return;
   favBusy.value = true;
@@ -91,10 +95,6 @@ const DISLIKE_REASON_OPTIONS = [
   { value: "PRICE", label: "门票/消费偏高" },
   { value: "PACE", label: "不适合我的节奏" },
 ] as const;
-
-const pendingDislike = ref(false);
-const dislikeBusy = ref(false);
-const ignored = ref(false);
 
 function toggleDislikePanel() {
   if (dislikeBusy.value || ignored.value) return;
