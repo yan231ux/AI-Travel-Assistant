@@ -372,9 +372,21 @@ export interface RecommendationItem {
   image_url?: string | null;
   description?: string | null;
   tags?: string[] | null;
-  /** 推荐分 0~1（无画像时=热度排序值） */
+  /**
+   * 内部综合排序分 0~1（含基础分 0.5 + 偏好增益 − 已去过惩罚），
+   * 仅作排序/调试，**禁止**当"偏好匹配度"展示（排查报告 P0-1）
+   */
   score?: number | null;
-  /** 确定性推荐理由（"匹配你的自然风景偏好，且你还没有去过"） */
+  /**
+   * 本条是否真实命中个性化（仅"为你推荐"流内且正命中偏好的卡片为 true；
+   * 无画像/未命中/攻略优先/最近更新/相关推荐/城市精选 → null/false）
+   */
+  personalized?: boolean | null;
+  /** 真实偏好匹配分 0~1（personalized=true 时有值；= 偏好命中强度，不含基础分） */
+  match_score?: number | null;
+  /** 实际命中的偏好标签（personalized=true 时有值，供"匹配你的XX偏好"文案） */
+  matched_preferences?: string[] | null;
+  /** 确定性推荐理由（"匹配你的自然风景偏好" / "城市精选" / "本地攻略收录的真实景点"） */
   recommend_reason?: string | null;
   /** AMAP / RAG / AMAP_AND_RAG */
   source?: string | null;

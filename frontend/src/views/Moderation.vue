@@ -799,15 +799,15 @@ onMounted(async () => {
   border-radius: 999px;
 }
 .md-badge--ok {
-  background: #rgba(60, 140, 112, 0.1);
+  background: rgba(60, 140, 112, 0.1);
   color: var(--success);
 }
 .md-badge--no {
-  background: #rgba(198, 93, 81, 0.08);
+  background: rgba(198, 93, 81, 0.08);
   color: var(--danger);
 }
 .md-badge--admin {
-  background: #rgba(47, 119, 112, 0.08);
+  background: rgba(47, 119, 112, 0.08);
   color: var(--brand-deep);
 }
 .md-empty {
@@ -866,11 +866,11 @@ onMounted(async () => {
   cursor: pointer;
 }
 .btn--ok {
-  background: #rgba(60, 140, 112, 0.1);
+  background: rgba(60, 140, 112, 0.1);
   color: var(--success);
 }
 .btn--no {
-  background: #rgba(198, 93, 81, 0.08);
+  background: rgba(198, 93, 81, 0.08);
   color: var(--danger);
 }
 .btn:disabled {
@@ -1001,7 +1001,7 @@ onMounted(async () => {
 }
 .md-tag {
   display: inline-block;
-  background: #rgba(47, 119, 112, 0.08);
+  background: rgba(47, 119, 112, 0.08);
   color: var(--brand-deep);
   font-size: 11px;
   padding: 1px 8px;

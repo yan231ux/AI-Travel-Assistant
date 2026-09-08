@@ -230,10 +230,10 @@ function skeletons(n: number) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #rgba(217, 119, 93, 0.1), #rgba(201, 138, 45, 0.08));
+  background: linear-gradient(135deg, rgba(217, 119, 93, 0.1), rgba(201, 138, 45, 0.08));
   font-size: 34px;
   font-weight: 700;
-  color: #rgba(217, 119, 93, 0.3);
+  color: rgba(217, 119, 93, 0.3);
 }
 
 .fav-card__city {
@@ -284,7 +284,7 @@ function skeletons(n: number) {
 .skel {
   height: 210px;
   border-radius: 14px;
-  background: linear-gradient(100deg, #rgba(23, 33, 31, 0.04) 40%, #rgba(23, 33, 31, 0.02) 50%, #rgba(23, 33, 31, 0.04) 60%);
+  background: linear-gradient(100deg, rgba(23, 33, 31, 0.04) 40%, rgba(23, 33, 31, 0.02) 50%, rgba(23, 33, 31, 0.04) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -336,7 +336,7 @@ function skeletons(n: number) {
 .load-more__btn:disabled { opacity: 0.6; }
 
 .load-more__end {
-  color: #rgba(23, 33, 31, 0.18);
+  color: rgba(23, 33, 31, 0.18);
   font-size: 13px;
 }
 </style>

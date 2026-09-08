@@ -467,7 +467,7 @@ onMounted(() => void loadForEdit());
   border-radius: 10px;
   overflow: hidden;
   border: 1px dashed rgba(0, 0, 0, 0.18);
-  background: #rgba(23, 33, 31, 0.02);
+  background: rgba(23, 33, 31, 0.02);
   display: flex;
   align-items: center;
   justify-content: center;

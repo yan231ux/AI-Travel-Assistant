@@ -149,7 +149,16 @@ function openMap() {
 function addToPlan() {
   const d = detail.value;
   if (!d) return;
-  void router.push({ name: "plan", query: { city: d.city } });
+  // P0-2（排查报告）：详情页"加入行程"同样要带具体景点，让规划页能显性化并让生成器优先安排
+  void router.push({
+    name: "plan",
+    query: {
+      city: d.city,
+      spot: d.name,
+      spot_id: d.spot_id,
+      poi_id: d.poi_id || undefined,
+    },
+  });
 }
 
 function goBack() {
@@ -379,10 +388,10 @@ function onRelatedChanged() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #rgba(47, 119, 112, 0.12), #rgba(47, 119, 112, 0.08));
+  background: linear-gradient(135deg, rgba(47, 119, 112, 0.12), rgba(47, 119, 112, 0.08));
   font-size: 72px;
   font-weight: 700;
-  color: #rgba(47, 119, 112, 0.35);
+  color: rgba(47, 119, 112, 0.35);
 }
 
 .badge {
@@ -517,7 +526,7 @@ function onRelatedChanged() {
   margin-top: 12px;
   padding: 12px;
   border-radius: 10px;
-  background: #rgba(23, 33, 31, 0.03);
+  background: rgba(23, 33, 31, 0.03);
 }
 
 .dislike-box__title {

@@ -287,7 +287,7 @@ watch(currentCity, () => changeTab());
 .skel {
   height: 220px;
   border-radius: 14px;
-  background: linear-gradient(90deg, #rgba(23, 33, 31, 0.05) 25%, #rgba(23, 33, 31, 0.03) 50%, #rgba(23, 33, 31, 0.05) 75%);
+  background: linear-gradient(90deg, rgba(23, 33, 31, 0.05) 25%, rgba(23, 33, 31, 0.03) 50%, rgba(23, 33, 31, 0.05) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }

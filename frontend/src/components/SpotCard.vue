@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 
 import { favoriteSpot, reportBehavior, unfavoriteSpot } from "../services/api";
 import type { RecommendationItem } from "../types";
+import { visibleMatchPercent } from "../utils/personalization";
 
 /**
  * 景点推荐卡片（产品化阶段一：首页"为你推荐" / 发现页 / 详情页相关推荐复用，PLAN §14.2）。
@@ -53,13 +54,11 @@ const showHeroImage = computed(() => !!props.item.image_url && !heroImgFailed.va
 const showTags = computed(() => (props.item.tags || []).slice(0, 3));
 
 /**
- * 个性化匹配度百分比：仅当有确定性推荐理由（personalized 排序产物）才展示，
- * 无画像的热门/城市精选流不显示，避免"假装强个性化"（UI 方案 §6.4）。
+ * 个性化匹配度百分比（排查报告 P0-1）：只认后端下发的真实命中语义
+ * personalized + match_score + matched_preferences 三件套，不再拿综合排序分 score 充数；
+ * 无画像/未命中/攻略优先/最近更新 的卡片后端不给这三件套 → 这里自然返回 null 隐藏徽标。
  */
-const matchPercent = computed<number | null>(() => {
-  if (!props.item.recommend_reason || typeof props.item.score !== "number") return null;
-  return Math.round(Math.min(1, Math.max(0, props.item.score)) * 100);
-});
+const matchPercent = computed<number | null>(() => visibleMatchPercent(props.item));
 
 /* ---------- 收藏（幂等；busy 防重复点击） ---------- */
 const collected = ref(!!props.item.is_collected);
@@ -147,7 +146,16 @@ function openDetail() {
 }
 
 function addToPlan() {
-  void router.push({ name: "plan", query: { city: props.item.city } });
+  // P0-2（排查报告）："加入行程"必须携带具体景点，不能再只丢一个城市
+  void router.push({
+    name: "plan",
+    query: {
+      city: props.item.city,
+      spot: props.item.name,
+      spot_id: props.item.spot_id,
+      poi_id: props.item.poi_id || undefined,
+    },
+  });
 }
 </script>
 

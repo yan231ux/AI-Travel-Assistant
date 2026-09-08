@@ -399,8 +399,8 @@ onMounted(() => void load());
   justify-content: center;
   font-size: 64px;
   font-weight: 700;
-  color: #rgba(47, 119, 112, 0.35);
-  background: linear-gradient(135deg, #rgba(47, 119, 112, 0.06), #rgba(23, 33, 31, 0.03));
+  color: rgba(47, 119, 112, 0.35);
+  background: linear-gradient(135deg, rgba(47, 119, 112, 0.06), rgba(23, 33, 31, 0.03));
 }
 .pd-body {
   padding: 18px 20px 14px;
@@ -426,7 +426,7 @@ onMounted(() => void load());
   color: var(--text-secondary);
 }
 .pd-status {
-  background: #rgba(201, 138, 45, 0.12);
+  background: rgba(201, 138, 45, 0.12);
   color: var(--warning);
   padding: 2px 8px;
   border-radius: 999px;

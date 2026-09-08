@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import SpotCard from "../components/SpotCard.vue";
@@ -23,7 +23,8 @@ const SORT_TABS: Array<{ key: SortKey; label: string }> = [
   // popular 排序第一版=攻略质量优先（GUIDE_MATCHED/VERIFIED 在前），
   // 尚无真实浏览量/收藏量埋点，不叫"热门"以免冒充热度榜（PLAN §18.1）
   { key: "popular", label: "攻略优先" },
-  { key: "latest", label: "最新" },
+  // P1-3（排查报告）：DB 只有 updated_at（7 天重同步会刷新），"最新"名不副实 → "最近更新"
+  { key: "latest", label: "最近更新" },
 ];
 
 const city = ref("");
@@ -40,8 +41,14 @@ const personalized = ref(false);
 // P1-5：当前推荐上下文（城市/排序变化会重建）的曝光幂等键，防重复请求双写曝光
 let feedTrace = newFeedTrace();
 
-/* 城市选择：query 预填 > 上次选择（组件存留）> 默认列表第一城 */
-const cities = POPULAR_CITIES;
+/* 城市选择：query 预填 > 上次选择（组件存留）> 默认列表第一城。
+   P1-4（排查报告）：不再限定 POPULAR_CITIES —— query 里的任意非空城市都接受，
+   交由后端做城市校验/按需同步（spot 缓存不足会自动调高德补数据）；不在列表时把它插到最前展示。 */
+const displayCities = computed(() =>
+  city.value && city.value !== POPULAR_CITIES[0] && !POPULAR_CITIES.includes(city.value)
+    ? [city.value, ...POPULAR_CITIES]
+    : POPULAR_CITIES
+);
 
 async function loadFirst() {
   page.value = 1;
@@ -89,16 +96,20 @@ function switchSort(k: SortKey) {
   void loadFirst();
 }
 
-/* 卡片反馈后：重拉第一页（推荐排序按最新画像变化，可见反馈闭环） */
+/* 卡片反馈后：重拉第一页（推荐排序按最新画像变化，可见反馈闭环）。
+   P1-5（排查报告）：非第一页时不整表重载打断浏览位置 —— 卡片已就地更新收藏/忽略态，
+   排序变化留到用户手动刷新/回到首页时生效。 */
 function onChanged() {
-  void loadFirst();
+  if (page.value === 1) {
+    void loadFirst();
+  }
 }
 
 const hasMore = () => items.value.length < total.value;
 
 onMounted(() => {
   const q = route.query.city;
-  if (q && typeof q === "string" && q.trim() && POPULAR_CITIES.includes(q.trim())) {
+  if (q && typeof q === "string" && q.trim()) {
     city.value = q.trim();
   } else {
     city.value = POPULAR_CITIES[0];
@@ -106,11 +117,11 @@ onMounted(() => {
   void loadFirst();
 });
 
-/* 切到本页时若 URL 城市变了（从首页"去发现更多"进入），重新对齐 */
+/* 切到本页时若 URL 城市变了（从首页/城市专题"发现更多"进入），重新对齐 */
 watch(
   () => route.query.city,
   (q) => {
-    if (q && typeof q === "string" && q.trim() && q.trim() !== city.value && POPULAR_CITIES.includes(q.trim())) {
+    if (q && typeof q === "string" && q.trim() && q.trim() !== city.value) {
       switchCity(q.trim());
     }
   }
@@ -133,10 +144,10 @@ function skeletons(n: number) {
       </button>
     </div>
 
-    <!-- 城市选择器（按需高德同步） -->
+    <!-- 城市选择器（按需高德同步；query 带入的任意城市也会出现在最前面） -->
     <div class="city-bar">
       <button
-        v-for="c in cities"
+        v-for="c in displayCities"
         :key="c"
         type="button"
         :class="['city-chip', { 'city-chip--active': c === city }]"
@@ -306,7 +317,7 @@ function skeletons(n: number) {
 .skel {
   height: 300px;
   border-radius: 14px;
-  background: linear-gradient(100deg, #rgba(23, 33, 31, 0.04) 40%, #rgba(23, 33, 31, 0.02) 50%, #rgba(23, 33, 31, 0.04) 60%);
+  background: linear-gradient(100deg, rgba(23, 33, 31, 0.04) 40%, rgba(23, 33, 31, 0.02) 50%, rgba(23, 33, 31, 0.04) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -355,7 +366,7 @@ function skeletons(n: number) {
 }
 
 .load-more__end {
-  color: #rgba(23, 33, 31, 0.18);
+  color: rgba(23, 33, 31, 0.18);
   font-size: 13px;
 }
 </style>

@@ -8,11 +8,18 @@ import { beginLive } from "../stores/trip";
 import type { TripRequestPayload } from "../types";
 
 /**
- * AI 行程规划表单（产品化阶段一 /plan；首页 CTA / 景点卡片"加入行程"经 /plan?city= 跳入预填）。
+ * AI 行程规划表单（产品化阶段一 /plan；首页 CTA / 景点卡片"加入行程"经 /plan?city=&spot= 跳入预填）。
  * 画像卡已移入首页 Dashboard，本页专注表单主流程。
+ *
+ * 加入行程闭环（排查报告 P0-2）：query 携带 city + spot + spot_id + poi_id 进入时，
+ * 页面显示可删除的"已加入景点"标签；提交时合并进 special_notes（"务必安排：景点名"，
+ * 不覆盖用户自己填的备注、同一景点不重复），复用后端 TravelAgent 对点名景点的解析能力。
  */
 const router = useRouter();
 const route = useRoute();
+
+/** 从景点卡/详情页"加入行程"带入的指定景点（可删除；null=无） */
+const joinedSpot = ref<{ name: string; spotId?: string; poiId?: string } | null>(null);
 
 const preferenceOptions = [
   "自然风景",
@@ -107,13 +114,61 @@ watch(dayCount, (dc) => {
   formState.endDate = formatDate(endDate.value.toDate());
 });
 
-// 首页/景点卡"加入行程" → /plan?city=城市 预填目的地
-onMounted(() => {
-  const q = route.query.city;
-  if (q && typeof q === "string" && !formState.destination) {
-    formState.destination = q.trim();
+// 首页/景点卡"加入行程" → /plan?city=城市[&spot=景点&spot_id=&poi_id=] 预填目的地 + 已加入景点
+function applyPlanPrefill() {
+  const q = route.query;
+  const qCity = q.city;
+  if (qCity && typeof qCity === "string" && qCity.trim()) {
+    formState.destination = qCity.trim();
   }
-});
+  const qSpot = q.spot;
+  if (qSpot && typeof qSpot === "string" && qSpot.trim()) {
+    const name = qSpot.trim();
+    const sid = q.spot_id;
+    const pid = q.poi_id;
+    const next = {
+      name,
+      spotId: typeof sid === "string" && sid ? sid : undefined,
+      poiId: typeof pid === "string" && pid ? pid : undefined,
+    };
+    // 同一景点重复进入（浏览器回退/重复点击）→ 不重复提示也不重复文本
+    if (!joinedSpot.value || joinedSpot.value.name !== next.name) {
+      joinedSpot.value = next;
+      message.info(`已加入「${name}」，生成行程时会优先安排该景点`);
+    }
+  }
+}
+
+/** 移除已加入景点：同步清掉 URL 上的景点参数，避免回退/重触发 watch 时又被带回来 */
+function removeJoinedSpot() {
+  joinedSpot.value = null;
+  void router.replace({
+    name: "plan",
+    query: formState.destination.trim()
+      ? { city: formState.destination.trim() }
+      : undefined,
+  });
+}
+
+/** 组装特殊要求：用户备注（原样保留）+ 点名景点行（去重、不覆盖用户已填内容） */
+function buildSpecialNotes(): string {
+  const parts: string[] = [];
+  if (formState.notes.trim()) {
+    parts.push(formState.notes.trim());
+  }
+  const spot = joinedSpot.value;
+  if (spot && spot.name) {
+    const line = `务必安排：${spot.name}`;
+    if (!parts.some((t) => t.includes(`务必安排：${spot.name}`))) {
+      parts.push(line);
+    }
+  }
+  return parts.join("\n");
+}
+
+onMounted(applyPlanPrefill);
+// 同页内 query 变化（如浏览器前进/后退到另一个"加入行程"目标）也重新预填
+watch(() => route.query, applyPlanPrefill);
 
 function togglePreference(list: string[], value: string) {
   const idx = list.indexOf(value);
@@ -140,7 +195,7 @@ function handleSubmit() {
     pace: formState.pace,
     dietary_preferences: formState.dietaryPreferences,
     hotel_level: formState.hotelLevel,
-    special_notes: formState.notes,
+    special_notes: buildSpecialNotes(),
   };
 
   // 写入工作区入参，跳到 agent 实时视图，边生成边展示思考过程
@@ -210,6 +265,16 @@ function handleSubmit() {
           <span class="ios-day-unit">天</span>
         </div>
       </div>
+    </div>
+
+    <!-- 已加入景点（从景点卡/详情页"加入行程"带入，可移除；提交时并入特殊要求） -->
+    <div v-if="joinedSpot" class="joined-spot">
+      <span class="joined-spot__chip">
+        <span class="joined-spot__pin">📍</span>
+        已加入：{{ joinedSpot.name }}
+        <button type="button" class="joined-spot__remove" aria-label="移除已加入景点" @click="removeJoinedSpot">✕</button>
+      </span>
+      <span class="joined-spot__hint">生成行程时会优先安排该景点</span>
     </div>
 
     <!-- 偏好设置 -->
@@ -343,6 +408,56 @@ function handleSubmit() {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* 已加入景点提示条（P0-2：加入行程闭环的页面内反馈） */
+.joined-spot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(47, 119, 112, 0.08);
+  border: 1px dashed rgba(47, 119, 112, 0.4);
+}
+
+.joined-spot__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: var(--brand-teal);
+  color: var(--surface-white);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.joined-spot__pin {
+  font-size: 12px;
+}
+
+.joined-spot__remove {
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--surface-white);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.joined-spot__remove:hover {
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.joined-spot__hint {
+  font-size: 12px;
+  color: var(--brand-deep);
 }
 
 /* iOS 表单 */

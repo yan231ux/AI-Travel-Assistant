@@ -600,7 +600,7 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border: 1px dashed #rgba(23, 33, 31, 0.18);
+  border: 1px dashed rgba(23, 33, 31, 0.18);
   border-radius: 20px;
   padding: 2px 6px 2px 12px;
   background: var(--surface-white);
@@ -638,7 +638,7 @@ onMounted(() => {
 .stats-item {
   padding: 14px 12px;
   border-radius: 10px;
-  background: #rgba(23, 33, 31, 0.05);
+  background: rgba(23, 33, 31, 0.05);
   text-align: center;
 }
 

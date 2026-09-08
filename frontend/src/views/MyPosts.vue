@@ -185,23 +185,23 @@ onMounted(() => void load());
   border-radius: 999px;
 }
 .mp-status--draft {
-  background: #rgba(23, 33, 31, 0.05);
+  background: rgba(23, 33, 31, 0.05);
   color: var(--text-secondary);
 }
 .mp-status--pending_review {
-  background: #rgba(201, 138, 45, 0.12);
+  background: rgba(201, 138, 45, 0.12);
   color: var(--warning);
 }
 .mp-status--published {
-  background: #rgba(60, 140, 112, 0.1);
+  background: rgba(60, 140, 112, 0.1);
   color: var(--success);
 }
 .mp-status--rejected {
-  background: #rgba(198, 93, 81, 0.08);
+  background: rgba(198, 93, 81, 0.08);
   color: var(--danger);
 }
 .mp-status--hidden {
-  background: #rgba(23, 33, 31, 0.05);
+  background: rgba(23, 33, 31, 0.05);
   color: var(--text-secondary);
 }
 .mp-reject {
