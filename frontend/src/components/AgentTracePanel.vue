@@ -49,13 +49,13 @@ defineProps<{
   border-radius: 10px;
   padding: 12px 14px;
   background: #F2F2F7;
-  border-left: 3px solid #007AFF;
+  border-left: 3px solid var(--brand-teal);
   transition: opacity 0.3s ease, box-shadow 0.3s ease;
 }
 
 .agent-step--active {
   box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.35);
-  background: #FFFFFF;
+  background: var(--surface-white);
 }
 
 .agent-step--dim {
@@ -72,7 +72,7 @@ defineProps<{
 .agent-step__num {
   font-size: 12px;
   font-weight: 600;
-  color: #007AFF;
+  color: var(--brand-teal);
   background: rgba(0, 122, 255, 0.1);
   padding: 2px 8px;
   border-radius: 6px;
@@ -100,7 +100,7 @@ defineProps<{
 
 .agent-tool {
   font-size: 12px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   padding: 3px 8px;
   border-radius: 6px;
   border: 0.5px solid rgba(0, 0, 0, 0.08);
@@ -109,7 +109,7 @@ defineProps<{
 .agent-step__obs {
   font-size: 13px;
   color: #636366;
-  background: #FFFFFF;
+  background: var(--surface-white);
   padding: 8px 10px;
   border-radius: 8px;
   line-height: 1.5;

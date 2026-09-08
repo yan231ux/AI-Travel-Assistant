@@ -202,12 +202,12 @@ onBeforeUnmount(() => {
 <template>
   <section class="agent-page">
     <!-- 顶部状态栏 -->
-    <div class="ios-card agent-status">
+    <div :class="['ios-card', 'agent-status', { 'agent-status--console': mode === 'live' && !error }]">
       <div class="agent-status__head">
-        <span v-if="mode === 'live'" class="agent-status__title">🤖 AI 正在思考</span>
-        <span v-else class="agent-status__title">🎬 Agent 轨迹回放</span>
-        <span v-if="done" class="agent-status__badge">✅ 已完成</span>
-        <span v-else-if="mode === 'replay' && replayFinished" class="agent-status__badge">🎉 播放结束</span>
+        <span v-if="mode === 'live'" class="agent-status__title">AI 正在思考</span>
+        <span v-else class="agent-status__title">Agent 轨迹回放</span>
+        <span v-if="done" class="agent-status__badge">已完成</span>
+        <span v-else-if="mode === 'replay' && replayFinished" class="agent-status__badge">播放结束</span>
       </div>
 
       <!-- live：进度 -->
@@ -232,18 +232,18 @@ onBeforeUnmount(() => {
       <!-- replay：控制条 -->
       <template v-else>
         <div class="agent-controls">
-          <button class="ios-btn ios-btn--sm" :disabled="steps.length === 0" @click="prev">◀ 上一步</button>
+          <button class="ios-btn ios-btn--sm" :disabled="steps.length === 0" @click="prev">上一步</button>
           <button
             v-if="!playing"
             class="ios-btn ios-btn--primary ios-btn--sm"
             :disabled="steps.length === 0"
             @click="play"
           >
-            ▶ 播放
+            播放
           </button>
-          <button v-else class="ios-btn ios-btn--sm" @click="pause">⏸ 暂停</button>
-          <button class="ios-btn ios-btn--sm" :disabled="steps.length === 0" @click="next">下一步 ▶</button>
-          <button class="ios-btn ios-btn--sm" :disabled="steps.length === 0" @click="replayAgain">↻ 重播</button>
+          <button v-else class="ios-btn ios-btn--sm" @click="pause">暂停</button>
+          <button class="ios-btn ios-btn--sm" :disabled="steps.length === 0" @click="next">下一步</button>
+          <button class="ios-btn ios-btn--sm" :disabled="steps.length === 0" @click="replayAgain">重播</button>
           <span class="agent-controls__count">第 {{ displayStepLabel }} / {{ steps.length }} 步</span>
           <button class="ios-btn ios-btn--primary ios-btn--sm" :disabled="!itinerary" @click="viewFull">
             查看完整行程
@@ -254,7 +254,7 @@ onBeforeUnmount(() => {
 
     <!-- 轨迹面板 -->
     <div class="ios-card">
-      <div class="ios-card__header">🤖 Agent 推理过程</div>
+      <div class="ios-card__header">Agent 推理过程</div>
       <AgentTracePanel
         :steps="steps"
         :highlight-step="mode === 'replay' ? currentStep : null"
@@ -267,7 +267,7 @@ onBeforeUnmount(() => {
 
     <!-- replay：播完展示行程 + 地图 -->
     <div v-if="mode === 'replay' && replayFinished && itinerary" class="ios-card">
-      <div class="ios-card__header">📋 最终行程</div>
+      <div class="ios-card__header">最终行程</div>
       <div class="replay-result">
         <div class="replay-result__dest">{{ itinerary.destination }}旅行计划</div>
         <p class="replay-result__summary">{{ itinerary.summary }}</p>
@@ -302,14 +302,14 @@ onBeforeUnmount(() => {
 .ios-card {
   padding: 20px;
   border-radius: 12px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .ios-card__header {
   font-size: 15px;
   font-weight: 600;
-  color: #1C1C1E;
+  color: var(--text-primary);
   margin-bottom: 14px;
   padding-bottom: 10px;
   border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
 
 .ios-btn:active { transform: scale(0.97); }
 .ios-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.ios-btn--primary { background: #007AFF; color: #FFFFFF; }
+.ios-btn--primary { background: var(--brand-coral); color: #ffffff; }
 .ios-btn--sm { padding: 6px 14px; font-size: 13px; }
 
 /* 状态栏 */
@@ -342,14 +342,14 @@ onBeforeUnmount(() => {
 .agent-status__title {
   font-size: 17px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .agent-status__badge {
   font-size: 13px;
   font-weight: 600;
-  color: #34C759;
-  background: rgba(52, 199, 89, 0.12);
+  color: var(--success);
+  background: rgba(60, 140, 112, 0.12);
   padding: 4px 10px;
   border-radius: 20px;
 }
@@ -360,23 +360,23 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   font-size: 13px;
-  color: #636366;
+  color: var(--text-secondary);
 }
 
 .agent-status__phase {
   font-weight: 600;
-  color: #007AFF;
+  color: var(--brand-teal);
 }
 
-.agent-status__msg { color: #8E8E93; }
-.agent-status__count { margin-left: auto; color: #8E8E93; }
+.agent-status__msg { color: var(--text-muted); }
+.agent-status__count { margin-left: auto; color: var(--text-muted); }
 
 /* 不确定型进度条 */
 .agent-progress {
   height: 4px;
   border-radius: 2px;
   overflow: hidden;
-  background: rgba(0, 122, 255, 0.12);
+  background: rgba(47, 119, 112, 0.12);
   margin-bottom: 12px;
 }
 
@@ -384,7 +384,7 @@ onBeforeUnmount(() => {
   width: 30%;
   height: 100%;
   border-radius: 2px;
-  background: #007AFF;
+  background: var(--brand-coral);
   animation: agent-slide 1.2s ease-in-out infinite;
 }
 
@@ -398,14 +398,14 @@ onBeforeUnmount(() => {
   margin-top: 12px;
   padding: 12px 14px;
   border-radius: 10px;
-  background: rgba(255, 59, 48, 0.08);
-  border: 0.5px solid rgba(255, 59, 48, 0.2);
+  background: rgba(198, 93, 81, 0.08);
+  border: 0.5px solid rgba(198, 93, 81, 0.2);
 }
 
 .agent-error__msg {
   margin: 0 0 10px;
   font-size: 13px;
-  color: #FF3B30;
+  color: var(--danger);
 }
 
 .agent-error__actions {
@@ -424,14 +424,14 @@ onBeforeUnmount(() => {
 .agent-controls__count {
   margin-left: auto;
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 /* 等待提示 */
 .agent-pending {
   text-align: center;
-  color: #8E8E93;
+  color: var(--text-muted);
   font-size: 14px;
   padding: 24px 0;
 }
@@ -440,7 +440,7 @@ onBeforeUnmount(() => {
 .replay-result__dest {
   font-size: 20px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
   margin-bottom: 8px;
 }
 
@@ -448,17 +448,17 @@ onBeforeUnmount(() => {
   margin: 0 0 12px;
   font-size: 14px;
   line-height: 1.7;
-  color: #3C3C43;
+  color: var(--text-secondary);
 }
 
 .replay-result__budget {
   font-size: 14px;
-  color: #3C3C43;
+  color: var(--text-secondary);
   margin-bottom: 12px;
 }
 
 .replay-result__budget strong {
-  color: #007AFF;
+  color: var(--brand-teal);
   font-size: 18px;
 }
 
@@ -474,18 +474,18 @@ onBeforeUnmount(() => {
   gap: 4px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: #F2F2F7;
+  background: rgba(23, 33, 31, 0.05);
 }
 
 .replay-day__title {
   font-size: 14px;
   font-weight: 600;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .replay-day__spots {
   font-size: 13px;
-  color: #636366;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -494,4 +494,46 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   overflow: hidden;
 }
+
+/* 深色 AI 控制台（live 生成态，UI 方案 §6.5：规划过程智能感） */
+.agent-status--console {
+  position: relative;
+  background: var(--brand-ink);
+  border: none;
+  overflow: hidden;
+}
+.agent-status--console::before {
+  content: "";
+  position: absolute;
+  right: -60px;
+  top: -90px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 0 55%, rgba(247, 245, 239, 0.05) 56% 57%, transparent 58%),
+    radial-gradient(circle, transparent 0 74%, rgba(230, 184, 92, 0.06) 75% 76%, transparent 77%);
+  pointer-events: none;
+}
+.agent-status--console .agent-status__title { color: #f7f5ef; }
+.agent-status--console .agent-status__badge {
+  color: var(--brand-sun);
+  background: rgba(230, 184, 92, 0.12);
+}
+.agent-status--console .agent-status__line { color: rgba(247, 245, 239, 0.75); }
+.agent-status--console .agent-status__phase { color: var(--brand-coral); }
+.agent-status--console .agent-status__msg { color: rgba(247, 245, 239, 0.6); }
+.agent-status--console .agent-status__count { color: rgba(247, 245, 239, 0.5); }
+.agent-status--console .agent-progress {
+  background: rgba(247, 245, 239, 0.14);
+  margin-bottom: 14px;
+}
+.agent-status--console .agent-progress__bar { background: var(--brand-coral); }
+.agent-status--console .agent-error {
+  background: rgba(198, 93, 81, 0.14);
+  border-color: rgba(198, 93, 81, 0.45);
+}
+.agent-status--console .agent-error__msg { color: #f2b3ab; }
+.agent-status--console .agent-status__head { margin-bottom: 16px; }
+
 </style>

@@ -309,20 +309,20 @@ function handleSubmit() {
   margin: 0;
   font-size: 22px;
   font-weight: 700;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 .plan-head__desc {
   margin: 6px 0 0;
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 /* iOS 卡片 */
 .ios-card {
   padding: 20px;
   border-radius: 12px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
@@ -342,7 +342,7 @@ function handleSubmit() {
 .ios-card__title {
   font-size: 15px;
   font-weight: 600;
-  color: #1C1C1E;
+  color: var(--text-primary);
 }
 
 /* iOS 表单 */
@@ -368,35 +368,35 @@ function handleSubmit() {
 .ios-label {
   font-size: 13px;
   font-weight: 500;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .ios-input,
 .ios-select {
   height: 36px;
   padding: 0 12px;
-  border: 1px solid #D1D1D6;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   font-size: 15px;
-  color: #1C1C1E;
+  color: var(--text-primary);
   outline: none;
   transition: border-color 0.2s ease;
 }
 
 .ios-input:focus,
 .ios-select:focus {
-  border-color: #007AFF;
+  border-color: var(--brand-teal);
 }
 
 .ios-textarea {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #D1D1D6;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   font-size: 15px;
-  color: #1C1C1E;
+  color: var(--text-primary);
   outline: none;
   resize: vertical;
   transition: border-color 0.2s ease;
@@ -404,7 +404,7 @@ function handleSubmit() {
 }
 
 .ios-textarea:focus {
-  border-color: #007AFF;
+  border-color: var(--brand-teal);
 }
 
 /* iOS 信息行 */
@@ -419,7 +419,7 @@ function handleSubmit() {
 
 .ios-info-label {
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 .ios-day-count {
@@ -435,7 +435,7 @@ function handleSubmit() {
 
 .ios-day-unit {
   font-size: 14px;
-  color: #1C1C1E;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
@@ -447,12 +447,12 @@ function handleSubmit() {
 }
 
 .ios-chip {
-  border: 1px solid #D1D1D6;
+  border: 1px solid var(--border-soft);
   border-radius: 20px;
   padding: 6px 14px;
-  background: #FFFFFF;
+  background: var(--surface-white);
   font-size: 13px;
-  color: #1C1C1E;
+  color: var(--text-primary);
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -462,9 +462,9 @@ function handleSubmit() {
 }
 
 .ios-chip--active {
-  border-color: #007AFF;
-  background: #007AFF;
-  color: #FFFFFF;
+  border-color: var(--brand-teal);
+  background: var(--brand-teal);
+  color: var(--surface-white);
 }
 
 /* iOS 按钮 */
@@ -483,8 +483,8 @@ function handleSubmit() {
 }
 
 .ios-button--primary {
-  background: #007AFF;
-  color: #FFFFFF;
+  background: var(--brand-coral);
+  color: var(--surface-white);
 }
 
 .ios-button--primary:disabled {
@@ -501,7 +501,7 @@ function handleSubmit() {
 .submit-hint {
   margin-top: 10px;
   font-size: 13px;
-  color: #8E8E93;
+  color: var(--text-muted);
 }
 
 @media (max-width: 768px) {
