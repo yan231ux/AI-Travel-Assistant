@@ -161,8 +161,10 @@ public class SpotService {
             ScoreDetail d = PersonalizedScoreCalculator.evaluate(
                     s.getName(), s.getCategory(), false, prefs, visitedNames, Set.of());
             item.setScore(d.finalScore());
+            // 相关推荐 = 同城精选（攻略质量优先），不是"为你推荐"流：
+            // 不暴露 personalized/match 字段（前端不显示"匹配度%"），理由只讲数据可信，不说成热门
             item.setRecommendReason(Spot.QUALITY_POI_ONLY.equals(s.getDataQuality())
-                    ? "高德热门景点" : "本地攻略收录的真实景点");
+                    ? "城市精选" : "本地攻略收录的真实景点");
             return item;
         }).collect(Collectors.toList());
     }

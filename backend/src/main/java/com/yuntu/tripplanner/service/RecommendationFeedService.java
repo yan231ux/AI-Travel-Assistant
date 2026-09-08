@@ -156,15 +156,16 @@ public class RecommendationFeedService {
         Set<String> visitedNames = collectVisitedNames(userId);
         Map<String, Boolean> collectedMap = collectedSpotIds(userId);
 
-        boolean personalized = "personalized".equalsIgnoreCase(sort) || sort == null || sort.isBlank();
+        // 景点流个性化口径（P1-1 澄清）：只有 travel_style 域正偏好（权重≥阈值）真实参与排序
+        // 才叫"为你推荐"；food/pace/city 等域不影响景点流排序，前端不得因拥有任意画像就说"已按画像排序"
         boolean hasStyle = prefs.stream().anyMatch(p -> p != null
                 && UserPreference.CATEGORY_TRAVEL_STYLE.equals(p.getCategory())
                 && p.getWeight() != null
                 && p.getWeight() >= UserProfileService.POSITIVE_WEIGHT_MIN);
-        personalized = personalized && hasStyle;
+        boolean personalized = wantPersonalized(sort) && hasStyle;
 
         List<RecommendationItem> ranked = spots.stream()
-                .map(s -> toItem(s, prefs, visitedNames, collectedMap))
+                .map(s -> toItem(s, prefs, visitedNames, collectedMap, personalized))
                 .sorted(comparator(sort, personalized))
                 .collect(Collectors.toList());
 
@@ -411,9 +412,16 @@ public class RecommendationFeedService {
         }
     }
 
-    /** 组装推荐卡片项：确定性推荐理由（命中偏好/未去过/数据可信），分数由统一评分器计算 */
+    /**
+     * 组装推荐卡片项：确定性推荐理由（命中偏好/未去过/数据可信），分数由统一评分器计算。
+     *
+     * @param personalizedFeed 本条流是否真正个性化排序（personalized & hasStyle）：
+     *                         仅在该分支才暴露"命中偏好"字段/文案；popular/latest/无画像降级
+     *                         一律中性理由 + 不置 personalized/match 字段（前端不显示匹配度%）。
+     */
     private RecommendationItem toItem(Spot spot, List<UserPreference> prefs,
-                                      Set<String> visitedNames, Map<String, Boolean> collectedMap) {
+                                      Set<String> visitedNames, Map<String, Boolean> collectedMap,
+                                      boolean personalizedFeed) {
         RecommendationItem item = new RecommendationItem();
         item.setSpotId(spot.getSpotId());
         item.setPoiId(spot.getPoiId());
@@ -431,11 +439,23 @@ public class RecommendationFeedService {
         ScoreDetail d = PersonalizedScoreCalculator.evaluate(
                 spot.getName(), spot.getCategory(), false, prefs, visitedNames, Set.of());
         item.setScore(d.finalScore());
-        item.setRecommendReason(reasonOf(d, spot.getDataQuality()));
+        // P0-1：真实命中（无硬回避 + 有正偏好标签）才暴露"个性化/匹配度"字段；
+        // score 是含基础分 0.5 的综合排序分，禁止前端当匹配度展示。
+        if (personalizedFeed && d.hit()) {
+            item.setPersonalized(Boolean.TRUE);
+            item.setMatchScore(clamp01(d.preferenceScore()));
+            item.setMatchedPreferences(d.matchedTags());
+        }
+        item.setRecommendReason(reasonOf(d, spot.getDataQuality(), personalizedFeed));
         return item;
     }
 
-    /** 排序比较器（Review P2-6 语义收敛）：
+    private static double clamp01(double v) {
+        return Math.max(0, Math.min(1, v));
+    }
+
+    /**
+     * 排序比较器（Review P2-6 语义收敛）：
      * latest → 保序（DB 已按 updated_at 倒序）；真正个性化（有画像）→ 按统一评分器分；
      * 其余（无画像的 personalized / popular / 空 sort）→ 一律按攻略质量降级排序，
      * 避免「显式传 sort=personalized 却没画像」时仍按评分排的语义矛盾。 */
@@ -461,8 +481,22 @@ public class RecommendationFeedService {
         return 0;
     }
 
-    /** 确定性推荐理由（顺序：硬约束 → 命中偏好 → 曾去过提示 → 数据可信/热门） */
-    private String reasonOf(ScoreDetail d, String dataQuality) {
+    /**
+     * 确定性推荐理由（P0-1/P1-2/P2-2 语义收敛）：
+     * <ul>
+     *   <li>非个性化流（popular/latest/无画像降级）：一律中性理由，不提"匹配你的偏好/曾去过"——
+     *       攻略质量优先 ≠ 热门（P1-2），已去过提示只在个性化语境有意义；</li>
+     *   <li>个性化流：硬约束 → 命中偏好（含曾去过后缀） → 曾去过提示 → 数据可信/城市精选。</li>
+     * </ul>
+     */
+    private String reasonOf(ScoreDetail d, String dataQuality, boolean personalizedFeed) {
+        String qualityReason = (Spot.QUALITY_GUIDE_MATCHED.equals(dataQuality)
+                || Spot.QUALITY_VERIFIED.equals(dataQuality))
+                ? "本地攻略收录的真实景点"
+                : "城市精选";
+        if (!personalizedFeed) {
+            return qualityReason;
+        }
         if (d.hardAvoid()) {
             return "你近期对「" + d.avoidTag() + "」不感兴趣";
         }
@@ -471,13 +505,9 @@ public class RecommendationFeedService {
             return d.visited() ? base + "（你曾去过，为你保留熟悉选项）" : base;
         }
         if (d.visited()) {
-            return "你曾去过这里，本次为你换点新地方";
+            return "你曾去过，为你保留熟悉选项";
         }
-        if (Spot.QUALITY_GUIDE_MATCHED.equals(dataQuality)
-                || Spot.QUALITY_VERIFIED.equals(dataQuality)) {
-            return "本地攻略收录的真实景点";
-        }
-        return "高德热门景点";
+        return qualityReason;
     }
 
     /** 用户历史行程中出现过的景点名（新颖性/重复降权输入） */

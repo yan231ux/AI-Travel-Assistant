@@ -44,9 +44,23 @@ public class RecommendationItem {
     @JsonProperty("tags")
     private List<String> tags;
 
-    /** 推荐分 0~1（PersonalizedScoreCalculator 体系扩展；无画像时=热度排序值） */
+    /** 推荐分 0~1（内部综合排序分：含基础分+偏好增益−已去过惩罚，**不要**当"匹配度"直接展示） */
     @JsonProperty("score")
     private Double score;
+
+    /** 本条是否真实命中个性化（仅"为你推荐"流且正命中偏好时才为 true；
+     *  无画像/未命中/攻略优先/最近更新/相关推荐/城市精选 恒为 null/false → 前端据此隐藏"匹配度%"） */
+    @JsonProperty("personalized")
+    private Boolean personalized;
+
+    /** 真实偏好匹配分 0~1（personalized=true 时有值 = clamp01(Σ权重×置信度)，否则 null；
+     *  区别于 score：只描述"偏好命中强度"，不含基础分/新颖性惩罚） */
+    @JsonProperty("match_score")
+    private Double matchScore;
+
+    /** 实际命中的偏好标签（personalized=true 时有值；供前端展示"匹配你的XX偏好"） */
+    @JsonProperty("matched_preferences")
+    private List<String> matchedPreferences;
 
     /** 确定性推荐理由（人读："匹配你的自然风景偏好，且你还没有去过"） */
     @JsonProperty("recommend_reason")

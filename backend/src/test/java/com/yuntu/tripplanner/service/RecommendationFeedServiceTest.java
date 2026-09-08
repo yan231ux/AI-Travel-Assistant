@@ -341,4 +341,97 @@ class RecommendationFeedServiceTest {
         // 攻略候选仅 1 个 < 6 → 保持全量 9 条（POI_ONLY 仍可见，只是不空流）
         assertEquals(9, feed.getTotal());
     }
+
+    /* ================= P0-1（排查报告）：综合排序分 ≠ 偏好匹配度 ================= */
+
+    /** 无画像 + 兜底理由（popular 攻略质量优先）：任何卡片都不许出现"匹配度"字段与百分比素材 */
+    @Test
+    void noProfile_anyItem_mustNotExposeMatchFields() {
+        when(spotRepository.selectCount(any())).thenReturn(50L);
+        Spot poiOnly = spot("普通商场", "购物服务", Spot.QUALITY_POI_ONLY);
+        Spot guide = spot("外滩", "风景名胜;风景名胜", Spot.QUALITY_GUIDE_MATCHED);
+        when(spotRepository.selectList(any())).thenReturn(List.of(poiOnly, guide));
+        when(userProfileService.listPreferences("u1")).thenReturn(List.of());
+
+        var feed = service.feed("u1", "上海", 1, 12, "personalized"); // 显式 personalized 也无画像 → 降级
+
+        assertFalse(feed.getPersonalized());
+        for (var item : feed.getItems()) {
+            // score 是内部排序分（0.5 基础分也照常返回），但前端可展示的匹配度三件套必须为空
+            assertNull(item.getPersonalized(), item.getName() + " 不应标个性化");
+            assertNull(item.getMatchScore(), item.getName() + " 不应有匹配分");
+            assertNull(item.getMatchedPreferences(), item.getName() + " 不应有命中标签");
+            // 兜底理由不得伪装"匹配你的偏好"；POI_ONLY 也不再说成"高德热门景点"
+            assertFalse(item.getRecommendReason().contains("匹配你的偏好"));
+            assertFalse(item.getRecommendReason().contains("热门"));
+        }
+    }
+
+    /** 有画像但个别景点未命中：只有真命中的卡片才带 personalized/match_score/matched_preferences */
+    @Test
+    void withProfile_onlyHitItemsExposeMatchFields_missStaysNeutral() {
+        when(spotRepository.selectCount(any())).thenReturn(50L);
+        Spot nature = spot("西湖", "风景名胜;风景名胜", Spot.QUALITY_GUIDE_MATCHED);
+        Spot mall = spot("银泰百货", "购物服务;商场", Spot.QUALITY_POI_ONLY);
+        when(spotRepository.selectList(any())).thenReturn(List.of(mall, nature));
+        when(userProfileService.listPreferences("u1")).thenReturn(
+                List.of(stylePref("自然风景", 0.9)));
+        when(userProfileService.getProfileVersion("u1")).thenReturn(3);
+
+        var feed = service.feed("u1", "杭州", 1, 12, "personalized");
+        assertTrue(feed.getPersonalized());
+
+        var hit = feed.getItems().get(0); // 命中"自然风景"的西湖排最前
+        assertEquals("西湖", hit.getName());
+        assertEquals(Boolean.TRUE, hit.getPersonalized());
+        assertNotNull(hit.getMatchScore());
+        assertTrue(hit.getMatchScore() > 0 && hit.getMatchScore() <= 1);
+        assertTrue(hit.getMatchedPreferences().contains("自然风景"));
+        assertTrue(hit.getRecommendReason().contains("匹配你的偏好"));
+
+        var miss = feed.getItems().get(1); // 银泰百货未命中 → 中性
+        assertEquals("银泰百货", miss.getName());
+        assertNull(miss.getPersonalized());
+        assertNull(miss.getMatchScore());
+        assertNull(miss.getMatchedPreferences());
+        assertFalse(miss.getRecommendReason().contains("匹配你的偏好"));
+    }
+
+    /** 攻略优先/最近更新排序即使有画像也不暴露个性化字段（前端据此隐藏"匹配度%"） */
+    @Test
+    void popularOrLatest_withProfile_keepNeutralReasons() {
+        when(spotRepository.selectCount(any())).thenReturn(50L);
+        Spot nature = spot("西湖", "风景名胜;风景名胜", Spot.QUALITY_GUIDE_MATCHED);
+        when(spotRepository.selectList(any())).thenReturn(List.of(nature));
+        when(userProfileService.listPreferences("u1")).thenReturn(
+                List.of(stylePref("自然风景", 0.9)));
+
+        // 攻略优先
+        var popular = service.feed("u1", "杭州", 1, 12, "popular");
+        assertFalse(popular.getPersonalized());
+        var pItem = popular.getItems().get(0);
+        assertNull(pItem.getPersonalized());
+        assertNull(pItem.getMatchScore());
+        assertEquals("本地攻略收录的真实景点", pItem.getRecommendReason());
+
+        // 最近更新（latest）
+        var latest = service.feed("u1", "杭州", 1, 12, "latest");
+        assertFalse(latest.getPersonalized());
+        var lItem = latest.getItems().get(0);
+        assertNull(lItem.getPersonalized());
+        assertNull(lItem.getMatchScore());
+        assertFalse(lItem.getRecommendReason().contains("匹配你的偏好"));
+    }
+
+    /** P1-2/P2-2 文案：POI_ONLY 兜底不再叫"热门"（改"城市精选"）；已去过不再说"换点新地方" */
+    @Test
+    void poiOnlyReason_isCityFeatured_notHot() {
+        when(spotRepository.selectCount(any())).thenReturn(50L);
+        Spot poiOnly = spot("外滩源", "风景名胜;风景名胜", Spot.QUALITY_POI_ONLY);
+        when(spotRepository.selectList(any())).thenReturn(List.of(poiOnly));
+        when(userProfileService.listPreferences("u1")).thenReturn(List.of());
+
+        var feed = service.feed("u1", "上海", 1, 12, "personalized");
+        assertEquals("城市精选", feed.getItems().get(0).getRecommendReason());
+    }
 }
