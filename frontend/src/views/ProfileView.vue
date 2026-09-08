@@ -28,6 +28,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   food: "口味",
   dietary: "饮食要求",
   behavior: "行为约束",
+  city: "城市偏好",
 };
 
 const profile = ref<UserProfile | null>(null);
@@ -290,8 +291,12 @@ onMounted(() => {
               <span :class="['pref-line__src', { 'pref-line__src--active': line.sourceLabel === '主动选择' }]">
                 {{ line.sourceLabel }}
               </span>
-              <span class="pref-line__cat">{{ line.categoryLabel }}：</span>
-              <span class="pref-line__tags">{{ line.tags.join("、") }}</span>
+              <div class="pref-line__body">
+                <span class="pref-line__cat">{{ line.categoryLabel }}</span>
+                <span class="pref-line__tags">
+                  <span v-for="t in line.tags" :key="t" class="pref-line__tag">{{ t }}</span>
+                </span>
+              </div>
             </div>
           </div>
         </template>
@@ -544,33 +549,59 @@ onMounted(() => {
 }
 
 .pref-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.7;
   color: var(--text-primary);
 }
 
 .pref-line__src {
-  display: inline-block;
-  margin-right: 8px;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 12px;
+  flex-shrink: 0;
+  align-self: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .pref-line__src--active {
-  background: rgba(47, 119, 112, 0.1);
+  background: rgba(47, 119, 112, 0.12);
   color: var(--brand-teal);
+  font-weight: 600;
+}
+
+.pref-line__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
 }
 
 .pref-line__cat {
   color: var(--text-primary);
-  font-weight: 500;
+  font-weight: 600;
+  font-size: 13.5px;
 }
 
 .pref-line__tags {
-  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pref-line__tag {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 10px;
+  background: rgba(47, 119, 112, 0.07);
+  color: var(--brand-deep);
+  font-size: 12.5px;
 }
 
 .ios-chip-row {
@@ -658,7 +689,7 @@ onMounted(() => {
 /* 个人中心入口 */
 .hub-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
 
