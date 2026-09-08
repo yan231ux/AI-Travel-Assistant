@@ -1,0 +1,52 @@
+/* ============================================================
+ * 设计令牌 Design Tokens（UI 视觉升级方案 §4）
+ * 所有页面统一从 :root 变量取色/圆角/阴影，禁止再硬编码散值。
+ * 注意：antd 主题常量见 ./theme.ts，需与本文件保持同源（改色两处同步）。
+ * ============================================================ */
+:root {
+  /* 品牌色板（方案 §4.2） */
+  --brand-ink: #17211f;        /* 墨黑：正文/深底 */
+  --brand-deep: #203b3a;       /* 深青：品牌/导航 */
+  --brand-teal: #2f7770;       /* 青绿：信息/链接/次级强调 */
+  --brand-coral: #d9775d;      /* 珊瑚橙：主行动按钮/重点标签 */
+  --brand-sun: #e6b85c;        /* 落日金：点缀/徽章 */
+
+  /* 表面 */
+  --surface-paper: #f7f5ef;    /* 暖白页面底 */
+  --surface-white: #ffffff;    /* 卡片 */
+  --surface-tint: rgba(47, 119, 112, 0.06); /* 浅青 tint，用于强调底 */
+
+  /* 文本 */
+  --text-primary: #17211f;
+  --text-secondary: #68736f;
+  --text-muted: #98a09c;
+
+  /* 描边 */
+  --border-soft: rgba(23, 33, 31, 0.12);
+
+  /* 状态 */
+  --success: #3c8c70;
+  --danger: #c65d51;
+  --warning: #c98a2d;
+
+  /* 圆角（方案 §4.4：大内容区 ≤12px，小控件 8px） */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+
+  /* 阴影：柔和、面积小 */
+  --shadow-sm: 0 1px 2px rgba(23, 33, 31, 0.06);
+  --shadow-md: 0 4px 16px rgba(23, 33, 31, 0.08);
+  --shadow-lg: 0 12px 32px rgba(23, 33, 31, 0.12);
+
+  /* 字体（方案 §4.3：本地栈，不依赖外网字体） */
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Songti SC", "Noto Serif SC", "STSong", "SimSun", serif;
+  --font-num: "DIN Alternate", "SF Pro Display", "Segoe UI", var(--font-sans);
+
+  /* 布局 */
+  --content-max: 1280px;
+  --nav-height: 60px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+}

@@ -1,0 +1,103 @@
+/* ============================================================
+ * 全局基础样式（UI 视觉升级方案 §4/§9）
+ * 依赖 ./tokens.css 中的设计令牌，先引入 tokens.css 再引入本文件。
+ * ============================================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--surface-paper);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 {
+  color: var(--text-primary);
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 0 0 0.5em;
+}
+
+a {
+  color: var(--brand-teal);
+  text-decoration: none;
+  transition: color 0.2s var(--ease);
+}
+a:hover {
+  color: var(--brand-deep);
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+/* 大标题/品牌性标题可使用衬线（方案 §4.3：标题有识别度即可，勿滥用） */
+.font-serif {
+  font-family: var(--font-serif);
+}
+
+/* 数字强调统一使用数字字体 */
+.font-num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 键盘可达性：统一 focus 环 */
+:focus-visible {
+  outline: 2px solid var(--brand-coral);
+  outline-offset: 2px;
+}
+
+/* 选中态 */
+::selection {
+  background: rgba(217, 119, 93, 0.22);
+}
+
+/* 滚动条（WebKit）弱化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(23, 33, 31, 0.18);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(23, 33, 31, 0.3);
+}
+
+/* 尊重系统减弱动效设置（方案 §7） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 通用页面容器（各页面如已自带可逐步收敛） */
+.page-wrap {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+/* 内容行内最大可读宽度（帖子正文等连续阅读场景） */
+.prose {
+  max-width: 720px;
+}

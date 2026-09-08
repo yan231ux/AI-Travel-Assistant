@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
+import zhCN from "ant-design-vue/es/locale/zh_CN";
+import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
 import { onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 
 import { clearAuth } from "./stores/session";
 import { clearAll } from "./stores/trip";
+import { antdTheme } from "./styles/theme";
+
+dayjs.locale("zh-cn");
 
 const router = useRouter();
 
@@ -25,20 +31,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <router-view />
+  <a-config-provider :locale="zhCN" :theme="antdTheme">
+    <router-view />
+  </a-config-provider>
 </template>
-
-<style scoped>
-:global(body) {
-  margin: 0;
-  min-width: 320px;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #F2F2F7;
-  color: #1C1C1E;
-  -webkit-font-smoothing: antialiased;
-}
-
-:global(*) {
-  box-sizing: border-box;
-}
-</style>
