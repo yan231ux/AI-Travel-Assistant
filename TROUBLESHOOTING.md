@@ -407,6 +407,12 @@
 
 ---
 
+### 13.3 存档两课：v1.x 标签别移动 + 沙箱里永远推不动 GitHub（2026-09-08，v1.4 存档）
+- **标签错位**：远端 v1.3 早在 e6cf4b4(08-31) 就推送过，本地却被后打成注解标签指向 8238df5 → `git push --tags` 报 "v1.3 already exists"。按"不覆盖历史"约定以远端为准：`git tag -d v1.3 && git tag v1.3 e6cf4b4` 重建对齐。**教训：打 tag 前先 `git ls-remote --tags origin` 对账；本地永远不要移动已推送的 v1.x 标签**（旧区间如需标记就向后开新号，如 v1.4 覆盖整个 09-02→09-08 区间）。
+- **推送通道**：本沙箱 git push 必失败（GCM 凭据读取不到 → "could not read Username"；偶发取到凭据后又被本地代理 127.0.0.1:62160 掐断上传流 → "unexpected disconnect while reading sideband packet"/HTTP 502；绕过代理则无直连）。SSH 22 被拒、443 可达但公钥未注册 GitHub。**结论：推送类操作直接给用户可复制的命令让其本地终端执行**（其 GCM 正常），AI 只负责提交/打标/核验（ls-remote 核对 SHA）。已留 repo 级 http.version=HTTP/1.1 + postBuffer=500MB（无害，可缓解代理断流）。
+
+---
+
 ## 待办 / 已规划（未实施）
 - 方向三：ECharts 可视化（预算饼图/行程时间轴/天气曲线）——答辩视觉冲击最大，建议答辩前做。
 - 方向四：工程加固（JWT 强密钥 / Docker 全栈一键编排 / 搜索重试降级）。
