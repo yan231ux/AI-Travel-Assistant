@@ -18,8 +18,27 @@ import type { TripRequestPayload } from "../types";
 const router = useRouter();
 const route = useRoute();
 
-/** 从景点卡/详情页"加入行程"带入的指定景点（可删除；null=无） */
-const joinedSpot = ref<{ name: string; spotId?: string; poiId?: string } | null>(null);
+/** 从景点卡/详情页"加入行程"带入的指定景点；支持多个累加，重复同名入栈去重（点击多家不同景点可一起规划） */
+interface JoinedSpot {
+  name: string;
+  spotId?: string;
+  poiId?: string;
+}
+const joinedSpots = ref<JoinedSpot[]>([]);
+
+/** 入栈：同名视为同一请求（不重复提示也不重复文本），返回 true=新增，false=去重命中 */
+function pushJoinedSpot(next: JoinedSpot): boolean {
+  if (joinedSpots.value.find((x) => x.name === next.name)) {
+    return false;
+  }
+  joinedSpots.value.push(next);
+  return true;
+}
+
+/** 移除某个已加入景点（按 name 定位）；URL query 不再回写以免覆盖后续其它"加入行程"导航 */
+function removeJoinedSpot(name: string) {
+  joinedSpots.value = joinedSpots.value.filter((x) => x.name !== name);
+}
 
 const preferenceOptions = [
   "自然风景",
@@ -115,6 +134,7 @@ watch(dayCount, (dc) => {
 });
 
 // 首页/景点卡"加入行程" → /plan?city=城市[&spot=景点&spot_id=&poi_id=] 预填目的地 + 已加入景点
+// （排查报告 P0-2 + GPT 建议：多景点累加：用户从不同景点卡点击时一并入栈，统一规划）
 function applyPlanPrefill() {
   const q = route.query;
   const qCity = q.city;
@@ -126,38 +146,26 @@ function applyPlanPrefill() {
     const name = qSpot.trim();
     const sid = q.spot_id;
     const pid = q.poi_id;
-    const next = {
+    const next: JoinedSpot = {
       name,
       spotId: typeof sid === "string" && sid ? sid : undefined,
       poiId: typeof pid === "string" && pid ? pid : undefined,
     };
-    // 同一景点重复进入（浏览器回退/重复点击）→ 不重复提示也不重复文本
-    if (!joinedSpot.value || joinedSpot.value.name !== next.name) {
-      joinedSpot.value = next;
+    // 同一景点重复进入（浏览器回退/重复点击）→ 入栈去重、不重复提示
+    if (pushJoinedSpot(next)) {
       message.info(`已加入「${name}」，生成行程时会优先安排该景点`);
     }
   }
 }
 
-/** 移除已加入景点：同步清掉 URL 上的景点参数，避免回退/重触发 watch 时又被带回来 */
-function removeJoinedSpot() {
-  joinedSpot.value = null;
-  void router.replace({
-    name: "plan",
-    query: formState.destination.trim()
-      ? { city: formState.destination.trim() }
-      : undefined,
-  });
-}
-
-/** 组装特殊要求：用户备注（原样保留）+ 点名景点行（去重、不覆盖用户已填内容） */
+/** 组装特殊要求：用户备注（原样保留）+ 多行点名景点（去重、不覆盖用户已填内容） */
 function buildSpecialNotes(): string {
   const parts: string[] = [];
   if (formState.notes.trim()) {
     parts.push(formState.notes.trim());
   }
-  const spot = joinedSpot.value;
-  if (spot && spot.name) {
+  for (const spot of joinedSpots.value) {
+    if (!spot.name) continue;
     const line = `务必安排：${spot.name}`;
     if (!parts.some((t) => t.includes(`务必安排：${spot.name}`))) {
       parts.push(line);
@@ -267,14 +275,22 @@ function handleSubmit() {
       </div>
     </div>
 
-    <!-- 已加入景点（从景点卡/详情页"加入行程"带入，可移除；提交时并入特殊要求） -->
-    <div v-if="joinedSpot" class="joined-spot">
-      <span class="joined-spot__chip">
-        <span class="joined-spot__pin">📍</span>
-        已加入：{{ joinedSpot.name }}
-        <button type="button" class="joined-spot__remove" aria-label="移除已加入景点" @click="removeJoinedSpot">✕</button>
-      </span>
-      <span class="joined-spot__hint">生成行程时会优先安排该景点</span>
+    <!-- 已加入景点（多景点累加：可点多个景点卡一并规划；P0-2 + GPT 建议） -->
+    <div v-if="joinedSpots.length" class="joined-spot">
+      <span class="joined-spot__label">已加入景点</span>
+      <div class="joined-spot__chips">
+        <span v-for="s in joinedSpots" :key="s.name" class="joined-spot__chip">
+          <span class="joined-spot__pin">📍</span>
+          {{ s.name }}
+          <button
+            type="button"
+            class="joined-spot__remove"
+            :aria-label="`移除已加入景点 ${s.name}`"
+            @click="removeJoinedSpot(s.name)"
+          >✕</button>
+        </span>
+      </div>
+      <span class="joined-spot__hint">生成行程时会优先安排这些景点</span>
     </div>
 
     <!-- 偏好设置 -->
@@ -410,7 +426,7 @@ function handleSubmit() {
   color: var(--text-primary);
 }
 
-/* 已加入景点提示条（P0-2：加入行程闭环的页面内反馈） */
+/* 已加入景点提示条（P0-2：加入行程闭环 + GPT 建议：多景点累加一起规划） */
 .joined-spot {
   display: flex;
   flex-wrap: wrap;
@@ -420,6 +436,18 @@ function handleSubmit() {
   border-radius: 12px;
   background: rgba(47, 119, 112, 0.08);
   border: 1px dashed rgba(47, 119, 112, 0.4);
+}
+
+.joined-spot__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-deep);
+}
+
+.joined-spot__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .joined-spot__chip {

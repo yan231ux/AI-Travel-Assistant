@@ -13,7 +13,8 @@ import { visibleMatchPercent } from "../utils/personalization";
  * 卡片自身承载三类轻交互（均有请求中状态，防重复提交）：
  * - 收藏 / 取消收藏 → POST|DELETE /spots/{id}/favorite（幂等，首次收藏会触发画像 SAVE 升权）
  * - 不感兴趣 → 先选原因（负反馈粒度与结果页一致：只有 TYPE 才泛化降画像权重，其余仅留痕）
- * - 加入行程 → /plan?city=<城市>（行程表单预填目的地）
+ * - 加入行程 → /plan?city=<城市>&spot=<景点名>&spot_id=<id>&poi_id=<id>
+ *   （排查报告 P0-2：必须携带具体景点，让规划页能显性化并让生成器优先安排）
  * 任意反馈成功后 emit('changed')，父页面按需刷新推荐流（"反馈影响下次推荐"闭环演示）。
  */
 
