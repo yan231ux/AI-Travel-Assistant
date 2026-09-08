@@ -13,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDate;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -35,11 +36,15 @@ class ItineraryGeneratorTest {
     @Mock
     private ItineraryValidator itineraryValidator;
 
+    @Mock
+    private PersonalizedRankingService personalizedRankingService;
+
     private ItineraryGenerator generator;
 
     @BeforeEach
     void setUp() {
-        generator = new ItineraryGenerator(llmClient, new ObjectMapper(), mapEnrichmentService, itineraryValidator);
+        generator = new ItineraryGenerator(llmClient, new ObjectMapper(), mapEnrichmentService,
+                itineraryValidator, personalizedRankingService);
     }
 
     private TripRequest tripRequest() {
@@ -116,6 +121,23 @@ class ItineraryGeneratorTest {
         Itinerary itinerary = generator.generate(tripRequest(), collected);
 
         assertEquals(88, itinerary.getTokenUsage().getEmbeddingPromptTokens());
+    }
+
+    @Test
+    void addsPersonalizationNote_whenRankingProducedNotes() {
+        when(llmClient.chat(anyString())).thenReturn(new LlmClient.LlmResult(validItineraryJson(), 10, 5));
+
+        CollectedData collected = new CollectedData();
+        collected.setPersonalizedNotes(List.of(
+                "[景点] 故宫博物院：匹配你的偏好「历史文化」",
+                "[景点] 星光购物中心：你近期对「购物」不感兴趣，本次已降低优先级"));
+
+        Itinerary itinerary = generator.generate(tripRequest(), collected);
+
+        assertTrue(itinerary.getSourceNotes().stream().anyMatch(n -> n.contains("已按你的偏好与历史对候选")),
+                "结果页来源说明需展示个性化排序依据");
+        assertTrue(itinerary.getSourceNotes().stream().anyMatch(n -> n.contains("故宫博物院")),
+                "需透出代表性匹配说明");
     }
 
     @Test

@@ -60,6 +60,12 @@ class ItineraryValidatorTest {
         return s;
     }
 
+    private SpotItem spot(String name, String addr, String desc) {
+        SpotItem s = spot(name, addr);
+        s.setDescription(desc);
+        return s;
+    }
+
     private DayPlan day(int idx) {
         DayPlan d = new DayPlan();
         d.setDayIndex(idx);
@@ -500,5 +506,287 @@ class ItineraryValidatorTest {
                 "真串用应报警示");
         assertFalse(d1.getNotes().stream().anyMatch(n -> n.contains("苍山」") || n.contains("洱海生态廊道」")),
                 "合法语境景点不应被误报警示");
+    }
+
+    @Test
+    void removesShopAndApartmentFromSpotsByPoiType() {
+        // 三亚"火星主题"实测：集成灶门店(带高德type)与公寓被 LLM 误列为景点 →
+        // 校验层按业态移除，真景点(椰梦长廊)保留
+        DayPlan d1 = day(1);
+        SpotItem jcz = spot("火星人集成灶(三亚河东路店)", "中恒建材城5号门五栋B16");
+        jcz.setPoiType("购物服务;专卖店;家电卖场");
+        SpotItem apt = spot("来自火星公寓(裕民路分店)", "裕民路");
+        SpotItem dream = spot("椰梦长廊", "天涯区");
+        d1.getSpots().addAll(List.of(jcz, apt, dream));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> poi = Map.of("景点", List.of(
+                Map.of("name", "椰梦长廊", "address", "天涯区"),
+                Map.of("name", "鹿回头风景区", "address", "鹿岭路")));
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(poi, null));
+
+        assertEquals(1, d1.getSpots().size(), "商铺与公寓都应被移除，只留真景点");
+        assertEquals("椰梦长廊", d1.getSpots().get(0).getName());
+        assertTrue(d1.getNotes().stream().anyMatch(n -> n.contains("已移除被误列为景点的")
+                        && n.contains("火星人集成灶") && n.contains("来自火星公寓")),
+                "移除备注应点名两个非游览场所");
+    }
+
+    @Test
+    void refillsDayAfterRemovingAllNonSightseeingSpots() {
+        // 极端场景：某天 LLM 只排了商铺+公寓两个"景点"，全被移除 → 当天不能空，
+        // 应从真实景点候选池自动补位（三亚 D3 实测：移除"来自火星公寓"后当天无景点）
+        DayPlan d1 = day(1);
+        SpotItem jcz = spot("火星人集成灶(林旺路店)", "海榆东线");
+        jcz.setPoiType("购物服务;专卖店");
+        d1.getSpots().add(jcz);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> poi = Map.of("景点", List.of(
+                Map.of("name", "椰梦长廊", "address", "天涯区"),
+                Map.of("name", "鹿回头风景区", "address", "鹿岭路")));
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(poi, null));
+
+        assertEquals(1, d1.getSpots().size(), "移除后必须补位，当天不能无景点");
+        String name = d1.getSpots().get(0).getName();
+        assertTrue(name.equals("椰梦长廊") || name.equals("鹿回头风景区"),
+                "补位的应是真实景点候选，实际补入：" + name);
+        assertTrue(d1.getNotes().stream().anyMatch(n -> n.contains("已自动补入真实景点")),
+                "应备注自动补位说明");
+    }
+
+    @Test
+    void hotelLevelMismatchWarnsOnlyOnce() {
+        // 同一住宿问题(每晚 hotel 相同)不得在 source_notes 重复刷屏(3天3条) → 只警示一次
+        DayPlan d1 = day(1);
+        DayPlan d2 = day(2);
+        DayPlan d3 = day(3);
+        for (DayPlan d : List.of(d1, d2, d3)) {
+            HotelItem h = new HotelItem();
+            h.setName("亿点足迹青年旅舍(三亚商品街店)");
+            h.setLevel("舒适型");
+            h.setEstimatedCost(320.0);
+            d.setHotel(h);
+            d.getSpots().add(spot("椰梦长廊", "天涯区"));
+        }
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2, d3));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> poi = Map.of("景点", List.of(
+                Map.of("name", "椰梦长廊", "address", "天涯区")));
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(poi, null));
+
+        long warns = it.getSourceNotes().stream()
+                .filter(n -> n.contains("已按实际调整为经济型")).count();
+        assertEquals(1, warns, "同一住宿档次问题只应警示一次");
+        for (DayPlan d : List.of(d1, d2, d3)) {
+            assertEquals("经济型", d.getHotel().getLevel(), "青旅/民宿必须按实际降为经济型");
+        }
+    }
+
+    /* ================= 简介跨景点复用兜底（三亚实测场景） ================= */
+
+    private static final String DESC_FALLBACK = "（该景点简介暂未匹配到真实资料，请参考官方介绍）";
+
+    /** 三亚实测：椰梦长廊的简介被整段复制给三亚湾、海月广场 → 复用者降级兜底，首发者保留 */
+    @Test
+    void identicalDescriptionAcrossSpots_laterOnesFallback() {
+        String sanyaDesc = "三亚最长的海岸线，椰梦长廊20多公里椰林步道，是看日落的最佳地点——傍晚整条海岸线都是橘色天空。晚上本地人散步锻炼，烟火气足。";
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区（三亚市区西侧沿海）", sanyaDesc));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("三亚湾", "天涯区（三亚市区西侧沿海）", sanyaDesc)); // 整段复制
+        DayPlan d3 = day(3);
+        d3.getSpots().add(spot("海月广场", "天涯区（三亚市区西侧沿海）", sanyaDesc)); // 整段复制
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2, d3));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(sanyaDesc, d1.getSpots().get(0).getDescription(), "首发景点（椰梦长廊）保留原简介");
+        assertEquals(DESC_FALLBACK, d2.getSpots().get(0).getDescription(), "复用者三亚湾应降级");
+        assertEquals(DESC_FALLBACK, d3.getSpots().get(0).getDescription(), "复用者海月广场应降级");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("简介") && n.contains("数据交叉校验")),
+                "来源说明需汇总简介串用");
+    }
+
+    /** 标点/空白/全半角差异不影响"完全相同"判定（规范化后相同仍兜底） */
+    @Test
+    void descriptionSameAfterNormalization_stillFallback() {
+        String a = "大东海是离市区最近的海湾，沙质平缓、游泳方便，是性价比最高的海滨。";
+        String b = "大东海是离市区最近的海湾，沙质平缓、游泳方便，是性价比最高的海滨！"; // 仅句末标点差异
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("大东海旅游区", "吉阳区", a));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("小东海", "吉阳区", b));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(a, d1.getSpots().get(0).getDescription(), "首发保留");
+        assertEquals(DESC_FALLBACK, d2.getSpots().get(0).getDescription(), "仅标点差异也视为完全相同");
+    }
+
+    /** 高相似（编辑距离 ≥0.90，长度 ≥40 字符）→ 降级 */
+    @Test
+    void highlySimilarDescription_fallback() {
+        String a = "南山文化旅游区以108米海上观音闻名，园区依山面海、绿化极好，适合慢慢逛大半天，建议坐电瓶车节省体力。";
+        String b = "南山文化旅游区以108米海上观音闻名，园区依山面海、绿化极好，适合慢慢逛大半天，建议坐电瓶车节省脚力。"; // 仅末词差异
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("南山文化旅游区", "崖州区", a));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("南山寺", "崖州区", b));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(DESC_FALLBACK, d2.getSpots().get(0).getDescription(), "高度相似应降级");
+    }
+
+    /** 名称互为包含（同一景点不同称呼）时简介相同不处理 */
+    @Test
+    void relatedNames_sameDescription_notTreatedAsReuse() {
+        String desc = "惠州西湖由丰湖、平湖等组成，以苏东坡寓惠遗迹著称。";
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("惠州西湖", "环城西路", desc));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("西湖", "环城西路", desc)); // 名称互含
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("惠州"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(desc, d1.getSpots().get(0).getDescription(), "互含不处理");
+        assertEquals(desc, d2.getSpots().get(0).getDescription(), "互含同一景点，简介相同属正常");
+    }
+
+    /** 地址各不相同，但简介重复 → 仍应触发（覆盖面独立于地址去重） */
+    @Test
+    void descriptionReuse_detectedEvenWhenAddressesDiffer() {
+        String desc = "鹿回头山顶公园是三亚看全景与日落的最佳地点，可俯瞰三亚湾与市区，建议傍晚前往。";
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("鹿回头", "鹿岭路", desc));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("凤凰岭", "凤凰路", desc)); // 地址不同，但简介整段相同
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(DESC_FALLBACK, d2.getSpots().get(0).getDescription(),
+                "简介重复与地址是否重复无关，地址正常也应兜底");
+    }
+
+    /** 地址已"待核实"的景点：简介相似度阈值放宽（0.82 而非 0.90）也能拦截 */
+    @Test
+    void pendingAddress_similarDescription_looserThresholdFallback() {
+        // 两段简介约 87% 相似（差异约 6/48 字符）：常规阈值 0.90 不命中，
+        // 地址已"待核实"（多重异常信号）时阈值降到 0.82 → 命中降级
+        String base = "蜈支洲岛是三亚最热门的离岛，海水清澈见底、沙滩细白，水上项目齐全，是潜水和玩水的好去处，岛上还适合环岛散步。";
+        String variant = "蜈支洲岛是三亚最热门的离岛，海水清澈见底、沙滩洁白，水上项目丰富，是潜水与玩水的首选地，岛上还适合环岛散步。";
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("蜈支洲岛", "海棠区", base));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("西岛", "（地址待核实）", variant));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(DESC_FALLBACK, d2.getSpots().get(0).getDescription(), "地址待核实 + 较高相似 → 放宽阈值兜底");
+    }
+
+    /** 地理参照句（可俯瞰/途经）场景：各简介自身独立，不应被误判为复用（与主语位语义不冲突） */
+    @Test
+    void distinctDescriptionsWithGeoReferences_notFallback() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("苍山", "大理市大理镇", "苍山十九峰连绵，可俯瞰大理古城与洱海全景。山顶气温比大理古城低8-10°C，建议带外套。"));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("生态廊道", "大理市才村码头", "才村到磻溪村再到喜洲古镇这一段是廊道风景最好的路段，骑行是最佳打开方式。"));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("大理");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("大理"), collectedWithPoi(Map.of(), null));
+
+        assertTrue(d1.getSpots().get(0).getDescription().contains("可俯瞰大理古城"), "参照句应保留");
+        assertTrue(d2.getSpots().get(0).getDescription().contains("喜洲古镇"), "参照句应保留");
+        assertTrue(it.getSourceNotes().stream().noneMatch(n -> n.contains("简介")),
+                "独立简介不得触发复用警告");
+    }
+
+    /** 共享通用短句（如"适合拍照"）不误报 */
+    @Test
+    void sharedShortSlogan_notFallback() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("三亚湾", "天涯区三亚湾路", "适合拍照"));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("大东海", "吉阳区榆亚路", "适合拍照"));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals("适合拍照", d2.getSpots().get(0).getDescription(), "通用短句不得降级");
+    }
+
+    /** 大景区内多个子景点共享区域背景（都提及"位于XX沿海"）但不雷同 → 不误伤 */
+    @Test
+    void geoSubSpots_sharedAreaBackground_notFallback() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("三亚湾", "天涯区三亚湾路", "三亚湾位于三亚市区西南沿海，椰林成带，是傍晚散步看晚霞的好地方。"));
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("海月广场", "天涯区解放路", "海月广场位于三亚湾畔，广场开阔、近海，本地人跳舞健身，生活气息浓。"));
+        DayPlan d3 = day(3);
+        d3.getSpots().add(spot("椰梦长廊", "天涯区滨海路", "椰梦长廊是沿三亚湾而建的海滨步道，绵延二十余公里，可骑行可漫步。"));
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2, d3));
+        it.setSourceNotes(new ArrayList<>());
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertTrue(d1.getSpots().get(0).getDescription().contains("晚霞"), "子景点独立简介保留");
+        assertTrue(d2.getSpots().get(0).getDescription().contains("广场开阔"), "子景点独立简介保留");
+        assertTrue(d3.getSpots().get(0).getDescription().contains("骑行"), "子景点独立简介保留");
+        assertTrue(it.getSourceNotes().stream().noneMatch(n -> n.contains("简介")),
+                "共享区域背景但简介不同 → 不触发简介串用警告");
     }
 }

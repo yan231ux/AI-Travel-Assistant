@@ -14,6 +14,7 @@ import com.yuntu.tripplanner.model.TokenUsage;
 import com.yuntu.tripplanner.model.TripRequest;
 import com.yuntu.tripplanner.service.ItineraryGenerator;
 import com.yuntu.tripplanner.service.RagService;
+import com.yuntu.tripplanner.common.SightseeingFilter;
 import com.yuntu.tripplanner.common.TagDictionary;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -250,6 +251,15 @@ public class TravelAgent {
             Itinerary itinerary = itineraryGenerator.generate(request, collectedData);
             response.setItinerary(itinerary);
 
+            // 行程请求快照：预算/人数/天数写入行程，供结果页确定性计算预算使用率
+            //（放 execute 收尾处 → 流式与非流式入口行为一致；历史行程缺字段时前端回退不展示）
+            itinerary.setRequestedBudget(request.getBudget());
+            itinerary.setTravelers(request.getTravelers());
+            if (request.getStartDate() != null && request.getEndDate() != null) {
+                long spanDays = ChronoUnit.DAYS.between(request.getStartDate(), request.getEndDate()) + 1;
+                itinerary.setTripDays((int) Math.min(Math.max(spanDays, 1), 31));
+            }
+
             finalStep.setObservation("成功生成行程：" + itinerary.getTripId());
             response.getTrace().add(finalStep);
             callback.onStep(finalStep);
@@ -257,6 +267,8 @@ public class TravelAgent {
             // 汇总 token：think/reflect 消耗 + 行程内的 planner/rewrite/embedding 消耗
             response.setTokenUsage(mergeTokenUsage(agentUsage, itinerary.getTokenUsage()));
             response.setCollectedData(buildCollectedDataMap(collectedData));
+            // 候选阶段排序证据透传（内存链路：收尾 TripGenerationFinalizer 落库 candidate_evidence）
+            response.setCandidateEvidence(collectedData.getCandidateEvidence());
             response.setSuccess(true);
 
         } catch (Exception e) {
@@ -605,13 +617,30 @@ public class TravelAgent {
                     }
                     int poiRequestedCount = 0;
                     final int MAX_POI_REQUESTED = 3;
+                    Set<String> brandSeen = new HashSet<>();
                     for (Map<String, Object> p : pois) {
                         String n = String.valueOf(p.get("name"));
-                        if (n == null || "null".equals(n) || !names.add(n)) {
+                        if (n == null || "null".equals(n)) {
                             continue;
                         }
-                        // 仅当 POI 名包含用户输入的核心词时，才视为用户真的"指定"了这个景点
+                        // 仅当 POI 名包含用户输入的核心词时，才视为用户真的"指定"了这个地点
                         if (!n.contains(core)) {
+                            continue;
+                        }
+                        // 非游览业态过滤：商铺/公寓/写字楼/餐厅等不构成"点名景点"。
+                        // 实测：用户特别要求提"火星人集成灶门店/来自火星公寓"，高德 type 分别是
+                        // 「购物服务;专卖店」「商务住宅;住宅区」，若不过滤会被强制排进 spots 当景点。
+                        String poiType = p.get("type") == null ? null : String.valueOf(p.get("type"));
+                        if (SightseeingFilter.isNonSightseeing(poiType, n)) {
+                            log.info("点名候选「{}」为{}，不作为景点强排", n,
+                                    SightseeingFilter.kindOfNonSightseeing(poiType, n));
+                            continue;
+                        }
+                        // 同一品牌多家分店只取一个（集成灶(河东路店)/集成灶(林旺路店) 根名相同）
+                        if (!brandSeen.add(SightseeingFilter.brandCore(n))) {
+                            continue;
+                        }
+                        if (!names.add(n)) {
                             continue;
                         }
                         merged.add(p);
@@ -633,14 +662,20 @@ public class TravelAgent {
         //    由 checkRequestedSpots 兜底：若模型未落实则提示"未能安排"，禁止静默忽略。
         requested.addAll(extractMentionedPlaces(request.getSpecialNotes()));
 
-        // 总体去重 + 上限保护，避免极端情况下 requestedSpots 过长导致校验误报
+        // 总体去重 + 非游览名称兜底过滤 + 上限保护：
+        // extractMentionedPlaces/攻略卡片名没有高德 type，用名称词再兜底一次，
+        // 避免"来自火星公寓(裕民路分店)"这类住宿场所混进点名景点（名称含 公寓）
         if (!requested.isEmpty()) {
-            List<String> distinct = requested.stream().distinct().toList();
-            if (distinct.size() > 5) {
-                distinct = distinct.subList(0, 5);
+            List<String> distinct = requested.stream().distinct()
+                    .filter(n -> !SightseeingFilter.isNonSightseeingName(n))
+                    .toList();
+            if (!distinct.isEmpty()) {
+                if (distinct.size() > 5) {
+                    distinct = distinct.subList(0, 5);
+                }
+                collectedData.setRequestedSpots(distinct);
+                log.info("用户点名景点（定向查询+攻略匹配+口语地名，限 5）：{}", collectedData.getRequestedSpots());
             }
-            collectedData.setRequestedSpots(distinct);
-            log.info("用户点名景点（定向查询+攻略匹配+口语地名，限 5）：{}", collectedData.getRequestedSpots());
         }
     }
 

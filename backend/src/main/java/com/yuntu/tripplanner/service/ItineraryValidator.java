@@ -3,7 +3,10 @@ package com.yuntu.tripplanner.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuntu.tripplanner.agent.CollectedData;
 import com.yuntu.tripplanner.client.LlmClient;
+import com.yuntu.tripplanner.common.SightseeingFilter;
+import com.yuntu.tripplanner.common.SpotText;
 import com.yuntu.tripplanner.model.DayPlan;
+import com.yuntu.tripplanner.model.FilteredCandidate;
 import com.yuntu.tripplanner.model.HotelItem;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.MealItem;
@@ -53,9 +56,8 @@ public class ItineraryValidator {
      *  拆细"雨"：雷暴/大雨/中雨才触发室内化，「小毛毛雨」「小雨」只带伞不误判。 */
     private static final List<String> BAD_WEATHER_WORDS = List.of("雷", "暴", "雪", "冰", "大风", "台风", "沙尘", "暴雨", "大雨", "中雨");
 
-    /** 住宿场所关键词：景点列表中出现这些关键词的项是"酒店被误当景点"，直接移除 */
-    private static final List<String> LODGING_KEYWORDS =
-            List.of("酒店", "客栈", "旅馆", "民宿", "青旅", "青年旅舍", "公寓", "宾馆", "旅舍", "度假村", "招待所");
+    /** 住宿/餐饮/商铺/公寓等"非游览场所"的判定统一收敛到 common.SightseeingFilter
+     *  （高德 type 业态优先 + 名称兜底），避免多份词表漂移，此处不再各自维护关键词表。 */
 
     /**
      * 经济定位住宿关键词：名称含这些词的住宿本质是经济型（床位/民宿/公寓），
@@ -64,10 +66,6 @@ public class ItineraryValidator {
      */
     private static final List<String> ECONOMY_LODGING_KEYWORDS =
             List.of("青年旅舍", "青旅", "旅舍", "招待所", "民宿", "公寓", "旅馆", "客栈");
-
-    /** 餐饮场所关键词：餐厅被误当"主要景点"时直接移除（小吃街/美食街是街区不在此列） */
-    private static final List<String> DINING_KEYWORDS =
-            List.of("餐厅", "火锅", "饭店", "酒楼", "料理", "自助", "烤肉", "烧烤", "面馆", "餐吧", "食堂", "小吃店");
 
     /** 室内景点关键词（Plan B 替换时从候选池里挑） */
     private static final List<String> INDOOR_KEYWORDS =
@@ -80,6 +78,20 @@ public class ItineraryValidator {
     private static final List<String> GEO_SUFFIXES =
             List.of("湾", "海", "港", "滩", "岸", "岛", "湖", "河", "江",
                     "路", "大道", "街", "巷", "广场", "大桥", "隧道", "码头", "机场", "车站");
+
+    /** 简介兜底文案：整段简介被判定为复制/无真实资料时统一降级（防"编造别处简介"） */
+    private static final String DESC_FALLBACK = SpotText.NO_GUIDE_DESC;
+    /** 地址待核实兜底文案（多处分叉共用，统一常量防漂移） */
+    private static final String ADDR_PENDING = "（地址待核实）";
+
+    /** 简介复用判定阈值（跨景点 description 去重，dedupeCrossSpotMedia 分支3）：
+     *  完全相同判定要求规范化文本 ≥16 字符，防"适合拍照/看日落"等通用短句误伤；
+     *  高相似判定要求 ≥40 字符且相似度 ≥0.90；地址已被标"待核实"的景点（多重异常信号）
+     *  阈值放宽到 0.82。 */
+    private static final int DESC_SAME_MIN_LEN = 16;
+    private static final int DESC_SIM_MIN_LEN = 40;
+    private static final double DESC_SIM_THRESHOLD = 0.90;
+    private static final double DESC_SIM_THRESHOLD_WEAK = 0.82;
 
     /** 预算偏差阈值：总预算 &lt; 用户预算30% 或 &gt; 150% 视为不合理，触发修正 */
     private static final double BUDGET_LOW_RATIO = 0.3;
@@ -147,9 +159,10 @@ public class ItineraryValidator {
             if (day.getSpots() == null) {
                 continue;
             }
-            // 1.5 移除被错误地当作景点列出的酒店/餐厅
-            // 分两类：与当天酒店同名/互相包含（原逻辑，只覆盖同店）；名称含住宿/餐饮关键词的
-            //（覆盖"大隐国际青年旅舍""登巴客栈(XX店)""绿茶餐厅"等不同店名/餐厅混入场景）
+            // 1.5 移除被错误地当作景点列出的非游览场所
+            // 判定两路：①与当天酒店同名/互相包含（原逻辑，只覆盖同店）；②高德业态/名称命中非游览
+            //（住宿/餐饮/商铺/公寓/写字楼——覆盖"大隐国际青年旅舍""登巴客栈(XX店)""绿茶餐厅"
+            // 及"火星人集成灶(XX店)""来自火星公寓"这类点名场所被 LLM 误排的场景）。
             // ⚠️ 酒店同名判定用"核心名"（去括号后的主体）：避免"可见时光·望达斯旅舍(杭州西湖湖滨河坊街店)"
             //    这种长店名里带地理定位词（西湖/河坊街），把真实景点"西湖""河坊街"误删。
             String hnCore = hotelName == null ? "" : normalize(hotelName.replaceAll("[（(][^）)]*[）)]", ""));
@@ -164,12 +177,12 @@ public class ItineraryValidator {
                 boolean isSameHotel = !hnCore.isEmpty()
                         && (sn.equals(hnCore) || sn.contains(hnCore)
                         || (hnCore.length() >= 2 && hnCore.contains(sn)));
-                boolean isLodging = LODGING_KEYWORDS.stream().anyMatch(sn::contains);
-                boolean isDining = DINING_KEYWORDS.stream().anyMatch(sn::contains);
-                if (isSameHotel || isLodging || isDining) {
-                    log.warn("已将非景点「{}」从景点列表移除（{}）", s.getName(),
-                            isDining ? "餐厅不应作为景点" : "酒店/住宿不应作为景点");
-                    removedByKind.add(s.getName());
+                boolean nonSightseeing = SightseeingFilter.isNonSightseeing(s.getPoiType(), s.getName());
+                if (isSameHotel || nonSightseeing) {
+                    String kind = isSameHotel ? "与入住酒店同名"
+                            : SightseeingFilter.kindOfNonSightseeing(s.getPoiType(), s.getName());
+                    log.warn("已将非景点「{}」从景点列表移除（{}）", s.getName(), kind);
+                    removedByKind.add(s.getName() + "（" + kind + "）");
                     it.remove();
                 }
             }
@@ -178,7 +191,26 @@ public class ItineraryValidator {
                     day.setNotes(new ArrayList<>());
                 }
                 day.getNotes().add("⚠️ 已移除被误列为景点的「" + String.join("、", removedByKind)
-                        + "」（住宿/餐饮场所不应作为主要景点）");
+                        + "」（非游览场所不应作为主要景点，如需可自行前往）");
+            }
+            // 当天景点被删空 → 从真实景点候选池补位，避免"当日无景点"的空洞天
+            if (day.getSpots().isEmpty() && spotPool != null && !spotPool.isEmpty()) {
+                String replacement = popFree(spotPool, usedSpots);
+                if (replacement != null) {
+                    SpotItem fill = new SpotItem();
+                    fill.setName(replacement);
+                    fill.setSource("高德POI");
+                    String fillAddr = bestPoiAddress(poiAddressMap, replacement);
+                    if (fillAddr != null) {
+                        fill.setAddress(fillAddr);
+                    }
+                    if (day.getNotes() == null) {
+                        day.setNotes(new ArrayList<>());
+                    }
+                    day.getNotes().add("🔧 已自动补入真实景点「" + replacement
+                            + "」（替换被移除的非游览场所）");
+                    day.getSpots().add(fill);
+                }
             }
             for (SpotItem spot : day.getSpots()) {
                 String norm = normalize(spot.getName());
@@ -284,9 +316,10 @@ public class ItineraryValidator {
         // 10. 点名景点校验：用户明确要求的景点必须安排进行程，未安排的明确告知原因
         checkRequestedSpots(itinerary, collectedData);
 
-        // 11. 行程级图片/地址串用去重兜底（张冠李戴最后一道防线，不依赖高德 POI 池）：
-        //     同一行程中多个"名称明显不同"的景点却共用同一张图或同一地址，说明被串用，
-        //     实测惠州「博物馆/大云寺」都复用了「惠州西湖」的图与地址；直接清空复用者图片、地址标待核实。
+        // 11. 行程级图片/地址/简介串用去重兜底（张冠李戴最后一道防线，不依赖高德 POI 池）：
+        //     同一行程中多个"名称明显不同"的景点却共用同一张图/同一地址/同一段简介，说明被串用；
+        //     实测三亚「三亚湾/海月广场」简介整段复用了「椰梦长廊」的，惠州「博物馆/大云寺」
+        //     都复用了「惠州西湖」的图与地址。复用者图片清空、地址标待核实、简介降级兜底文案。
         dedupeCrossSpotMedia(itinerary);
 
         // 12. 酒店位置合理性：酒店经纬度与景点集群差距过大（跨区/跨县）→ 警示，
@@ -314,6 +347,7 @@ public class ItineraryValidator {
             }
         }
         List<String> missing = new ArrayList<>();
+        List<String> nonSight = new ArrayList<>();
         for (String r : collectedData.getRequestedSpots()) {
             if (r == null || r.isBlank()) {
                 continue;
@@ -321,7 +355,13 @@ public class ItineraryValidator {
             String rn = normalize(r);
             boolean found = planned.stream().anyMatch(p -> p.contains(rn) || rn.contains(p));
             if (!found) {
-                missing.add(r);
+                // 点名地点本身是住宿/商铺等非游览场所 → 不报"未能安排"
+                // （这不是系统漏排，而是此类场所本就不应作为主要景点，另作说明）
+                if (SightseeingFilter.isNonSightseeing(null, r)) {
+                    nonSight.add(r);
+                } else {
+                    missing.add(r);
+                }
             }
         }
         if (!missing.isEmpty()) {
@@ -331,6 +371,13 @@ public class ItineraryValidator {
             itinerary.getSourceNotes().add("⚠️ 你指定的景点未能全部安排：" + String.join("、", missing)
                     + "（原因可能是数据源未收录或不在本城市，请核实）");
             log.warn("点名景点未安排：{}", missing);
+        }
+        if (!nonSight.isEmpty()) {
+            if (itinerary.getSourceNotes() == null) {
+                itinerary.setSourceNotes(new ArrayList<>());
+            }
+            itinerary.getSourceNotes().add("ℹ️ 你提到的「" + String.join("、", nonSight)
+                    + "」为住宿/商铺类非游览场所，未作为主要景点安排（如需可自行前往）");
         }
     }
 
@@ -623,7 +670,7 @@ public class ItineraryValidator {
                 List<String> removed = new ArrayList<>();
                 String cleaned = stripSubjectCopies(desc, candidates, removed);
                 if (cleaned == null || cleaned.isBlank()) {
-                    spot.setDescription("（该景点简介暂未匹配到真实资料，请参考官方介绍）");
+                    spot.setDescription(DESC_FALLBACK);
                 } else if (!cleaned.equals(desc)) {
                     spot.setDescription(cleaned);
                 }
@@ -743,6 +790,8 @@ public class ItineraryValidator {
         if (itinerary.getDays() == null) {
             return;
         }
+        // 同一住宿问题（每晚 hotel 相同）只在首夜警示一次，避免 source_notes 重复刷屏
+        boolean warned = false;
         for (DayPlan day : itinerary.getDays()) {
             if (day.getHotel() == null || day.getHotel().getName() == null) {
                 continue;
@@ -760,12 +809,15 @@ public class ItineraryValidator {
                 if (h.getEstimatedCost() == null || h.getEstimatedCost() > 250) {
                     h.setEstimatedCost(200.0);
                 }
-                if (itinerary.getSourceNotes() == null) {
-                    itinerary.setSourceNotes(new ArrayList<>());
+                if (!warned) {
+                    warned = true;
+                    if (itinerary.getSourceNotes() == null) {
+                        itinerary.setSourceNotes(new ArrayList<>());
+                    }
+                    itinerary.getSourceNotes().add("⚠️ 系统检测：所选住宿「" + h.getName()
+                            + "」为青年旅舍/民宿类（经济定位），与您选择的「" + level + "」不匹配，已按实际调整为经济型（约 200 元/晚）。"
+                            + "如需高档型酒店，建议更换住宿选项");
                 }
-                itinerary.getSourceNotes().add("⚠️ 系统检测：所选住宿「" + h.getName()
-                        + "」为青年旅舍/民宿类（经济定位），与您选择的「" + level + "」不匹配，已按实际调整为经济型（约 200 元/晚）。"
-                        + "如需高档型酒店，建议更换住宿选项");
             }
         }
     }
@@ -838,6 +890,9 @@ public class ItineraryValidator {
                 if (!indoor) {
                     String replacement = popFree(indoorPool, usedSpots);
                     if (replacement != null) {
+                        // Plan B 替换真实发生：把被替换的户外景点记录进 filtered_candidates（WEATHER_API/HARD），
+                        // 支撑结果页「为什么没安排这些」（OPTIMIZATION_TODO P0③；TripGenerationFinalizer 收尾合并展示）
+                        addWeatherFiltered(itinerary, day, nm, badWeather);
                         spot.setName(replacement);
                         spot.setSource("高德POI");
                         usedSpots.add(normalize(replacement));
@@ -868,6 +923,29 @@ public class ItineraryValidator {
                 day.getNotes().add("⚠️ 当日天气「" + badWeather + "」恶劣，建议以室内活动为主" + detail);
             }
         }
+    }
+
+    /**
+     * 把被恶劣天气替换掉的户外景点记录为结构化过滤原因（OPTIMIZATION_TODO P0③）：
+     * 写入 itinerary.filteredCandidates（evidence=WEATHER_API, severity=HARD），
+     * 供结果页「为什么没安排这些」展示；TripGenerationFinalizer 收尾时与画像类过滤原因合并去重。
+     */
+    private void addWeatherFiltered(Itinerary itinerary, DayPlan day, String outdoorName, String badWeather) {
+        if (itinerary == null || outdoorName == null || outdoorName.isBlank()) {
+            return;
+        }
+        FilteredCandidate fc = new FilteredCandidate();
+        fc.setName(outdoorName);
+        fc.setBucket("景点");
+        fc.setReason(String.format("当日天气「%s」不适合户外活动，已替换为室内景点", badWeather));
+        fc.setEvidence("WEATHER_API");
+        fc.setSeverity("HARD");
+        if (itinerary.getFilteredCandidates() == null) {
+            itinerary.setFilteredCandidates(new ArrayList<>());
+        }
+        itinerary.getFilteredCandidates().add(fc);
+        log.info("天气替换记录过滤原因：{}（第{}天，{} → 室内）", outdoorName,
+                day == null || day.getDayIndex() == null ? "?" : day.getDayIndex(), badWeather);
     }
 
     /**
@@ -1132,12 +1210,16 @@ public class ItineraryValidator {
     }
 
     /**
-     * 行程级图片/地址串用去重兜底（张冠李戴最后一道防线，不依赖高德 POI 池）。
-     * <p>当同一行程中多个景点"名称明显不同"却共用同一张图片 URL 或同一地址时，说明图片/地址被串用
-     * （实测：惠州「博物馆」「大云寺」都复用了「惠州西湖」的图与地址——高德自身把这类搜索结果和景区混在一起返回）。
-     * 处理：复用者图片直接清空（宁缺毋错，不显示错图）、地址标为待核实，并在 sourceNotes 汇总告知。
-     * <p>名称互为包含关系（同一景点不同称呼，如"西湖"与"惠州西湖"）视为同一景点，不处理；
-     * 地址维度额外排除地理通名结尾的景点（如"西湖"），避免误伤大景区内多个子景点共用大区域地址的情况。
+     * 行程级图片/地址/简介串用去重兜底（张冠李戴最后一道防线，不依赖高德 POI 池）。
+     * <p>同一行程中多个"名称明显不同"的景点却共用同一张图片 URL / 同一地址 / 同一段简介时，
+     * 说明数据被串用（实测：惠州「博物馆」「大云寺」都复用了「惠州西湖」的图与地址；
+     * 三亚「三亚湾」「海月广场」简介整段复用了「椰梦长廊」的简介——LLM 把攻略里最详尽的一段到处贴）。
+     * 处理：复用者图片直接清空（宁缺毋错，不显示错图）、地址标为待核实、简介降级为兜底文案，
+     * 并在 sourceNotes 汇总告知。
+     * <p>名称互为包含关系（同一景点不同称呼，如"西湖"与"惠州西湖"）视为同一景点，不处理。
+     * 地址维度额外排除"复用者为地理通名结尾"的景点（如 三亚湾/海月广场 共用大区域地址"天涯区…"
+     * 属大景区合法共享，非错配）——只有复用者是具体地点（博物馆/寺庙等非通名）时才判地址错配；
+     * 简介维度不套此护栏：区域景点的简介被整段复制同样是错误（三亚湾不能"介绍椰梦长廊"）。
      */
     private void dedupeCrossSpotMedia(Itinerary itinerary) {
         List<SpotItem> all = new ArrayList<>();
@@ -1169,31 +1251,151 @@ public class ItineraryValidator {
             }
         }
 
-        // 2) 地址去重：同一 address 被 ≥2 个不同景点使用 → 复用者地址标待核实
+        // 2) 地址去重：同一 address 被 ≥2 个不同景点使用 → 复用者地址标待核实。
+        //    复用者是"地理通名结尾"的景点（三亚湾/海月广场/大东海…）时不判错配——
+        //    大景区内多个子景点共用大区域地址（"天涯区（三亚市区西侧沿海）"）是合法的。
         Map<String, SpotItem> addrOwner = new HashMap<>();
         for (SpotItem spot : all) {
             String addr = spot.getAddress();
-            if (addr == null || addr.isBlank() || addr.equals("（地址待核实）")) {
+            if (addr == null || addr.isBlank() || addr.equals(ADDR_PENDING)) {
                 continue;
             }
             SpotItem owner = addrOwner.get(addr);
             if (owner == null) {
                 addrOwner.put(addr, spot);
-            } else if (!namesRelated(owner.getName(), spot.getName())) {
+            } else if (!namesRelated(owner.getName(), spot.getName()) && !isGeoName(spot.getName())) {
                 log.warn("地址串用兜底：{}↔{} 共用地址「{}」，后者标待核实", owner.getName(), spot.getName(), addr);
-                spot.setAddress("（地址待核实）");
+                spot.setAddress(ADDR_PENDING);
                 warned.add("地址：「" + spot.getName() + "」与「" + owner.getName()
                         + "」疑似共用「" + addr + "」，已标待核实");
             }
         }
+
+        // 3) 简介去重：同一段简介被 ≥2 个不同景点完整/高相似复用 → 复用者简介降级为兜底文案。
+        //    LLM 常把攻略里最详尽的一段（如椰梦长廊"20多公里椰林步道…"）整段复制给同湾其他景点，
+        //    主语位判定管不到（地名不在句首、在引号内做同位语），必须按"跨景点文本复用"整体拦截。
+        dedupeCrossSpotDescriptions(all, warned);
 
         if (!warned.isEmpty()) {
             if (itinerary.getSourceNotes() == null) {
                 itinerary.setSourceNotes(new ArrayList<>());
             }
             itinerary.getSourceNotes().add("🔧 数据交叉校验：发现并修复 " + warned.size()
-                    + " 处景点图片/地址串用（" + String.join("；", warned) + "）");
+                    + " 处景点图片/地址/简介串用（" + String.join("；", warned) + "）");
         }
+    }
+
+    /**
+     * 简介跨景点复用兜底（dedupeCrossSpotMedia 分支3）：规范化后完全相同 / 高相似的简介，
+     * 判定为"后出现者复制了先出现者"，复用者简介替换为 {@link #DESC_FALLBACK} 并在 warned 记录。
+     * <ul>
+     *   <li>名称互为包含（同一景点不同称呼）不处理；</li>
+     *   <li>完全相同要求规范化文本 ≥{@value #DESC_SAME_MIN_LEN} 字符（防通用短句误伤）；</li>
+     *   <li>高相似要求 ≥{@value #DESC_SIM_MIN_LEN} 字符且归一化编辑距离相似度 ≥{@value #DESC_SIM_THRESHOLD}，
+     *       地址已被标"待核实"的景点（多重异常信号）放宽到 ≥{@value #DESC_SIM_THRESHOLD_WEAK}；</li>
+     *   <li>与主语位判定（checkDescriptionMismatch）互补：那里管"一段简介混入别处整句"，
+     *       这里管"整段简介被复制到别的景点"，两条独立规则互不替代。</li>
+     * </ul>
+     */
+    private void dedupeCrossSpotDescriptions(List<SpotItem> all, List<String> warned) {
+        if (all.size() < 2) {
+            return;
+        }
+        Map<String, SpotItem> exactOwners = new HashMap<>();
+        List<String> seenNorms = new ArrayList<>();
+        List<SpotItem> seenSpots = new ArrayList<>();
+        for (SpotItem spot : all) {
+            String desc = spot.getDescription();
+            if (desc == null || desc.isBlank() || DESC_FALLBACK.equals(desc)) {
+                continue; // 已是兜底文案的简介不参与判定，避免"两个兜底"互相误判
+            }
+            String norm = normalizeDescription(desc);
+            if (norm.length() < DESC_SAME_MIN_LEN) {
+                continue; // 太短的简介不参与复用判定（多为通用短句）
+            }
+            SpotItem exact = exactOwners.get(norm);
+            if (exact != null) {
+                if (!namesRelated(exact.getName(), spot.getName())) {
+                    log.warn("简介串用兜底：{}↔{} 简介完全相同，后者降级", exact.getName(), spot.getName());
+                    spot.setDescription(DESC_FALLBACK);
+                    warned.add("简介：「" + spot.getName() + "」与「" + exact.getName()
+                            + "」简介完全相同，已改为待核实文案");
+                }
+                continue; // 互含（同一景点不同称呼）不处理，也不覆盖首个基准
+            }
+            boolean reused = false;
+            if (exact == null && norm.length() >= DESC_SIM_MIN_LEN) {
+                // 高相似模糊匹配（编辑距离相似度）：地址已待核实的景点阈值放宽
+                double threshold = ADDR_PENDING.equals(spot.getAddress())
+                        ? DESC_SIM_THRESHOLD_WEAK : DESC_SIM_THRESHOLD;
+                for (int i = 0; i < seenNorms.size(); i++) {
+                    if (namesRelated(seenSpots.get(i).getName(), spot.getName())) {
+                        continue;
+                    }
+                    if (textSimilarity(norm, seenNorms.get(i)) >= threshold) {
+                        log.warn("简介串用兜底：{}↔{} 简介高度相似，后者降级",
+                                seenSpots.get(i).getName(), spot.getName());
+                        spot.setDescription(DESC_FALLBACK);
+                        warned.add("简介：「" + spot.getName() + "」与「" + seenSpots.get(i).getName()
+                                + "」简介高度相似，已改为待核实文案");
+                        reused = true;
+                        break;
+                    }
+                }
+            }
+            if (reused) {
+                continue; // 已降级，不再作为后续基准
+            }
+            exactOwners.put(norm, spot);
+            seenNorms.add(norm);
+            seenSpots.add(spot);
+        }
+    }
+
+    /** 简介规范化：去空白、全角→半角、去所有标点，仅保留中英文与数字，用于跨景点复用比较 */
+    private String normalizeDescription(String desc) {
+        if (desc == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(desc.length());
+        for (int i = 0; i < desc.length(); i++) {
+            char c = desc.charAt(i);
+            if (Character.isWhitespace(c)) {
+                continue;
+            }
+            if (c >= '\uFF01' && c <= '\uFF5E') {
+                c = (char) (c - 0xFEE0); // 全角 → 半角
+            }
+            if (Character.isLetterOrDigit(c)) {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 归一化编辑距离相似度 [0,1]（1-编辑距离/较长串长度），用于简介复用模糊判定 */
+    private static double textSimilarity(String a, String b) {
+        int m = a.length();
+        int n = b.length();
+        if (m == 0 || n == 0) {
+            return 0;
+        }
+        int[] prev = new int[n + 1];
+        int[] cur = new int[n + 1];
+        for (int j = 0; j <= n; j++) {
+            prev[j] = j;
+        }
+        for (int i = 1; i <= m; i++) {
+            cur[0] = i;
+            for (int j = 1; j <= n; j++) {
+                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                cur[j] = Math.min(Math.min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            }
+            int[] t = prev;
+            prev = cur;
+            cur = t;
+        }
+        return 1.0 - (double) prev[n] / Math.max(m, n);
     }
 
     /** 两景点名是否"指向同一地点"（互为包含）→ 视为同一景点，不去重 */

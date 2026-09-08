@@ -1,17 +1,13 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { onMounted, ref, watch } from "vue";
+import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import { deleteTrip, getTripDetail, listTrips } from "../services/api";
-import type { AgentTraceStep, Itinerary, TripSummaryItem } from "../types";
+import { openSaved } from "../stores/trip";
+import type { TripSummaryItem } from "../types";
 
-const props = defineProps<{
-  active: boolean;
-}>();
-
-const emit = defineEmits<{
-  openTrip: [itinerary: Itinerary, trace?: AgentTraceStep[]];
-}>();
+const router = useRouter();
 
 const loading = ref(false);
 const items = ref<TripSummaryItem[]>([]);
@@ -30,10 +26,12 @@ async function loadTrips() {
   }
 }
 
-async function openTrip(tripId: string) {
+/** 打开已保存行程 → 写入工作区并跳结果页 */
+async function viewTrip(tripId: string) {
   try {
     const response = await getTripDetail(tripId);
-    emit("openTrip", response.itinerary, response.trace);
+    openSaved(response.itinerary, response.trace);
+    void router.push({ name: "result" });
     message.success("已加载已保存行程。");
   } catch (error) {
     console.error(error);
@@ -58,12 +56,9 @@ async function removeTrip(tripId: string) {
   }
 }
 
+// 每次进入历史页都会重新挂载，直接加载即可
 onMounted(() => {
-  if (props.active) void loadTrips();
-});
-
-watch(() => props.active, (active) => {
-  if (active) void loadTrips();
+  void loadTrips();
 });
 </script>
 
@@ -90,7 +85,7 @@ watch(() => props.active, (active) => {
         <p class="history-card__summary">{{ item.summary }}</p>
         <div class="history-card__time">{{ item.updated_at || "未记录" }}</div>
         <div class="history-card__actions">
-          <button class="ios-btn ios-btn--primary ios-btn--sm" @click="openTrip(item.trip_id)">查看详情</button>
+          <button class="ios-btn ios-btn--primary ios-btn--sm" @click="viewTrip(item.trip_id)">查看详情</button>
           <button class="ios-btn ios-btn--danger ios-btn--sm" :disabled="deletingTripId === item.trip_id" @click="removeTrip(item.trip_id)">
             {{ deletingTripId === item.trip_id ? "删除中..." : "删除" }}
           </button>

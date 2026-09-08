@@ -133,6 +133,22 @@
 - **决策**：本次目的地之外的城市景点不硬塞进行程，提示"不在本城市"；多城市串联作为后续独立需求评估。
 - **答辩话术**："系统边界要诚实——单城市生成就明确单城市，不为了显得强大而做半吊子的跨城。"
 
+### 4.3 点名景点误收非游览场所：把集成灶门店/公寓排成"主要景点"（2026-09-03）
+- **现象**（三亚实测）：用户额外要求带"火星主题"（点名"火星人集成灶门店""来自火星公寓"），结果 D1/D2 的"主要景点"竟是「火星人集成灶(河东路店)」「火星人集成灶(林旺路店)」——厨电专卖店；D3 把「来自火星公寓(裕民路分店)」移除后**当天无景点**；同一条"来自火星公寓"一边被移除、一边又被 `checkRequestedSpots` 报"⚠️ 你指定的景点未能全部安排"，两套口径打架；且"舒适型"住宿被选成青旅，同一条警示在 source_notes **重复 3 次**（每晚一条）。
+- **根因**：
+  1. `collectRequestedSpots` 收点名只按"POI 名包含用户核心词"，**从不看高德返回的 `type` 业态**（AmapClient 一直存着 type：集成灶店="购物服务;专卖店"、公寓="商务住宅;住宅区"）；同品牌多家分店全部收进点名清单；
+  2. 生成提示词写死"点名必须出现在 spots"（规则16/17），对商铺/公寓**没有豁免条款**，LLM 只能硬排；
+  3. 校验层只按住宿/餐饮关键词删景点（`LODGING/DINING_KEYWORDS`），删不掉"集成灶门店"这类商铺；删空后**不补位**；`checkRequestedSpots` 与移除提示**互不知情**（移除说"住宿不该当景点"，它却报"未安排"）；
+  4. `validateHotelLevelMatch` 在**每晚循环**各 append 一条相同的 source_note。
+- **解决**（全部通用，不依赖城市/品牌）：
+  1. 新增 `common/SightseeingFilter`：高德 type 一级分类黑名单（购物服务/商务住宅/餐饮服务/住宿服务/公司企业/生活服务/医疗/金融/汽车/道路附属/通行设施…）判定"非游览场所"；type 缺失用名称兜底（门店/专卖店/专营店/旗舰店/公寓/写字楼/大厦/小区…及"去括号后主干以店结尾"）；**步行街/老街/美食街/古镇例外**（商业街区是可游览对象）；`brandCore()` 去括号去"店/门店/分店"后缀提取品牌根名。
+  2. `TravelAgent.collectRequestedSpots`：定向 POI 用 type/名称过滤非游览业态 + 同品牌多分店只收一个（`brandSeen`）；最终点名清单再名称兜底滤一遍（攻略卡片名/口语地名没有 type）。
+  3. 生成提示词规则 15-19 重写：spots 禁放商铺/写字楼/住宅区；点名里的非游览场所**不强制进 spots、不算"未安排"**（只可备注"可顺路前往"）；hotel 店型必须匹配档次（青旅/民宿/公寓只能标经济型，舒适/高档/豪华须选"XX大酒店"类）；tips 不得把商铺/公寓写成"优先安排参观"。
+  4. `ItineraryValidator`：① 移除误列景点统一走 `SightseeingFilter`（高德 type 优先，`SpotItem` 新增 `poi_type` 字段由 `MapEnrichmentService` 补全时写入），移除备注**按类别说明**（"公寓/住宅类""商铺类"…）；② 当天景点被删空 → 自动从真实景点候选池**补位**（标注"🔧 已自动补入真实景点"），杜绝"无景点日"；③ `checkRequestedSpots` 对非游览类点名不再报"未能安排"，改为"ℹ️ 你提到的 XX 为住宿/商铺类非游览场所，未作为主要景点安排（如需可自行前往）"——与移除提示口径一致；④ `validateHotelLevelMatch` 同一住宿问题**只警示一次**。
+- **答辩话术**："点名景点机制保证的是『用户指定的真景点不被丢』，但前提是先分清『什么才算景点』——我们用地图数据的行业分类（业态）做判定：商店、公寓、写字楼不是可游览对象，用户点名到它们时系统给『可顺路前往』的提示而不是硬排成主要景点；即使模型手滑排了，程序也会按业态兜底移除并自动补位真实景点。这套逻辑跟城市、跟品牌无关，任何『看着像地点的非景点』都适用。"
+- **回归验证**：`mvn.cmd compile` EXIT=0；`ItineraryValidatorTest/TravelAgentTest/MapEnrichmentServiceTest/ItineraryGeneratorTest` 全绿（登巴客栈/青旅/绿茶餐厅移除文案升级为带类别，断言前缀"已移除被误列为景点的"不变）。
+- **测试回归补漏（同日）**：新增 `SightseeingFilterTest`（8 例）+ `ItineraryValidatorTest` 3 例回归时，`pedestrianStreetIsExceptionFromShoppingType` 首跑红——「宽窄巷子」高德 type=`购物服务;商业街;特色商业街` 仍被判非游览。根因：街区例外只在**名称**里找"步行街/老街"词，专名型街区（宽窄巷子/南锣鼓巷）名称不含"街"字，线索只存在于高德**细分 type 段**。修复：例外判断改**双通道**——名称命中街区词 **或** type 各段命中街区词（新增 `typeHasStreetSegment`），任一命中即放行；教训：type 全串要逐段检查，不能只看一级分类。复跑 `mvn.cmd test -Dtest=SightseeingFilterTest,ItineraryValidatorTest` **27/27 绿 EXIT=0**。
+
 ---
 
 ## 五、个性化 / 长期记忆（方向二）
@@ -147,6 +163,15 @@
 - **关键工程点**：userId 从 ThreadLocal 取——必须在主线程捕获，异步线程读不到。
 - **答辩话术**："短期工作记忆（本轮 CollectedData）和长期记忆（trip_record 画像）分层；记忆是只读快照 + 按用户隔离 + 失败降级，不会反向伤害生成质量。"
 
+### 5.2 个性化闭环被结果缓存"挡住"：反馈后同参数仍返回旧行程（2026-09-04）
+- **现象**：用户对某景点点"不感兴趣"后，用相同参数再次生成，30 分钟内直接命中结果缓存（TripStreamController 的 trip:result 缓存），**返回的还是旧行程**——"负反馈影响后续推荐"的闭环演示不出来。
+- **根因**：结果缓存 key 只含行程参数 + userId，**不含画像版本**。行为反馈只改 user_preference 权重，主档 user_profile.profileVersion 未递增 → key 不变 → 缓存命中跳过 Agent。
+- **解决**：
+  1. `UserProfileService.recordBehavior`：当反馈真实改变了画像权重（有 delta≠0 或新建行；受保护行除外）→ 主档 profileVersion+1；新增 `getProfileVersion(userId)`（无主档返回 0）。
+  2. `TripStreamController.buildTripCacheKey`：raw key 末尾拼 `profile-v{version}` —— 反馈一发生，下次同参数 key 即不同，必然重跑 Agent 用新画像。
+  3. 受保护行（问卷显式偏好被 DISLIKE）不 bump —— 画像没变就不该失效缓存。
+- **答辩话术**："个性化要可验证，就得保证‘反馈 → 画像 → 下次生成’链路不被缓存短路。所以结果缓存按 userId + 画像版本双隔离：只要画像变了，旧缓存立即失效。"
+
 ---
 
 ## 六、工程与环境坑（踩过就记）
@@ -156,6 +181,7 @@
 - **Windows SERVER_PORT=0** 环境变量会致随机端口，用 `--server.port=8080` 锁回。
 - **GitHub 推送被网络拦截**（国内 443 连不上）：需要代理，或临时用镜像 `git config --global url."https://ghfast.top/https://github.com/".insteadOf "https://github.com/"`。
 - **ItineraryGeneratorTest 构造签名**：实现类加依赖后测试类必须同步，否则 IDE 报红。
+- **前端批量替换 `day.spots` 的连锁坑**（2026-09-06，P0 时间轴改造）：① `replace_all "day.spots"→"day.spots || []"` 会把 `day.spots.reduce(...)` 拼成 `day.spots || [].reduce(...)`（`||` 右侧空数组字面量 `[]` 先被 TS 推断为 `never[]`，方法调用挂在 `[]` 上而非兜底数组，且属性访问报 never）；② 空数组字面量做兜底时类型会退化成 `never[]`，污染下游 reduce/map 推断。**正确姿势**：函数内先声明显式类型局部变量 `const spots: SpotItem[] = day.spots ?? []`，后续全部引用局部变量；不要用 `|| []` 内联兜底、更不要全局 replace。修复手段：`?? []` + 类型注解局部变量，`npm run build`（vue-tsc）从 EXIT=2 恢复 EXIT=0。
 
 ---
 
@@ -220,6 +246,164 @@
 - **根因**：图片完全来自高德 POI 的 `image_url`（`MapEnrichmentService.pickBestPlace`），原逻辑"优先带图的 / 取第一个"——高德模糊匹配返回的 POI 可能名称不沾边（东坡祠拿到西湖景区 POI 的图），校验层无法"看图识景点"。
 - **解决**（改进①）：`pickBestPlace` 加**名称匹配过滤**——只采用 POI 名与景点名有包含关系的；名称不匹配 → 放弃补全（无图无地址，宁缺毋错）。"东坡祠"不再拿西湖的图，"大云寺"不再拿不相关 POI 的图。
 - **答辩话术**："图片是像素数据，程序无法判断图与景点是否一致，但可以约束『图的来源』——POI 名与景点名必须匹配才采信，从源头杜绝把 A 景点的图贴到 B 景点上。"
+
+### 7.9 简介张冠李戴：整段简介被复制到其他景点（三亚实测，2026-09-04）
+- **现象**：三亚 3 日游实测——D1 椰梦长廊、D2 三亚湾、D3 海月广场三张卡片**简介完全相同**（"三亚最长的海岸线，'椰梦长廊'20多公里椰林步道…"整段被复制），而 D2/D3 的地址已被打上"（地址待核实）"。数据来源说明只报了"图片/地址串用"，简介字段无人管。
+- **根因**：LLM 把攻略里最详尽的一段（椰梦长廊）整段贴给同湾其他景点。现有两道防线都拦不住：① `checkDescriptionMismatch` 的主语位判定要求"其他地点名在**句首**做主语"，而"椰梦长廊"在引号内做同位语（非句首）→ 不命中；② `dedupeCrossSpotMedia` 只比较 `imageUrl`/`address`，**从未比较 `description`** → 简介复制处于校验盲区。另发现文档与代码不一致：地址去重注释声称"排除地理通名结尾的景点"，实现里却没调用 `isGeoName`，导致三亚湾/海月广场这类"区域名景点"的粗地址被误标待核实。
+- **解决**（ItineraryValidator.dedupeCrossSpotMedia 分支3 + 护栏落地，全部通用逻辑）：
+  1. **简介跨景点复用兜底**：行程内两景点名称互非包含、规范化简介（去空白/标点/全半角统一）**完全相同**（≥16 字符）或**高相似**（≥40 字符且编辑距离相似度 ≥0.90）→ 复用者（后出现者）简介降级为"（该景点简介暂未匹配到真实资料，请参考官方介绍）"，sourceNotes 升级为"图片/地址/简介串用"汇总。
+  2. **地址待核实联动放宽**：复用者地址已被标"待核实"（多重异常信号）→ 高相似阈值降到 0.82。
+  3. **兑现地理通名护栏**：地址去重仅对"复用者非地理通名结尾"生效（三亚湾/海月广场/大东海共用"天涯区…"区域地址合法，不再误标）；简介维度不套此护栏（区域景点的简介被复制同样是错）。
+  4. 与主语位判定互补：那里清"一段简介里混入别处整句"，这里清"整段简介被贴到别的景点"，两条独立规则不互相替代，合法地理参照句（可俯瞰/途经）照旧保留。
+- **测试**：ItineraryValidatorTest 19 → 28 例（完全复制/标点差异/高相似/互含不处理/地址不同也触发/待核实放宽阈值/参照句保留/通用短句不误报/子景点共享区域背景不误伤）；全量 115 用例 EXIT=0。
+- **答辩话术**："张冠李戴是 LLM 生成的固有难题，我们对它做了三道通用防线：地址要有合法出处、图片要 POI 名匹配才采信、简介被整段复制到别的景点也要拦截——第一道抓‘句子以别的景点为主语’，第二道抓‘图/地址跨景点共用’，第三道抓‘整段简介完全或高度相似地复用到别的景点’，三道互不替代、都不是针对某个城市写死的。"
+
+---
+
+## 沙箱工程验证三连坑（2026-09-06，口径统一轮踩到，务必警惕）
+
+**坑一：PowerShell 工具在本沙箱对原生 exe/.cmd 是"假成功"——静默不执行、exit 0、0 字节输出**
+- **现象**：`& mvn.cmd -q -o compile` / `test` 均返回 exit 0，但 surefire 报告时间戳不变、无任何输出；`$out = & mvn.cmd ... 2>&1; $out | Out-File` 产生 0 字节日志，仿佛"编译全绿"。
+- **根因**：PowerShell 工具会话对 cmd.exe 子进程（.cmd 内层再拉 java）被静默拦截；直接管道给 .cmd 还会报 `无法在管道中间运行文档`（PS 5.1 限制）。
+- **解决**：**一切 mvn 验证改用 Bash 工具直接执行** `"D:/apache-maven-3.9.16-bin/apache-maven-3.9.16/bin/mvn.cmd" -o test`（Git Bash 能直接跑 .cmd 且正常捕获 stdout；不要用 `cmd //c` 包一层——引号会被打散进交互 shell）。判断"真跑了"看 surefire XML 时间戳或日志长度，别只看 exit 0。
+- **教训**：上一轮"全量 test EXIT=0 约 131~140 用例"其实从未真跑过；本轮真实全量是 **131 用例**。任何改动交付前必须用 Bash 复核编译与测试。
+
+**坑二：同一消息里对同一文件的多个 Edit 会互相覆盖（并发写竞态）**
+- **现象**：一批 5 个 Edit 全报 Success，实际只有部分落盘（如 import 改了、字段没改），编译报"找不到符号"；缺的恰好是批次里被后写覆盖的那几处。
+- **根因**：同文件并行编辑按各自读到的旧快照回写，后写覆盖先写。
+- **解决**：同文件改动要么串行（一次一条消息），要么干脆整文件 Write（原子）；跨文件才可以并行。发现落盘异常时以磁盘内容为准重做，别信 Success 提示。
+
+**坑三：schema.sql 只建新表不 ALTER 旧表（2026-09-06 已在本地库实际修复）**
+- **现象**：前端「个性化效果」KPI 卡永远空白（显示"还没有"），即使刚真实生成了上海行程。查库：`recommendation_log` 0 条，而同一次收尾写的 `candidate_evidence` 却有 60 条——同一收尾方法里"第 1 步写日志"静默失败、"第 2 步落证据"成功。
+- **根因**：`recommendation_log` 是**存量旧表**，缺 `profile_version`/`ranking_version` 两列（schema.sql 建表语句 131-132 行有新列，但 `CREATE TABLE IF NOT EXISTS` 不会动已存在的表，文件尾部 ALTER 注释模板从未执行）。代码 `writeRow()` 每次 `setProfileVersion`+`setRankingVersion` → MyBatis-Plus insert 生成含这两列的 SQL → 报 `Unknown column 'profile_version'` → `@Transactional` 回滚，异常被 TripGenerationFinalizer 第 1 步的 catch 吞掉（只 warn，不影响生成响应）→ 表永远是 0 条 → collectStats 全 0 → 前端空状态。**表象是"没数据"，实际是"写入从来没成功过"**。
+- **解决**：docker exec 手动补列并验证：
+  ```sql
+  ALTER TABLE recommendation_log
+      ADD COLUMN profile_version INT DEFAULT 0  COMMENT '画像版本' AFTER explanation,
+      ADD COLUMN ranking_version INT DEFAULT 1 COMMENT '排序算法版本' AFTER profile_version;
+  ```
+  验证：`START TRANSACTION; INSERT ... profile_version=1, ranking_version=1; ROLLBACK;` 插入成功即证明列可写（不产生脏数据）。
+- **排查方法论（这次值钱）**：别信"界面空=没数据产生"，要区分三种可能——①生成根本没走收尾（缓存命中/游客）；②写了但查不到（userId 不匹配）；③**写操作本身失败被吞**。判别关键：找同一次收尾的"姊妹表"（candidate_evidence）交叉验证——证据有、日志无 → 定位到日志写入内部异常，再对表结构与实体字段差异（SHOW COLUMNS vs writeRow 的 setter）一眼命中。
+- **答辩话术**："我的错误处理是'静默降级'——日志写失败绝不影响用户拿行程，所以问题隐藏了很久。排查时靠同一次收尾的两张表交叉比对锁定了根因：不是没数据，是旧表结构缺两列导致每次插入都回滚。这让我意识到，静默 catch 的错误要留够日志线索，否则只能靠数据血缘反查。"
+
+---
+
+## 产品化复查修复：数据保鲜 / 兜底文案 / N+1 / 坏图（2026-09-07，Review 2）
+
+### 8.1 城市景点"满 20 条就永不更新"——数量判断没有时间维度
+- **现象**：`syncCityIfStale` 只在 `count < CITY_CACHE_MIN(20)` 时触发高德同步——某城市一旦攒够 20 条，就再也不会刷新（图片/地址/坐标/RAG 简介永远停留在首次同步）。
+- **根因**：同步条件只写了"数量不足"一种，漏了"数据过期"维度；按需同步设计里行级冷却依赖 `last_synced_at`，但没有一处使用它来判断是否过期。
+- **解决**：拆分 `syncDue`（**数量不足 OR 全城最新 lastSyncedAt 早于 7 天前** → 需要同步）与 `doSyncCity`（真正打高德）；`syncCityIfStale` 只做守卫。并发用城市级在途锁（`ConcurrentHashMap.putIfAbsent`）收敛：同一城市只放行一个同步线程，其余直接复用现有快照返回，避免"过期瞬间多个请求同时打高德"。同步成功即更新 `last_synced_at` → 行级自然冷却，7 天内不会重复打。
+- **测试**：`enoughRows_butStaleOver7Days_triggersReSync`（50 条但 8 天前同步 → 触发且仅触发一次）。
+- **答辩话术**："按需缓存不能只看数量——数量够了不代表数据新鲜。我把它改成‘数量不足或超过 7 天未刷新’双条件，并用城市级在途锁保证同一时刻一个城市只有一个同步任务，其他请求先用现有快照，防止过期瞬间把外部地图接口打爆。"
+
+### 8.2 兜底文案漂移——同一句"暂无资料"在不同页面三种写法
+- **现象**：行程去重降级、推荐卡片、景点详情三处对"无真实资料来源"各写各的兜底文案，一轮产品约定文案变更后只有部分场景被改到，页面间措辞不一致（用户看到的"为什么没简介"解释不一）。
+- **根因**：兜底文案作为字符串常量散落在各输出类里（ItineraryValidator / RecommendationFeedService / SpotService），改文案要全工程搜索替换，必然漏。
+- **解决**：收敛到单一事实源 `SpotText.NO_GUIDE_DESC` + `safeDescription()`——行程校验层、推荐流、详情/相关推荐全部引用同一常量；约定文案=「（该景点简介暂未匹配到真实资料，请参考官方介绍）」。只作用于输出层，不写回 spot 表，保留 data_quality=POI_ONLY 供前端做可信度分层。
+- **答辩话术**："用户可见文案是产品的一部分，不该每个模块各写一份。凡是描述‘数据可信度’的兜底句都收敛到同一个常量，产品要改措辞只改一处，其它页面自动一致。"
+
+### 8.3 详情页相关推荐 N+1——每个候选都查一次用户画像
+- **现象**：`/spots/:id` 的同城相关推荐（每卡都要算个性化得分）在循环里对每个候选景点调一次 `listPreferences(userId)` → 一个详情请求触发 N 次画像查询（N=候选数）。
+- **根因**：画像偏好列表与景点无关（同一用户恒定），却被放进逐景点打分循环里重复读取。
+- **解决**：把 `listPreferences(userId)` 提升到循环外读一次，循环内复用；`verify(userProfileService, times(1)).listPreferences("u1")` 回归锁定。
+- **答辩话术**："详情页相关推荐逐卡打分时，画像偏好本是与景点无关的常量，却被每个候选重复查询一次。把不变的数据提出循环后，一次详情请求的画像查询从 N 次降到 1 次——性能自查里这类‘把查询写进循环’的 N+1 是最容易犯也最容易修的一类。"
+
+### 8.4 前端坏图——只有空图占位，URL 失效照样破图
+- **现象**：高德图片 URL 偶发失效（404/防盗链）时，详情页主图与收藏卡片显示浏览器破图图标；发现页卡片图用 CSS background-image，坏 URL 直接空白一块。
+- **根因**：前端只处理了"没有 image_url"的空态（v-if/首字占位），没处理"有 URL 但加载失败"的坏态；CSS 背景图无法感知加载失败。
+- **解决**：统一"空图/坏图都降级首字占位"——卡片图从 CSS 背景图改为 `<img @error>`（spot_id 变化时重置失败标记），详情主图与收藏卡片同样补 `@error`；懒加载 `loading="lazy"`。TS 注意：`v-if` 走函数/computed 后不收窄 `image_url` 的 null，`:src` 需 `?? undefined`。
+- **答辩话术**："外部图片链接是不可控的，迟早会失效。前端统一用 `@error` 把‘加载失败的图’和‘本来就没图’降级成同一套首字占位，用户永远不会看到破图图标。"
+
+---
+
+## 产品化阶段三踩坑：关键词顺序敏感 / 增量编译假象（2026-09-07，阶段三）
+
+### 9.1 帖子节奏关键词误判——Map.ofEntries 无序导致"慢慢"输给单字"赶"
+- **现象**：PostTagResolverTest 断言内容"不赶路版攻略…慢慢逛"应映射"轻松"节奏，实际返回 false（被映射成"紧凑"）。
+- **根因**：`Map.ofEntries` 构造的 HashMap 迭代顺序不定，而关键词扫描按 map 迭代序命中——单字"赶"（紧凑组）先于"慢慢"（轻松组）被扫到，一命中即短路返回。这类"按关键词分组归类"的逻辑对扫描顺序敏感，无序 Map 是定时炸弹。
+- **解决**：节奏分组改用 **LinkedHashMap 按业务优先级排序**（轻松组在前，含"慢慢/慢节奏/慵懒/不早起"等多字关键词；紧凑组含"紧凑/赶行程/特种兵"；适中组兜底），扫描与 normalize 都按组序遍历，保证"慢慢"永远先于单字"赶"命中。同理适用于任何"短词会误伤长词"的分组扫描场景。
+- **测试**：PostTagResolverTest 4 条覆盖（关联景点映射、正文+字段、轻松节奏、城市直传）。
+- **答辩话术**："给帖子打偏好标签时，节奏关键词分组是有先后语义的——'慢慢逛'当然该算轻松，不能被标题里的'不赶路'中的'赶'字抢先命中。我把关键词组从无序 Map 改成按优先级排序的有序结构，杜绝了这类误判。"
+
+### 9.2 二次编译"Nothing to compile"假象——改源码后必须 clean 再验
+- **现象**：改完一处 import 后直接 `mvn -o test-compile`，提示"Nothing to compile - all classes are up to date"，看似编译通过，实际改动根本没编进去（后续 clean test-compile 立刻报出真实的"找不到符号"）。
+- **根因**：Maven 增量编译按时间戳判定，沙箱文件写入时间戳异常时增量判定失效；"全部最新"只是没活干，不是验证通过。
+- **解决**：改源码后一律用 **`mvn -o clean test-compile`**（或 clean test）强制全量重编，"Nothing to compile"出现即视为可疑、必须 clean 重跑。判断真跑看 surefire/编译输出行数，别只看 exit 0（与既有的"PowerShell 假成功"教训同源：一切以 Bash 直跑 + 全量 clean 为准）。
+- **答辩话术**："改代码后验证时踩过一个坑：增量编译提示'没有文件需要编译'，我以为是通过了，其实改动根本没编进去。后来一律 clean 全量重编，确保验证的是最新代码。"
+
+---
+
+## 产品化阶段四踩坑：A/B 回退下限语义 / 查询条件不顶事的两课（2026-09-07，4E/4F）
+
+### 10.1 实验"过滤没生效"其实是回退下限在兜底——先想清楚特性再修测试
+- **现象**：PostServiceTest 新用例期望处理组（TREATMENT）把 low_quality=1 的帖子过滤掉，断言 items=1 却得到 2；RecommendationFeedService 的质量门用例也一度疑似失效。
+- **根因**：两处过滤都带"**候选不足下限（MIN_QUALITY_POOL / MIN_RECOMMEND_POOL = 6）整体回退全量**"的防空流设计——测试只给了 1 净 + 1 低质，干净候选 < 6 触发回退，于是低质帖子按设计保留。过滤逻辑没坏，是测试数据没有跨过生效门槛。
+- **解决**：不是改代码，而是把用例数据改成"7 篇干净 + 2 篇低质"（≥6 门槛生效），并断言传给排序引擎的候选里不含低质 ID。教训：**带兜底下限的过滤特性，测试数据必须构造在门槛生效区**；否则"看似没生效"很容易被误判为回归。
+- **答辩话术**："给推荐加低质过滤时定了条安全线：候选太少就整体回退，不能因为过滤把内容流搞空。测这个功能要把数据做到安全线以上，过滤才真正生效。"
+
+### 10.2 查询已带 ACTIVE 条件，防御性校验仍要写在业务里
+- **现象**：AbExperimentServiceTest `closedExperiment_noLongerBuckets` 期望 null，实际返回了变体。
+- **根因**：resolveVariant 用 `eq(status, ACTIVE)` 查实验——真实 SQL 层面没问题；但单测 mock 的 repository 不执行 SQL，直接返回了 CLOSED 对象，而方法里只判了 `exp == null`，没有显式校验状态，于是把已关闭实验当成活跃实验分了桶。
+- **解决**：加载后补一行显式守卫 `exp == null || !ACTIVE.equals(exp.getStatus()) → null`。这是"**查询条件（WHERE）不等于防御性业务校验**"的通用提醒：凡是承载权限/状态语义的查询，入参不可信 + 返回值也可能来自 mock/缓存/旧数据，关键状态必须在拿到对象后再校验一次。
+- **答辩话术**："A/B 分桶有个隐蔽问题：关闭的实验不该再进人。光靠 SQL 的 ACTIVE 条件不够——我在拿到实验对象后又做了一次显式状态校验，双重保险，避免已关闭实验继续悄悄分桶。"
+
+---
+
+## 产品化阶段四踩坑：前端"多处加载失败"其实是旧进程 + 上传链路两课（2026-09-07，⑨图片治理）
+
+### 11.1 界面满屏"加载失败"先查进程新旧——带 JWT 直接探测路由最省事
+- **现象**：用户反馈"为啥这些都显示加载失败"（社区/帖子/管理页多处），但前后端端口都在监听、数据库也连得上。
+- **根因**：**8080 上跑的后端是旧构建**（当天 9:01 启动），前端是最新代码（社区/阶段四功能是旧进程之后才编译进 target/classes 的）——旧进程里根本没有帖子/审计等控制器和建表语句，前端一调就 404（Spring 对未匹配路径返回 "No static resource xxx"，被全局异常包成 500 "系统错误"）；DB 里也没有 travel_post/audit_log 等表（schema.sql 是启动期才执行的最新版）。
+- **判定三步（不用猜）**：(1) `netstat -ano | grep :8080` 拿 PID，比对进程启动时间 vs `target/classes` 最新 class 编译时间——进程早于编译即陈旧；(2) 直接伪造一个 HS256 JWT（密钥是配置明文默认值，载荷 sub=username、claim uid=userId）带 `Authorization` 请求疑点接口：返回 `No static resource ...` = 该构建没这路由；(3) `SHOW TABLES` 看表是否与 schema.sql 一致。
+- **解决**：用最新 `target/classes`（`java @argfile com.yuntu.tripplanner.TripPlannerApplication`，cwd=backend）重启，启动期自动补建全部表 + 自动创建 admin 账号。教训与 §9.2、PowerShell 假成功同源：**一切验证必须对着"最新编译产物 + 真实重启后的进程"做**，编译通过 ≠ 服务在跑新代码。
+- **答辩话术**："同学反馈页面全报加载失败，排查后发现不是代码问题，是机器上还跑着早上的旧后端进程——新功能根本没被加载。我通过比对进程启动时间和类文件编译时间、再带令牌直连接口确认了根因，重启后全部恢复。这也解释了为什么本地验证和线上效果要分清楚。"
+- **教训延伸**：`/feed/posts` 这类路径想当然会 404——先从前端 api.ts 找真实路径（公开流实际是 GET /community/posts），别拿猜的路径当证据。
+
+### 11.2 帖子封面要上传——本地上传到后端的最小安全实现（§10.5 落地版）
+- **设计**：无对象存储，选"本地上传到后端"：`POST /file/upload-image`（登录可传）→ UploadService 校验（Content-Type 白名单 jpeg/png/webp/gif + **魔数二次校验**（FFD8FF/PNG 签名/GIF8/RIFF..WEBP，防伪装）+ ≤5MB）→ UUID 命名落盘 `${app.upload-dir}`（默认 ./uploads，已 gitignore）→ 返回相对 URL `/uploads/<uuid>.ext`。WebConfig：`/uploads/**` 静态映射到文件系统 + **从 JWT 拦截器排除**（`<img>` 加载不带 Authorization 头，否则全 401）。
+- **前端三件事**：(1) api.ts 加 `resolveImageUrl()`——**相对路径必须拼 API_BASE_URL**（页面 origin 是前端 5173，裸 `/uploads/x.jpg` 会指到前端 404），绝对/协议相对/data: 原样；(2) PostEditor 封面区从纯 URL 输入框改成「上传按钮 + 预览 + 移除 + 手动 URL 兜底」；(3) PostCard（封面由 background-image 改 `<img>` + `@error` 降级首字）、PostDetail 封面补 `@error` 降级。
+- **测试**：UploadServiceTest 6 条（png 落盘 URL 格式/魔数一致、jpg+webp、非图片类型 400、伪装 png 头 400、超 5MB 400、空文件 400）；全量 276 单测绿、前端 vue-tsc+vite 构建绿。
+- **遗留坑**：`curl -w size_download` 在 Git Bash 写 /dev/null 会假报 0——验文件完整性改用真实落盘文件大小 + 读魔数。
+- **答辩话术**："封面图上传没有依赖任何对象存储，就是后端落盘 + 静态资源映射，但安全细节没省：类型白名单、文件头魔数双校验防伪造、UUID 命名防路径穿越，图片访问路径单独放行鉴权——因为浏览器加载 `<img>` 根本不会带登录令牌，不放行就全裂图。"
+
+---
+
+## 产品化审查报告修复两课：P0/P1 批次总览 + "updateById 不写 null 字段"真坑（2026-09-07，系统产品化功能审查报告）
+
+### 12.1 审查报告 P0×4 + P1×3 落地：范围怎么切、验收怎么打
+- **背景**：对《系统产品化功能审查报告》全文做了通读核查，4 个 P0 全属实（已发布帖编辑后仍 PUBLIC 绕过审核、默认 admin 口令、demo JWT 密钥、结构升级失败只告警）。与用户对齐范围：**第一批 P0 全做 + 第二批低风险数据一致性项（P1-5 曝光幂等 / P1-6 poi_id 为空景点不进漏斗 / P1-7 "热门"语义名不副实）**；版本化/对象存储/N+1 等架构级项与 P2 全部推迟积压，不在这轮动。
+- **判定与修复**：
+  - P0-1：编辑即转待审（最小实现，不做 post_revision）：update 逐字段 Objects.equals 攒 changed → PUBLISHED/HIDDEN 实质变更即 PENDING_REVIEW+清 rejectReason+audit post_requeued；无实质变更不重审（编辑页回填原值保存=幂等，不制造审核任务）。前端 PostEditor 保存文案同步。
+  - P0-2/3：新 StartupSecurityGuard（@Order(0)）非 local 环境默认口令/demo 或短密钥 → 启动抛异常 fail-fast（P0-4 同类：SchemaAutoUpgrade 加 strict，ALTER 失败即停，SCHEMA_AUTO_UPGRADE_STRICT=false 逃生）。
+  - P1-5：曝光幂等键 feed_trace_id——(user, trace, item) 写前判重，防页面重试/重复渲染双写稀释漏斗分母；前端按"内容上下文"（城市/排序/刷新）重建 trace。
+  - P1-6：SPOT 行为 item_id 改 spot_id 优先、漏斗按 spot_id/poi_id 双键归并；P1-7：UI 文案去"热门"化。
+- **验收方法**：先单测（297 绿），再实机 curl 打状态机 + SQL 数曝光行：同 trace 请求两次 spot_feed_log 仍只有 pageSize 行；换 trace 才 +pageSize。这套"接口造数 + 查日志表行数"的打法是效果类修复的标准验收法。
+- **答辩话术**："按审查报告把高风险的四个 P0 全部修完：已发布内容改动必须重新过审、默认口令和演示密钥在非本地环境直接拒绝启动、数据库结构升级失败宁可起不来也不带病运行；再补了曝光幂等和统计口径修正。每条都先写单测、再跑通真实链路验证。"
+
+### 12.2 MyBatis-Plus updateById 默认忽略 null 字段——"状态机清了 published_at，库里却还在"（实机验收抓到的真坑）
+- **现象**：P0-1 实机验收：已发布帖编辑后 API 返回 status=PENDING_REVIEW（状态确实转了），但 detail 的 published_at 仍是旧时间戳；单测全绿却抓不到。
+- **根因**：PostService 在实体上 `post.setPublishedAt(null)` 后走 `postRepository.updateById(post)`——MyBatis-Plus 默认字段策略是 NOT_NULL，**null 字段根本不进 SET 子句**，所以"清空"从未真正落库。单测只断言了内存实体（captor 拿到的对象里 publishedAt 确实 null），属于"测试绿、SQL 没写"的假阳性。
+- **解决**：新增私有 clearPublishedAt(postId)：`postRepository.update(null, new LambdaUpdateWrapper<TravelPost>().eq(id).set(TravelPost::getPublishedAt, null))`，在 改后重审(PUBLISHED/HIDDEN→PENDING)/拒绝/隐藏/删除 四处调用；对应单测补 `verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class))`（重审触发）与 never（无实质变更）。注意 wrapper 单测需先 TableInfoHelper.initTableInfo(TravelPost) 否则报 "can not find lambda cache"。
+- **通用教训**：**凡是"把字段置空/清值"的更新，都不能只 set 实体后 updateById**；要么走 wrapper.set 显式写 NULL，要么给实体字段配 @TableField(updateStrategy=FieldStrategy.ALWAYS)（会影响所有 updateById 调用方，需评估）。测试要验证"SQL 行为"而非"内存对象状态"。
+- **答辩话术**："验收时发现一个隐蔽问题：帖子改后状态转成了待审，但数据库里旧的上架时间没清掉。查下来是 ORM 的默认策略——update 时会跳过 null 字段，我在实体上置空根本没生效，而单测断言的是内存对象所以全绿。修复是显式用更新构造器把该列写 NULL，并补了针对落库行为的断言。"
+
+---
+
+## 审查报告第二轮：封面 URL 校验 / 互动-画像强一致 / 健康检查（2026-09-08，四项稳的）
+- **背景**：P0×4 与 P1-5/6/7 上一轮清完后，用户"把剩下的 p0p1p2 先修了"。复读全文把范围收敛到四项稳的：P1-2 封面 URL、P1-4 互动-画像强一致、P2-2 详情 N+1（复核）、P2-6 健康检查；P1-1/P1-3 与其余 P2 确认推迟。
+- **P1-2 封面 URL 服务端校验**（PostService.validateCoverImage，创建/编辑共用）：
+  - 空/纯空白 → null；超 2000 字符拒；`/uploads/` 开头必须精确匹配 `/uploads/<32位hex>.(jpg|jpeg|png|webp|gif)` —— **只认本系统上传产物，堵死 data:/javascript:/file:// 及任意本机路径**；其余必须是带 host 且无 userInfo 的 http(s) URL。非法一律 400「封面链接必须是合法的 http(s) 图片地址或本地上传路径」。
+  - 单测 4 例（data:/javascript:/非上传本机路径拒 + https/uploads 收），实机 curl 三种场景全中。
+- **P1-4 互动与画像强一致**：PostInteractionService 原先把画像更新包进 try/catch 吞异常（互动成功但画像没更新 = 静默不一致）。删掉吞异常 → 画像失败即上抛，@Transactional 把互动行与计数一起回滚，与 SpotService.favorite 语义对齐；补异常传播单测。
+- **P2-6 健康检查**：SystemHealthController `GET /system/health` 免登录（WebConfig exclude 追加），探 db(JDBC)/redis/uploadDir 可写/guide_embedding 行数/llm+amap key 配置，全部 fail-soft（单项挂了标 down 不 500）。实机免登录 200。用途：答辩演示"一键体检"、给前端起服务前先探后端。
+- **P2-2**：读码复核 relatedSpots 已单次载 preferences + 批量 collectedMap/visited，无 N+1，不改码。
+- **验证**：全量 mvn -o clean test **303 绿**；jar 重启后实机验收通过。答辩话术："第二轮按审查报告把剩下的数据一致性问题收口：封面上传只认本系统产物、拒绝 data:/javascript: 注入，互动写库和画像更新绑成同一个事务要么全成要么全回滚，另加一个免登录的健康检查接口方便运维和演示一键体检。"
+
+### 13.2 机器重启后 Docker 起不来 → 原生 MySQL 兜底 + 敏感审批（沙箱运维课）
+- **现象**：重启后后端起不来（Communications link failure）。docker info 报引擎不在；`tasklist` 无 Docker Desktop 进程；沙箱里 `cmd start Docker Desktop.exe` 看似成功实则进程不存活，`wsl.exe` 又在沙箱程序黑名单里无法修复 WSL 后端。
+- **解决**：Docker Desktop 属于需用户桌面会话的 GUI——**让用户手动双击打开**，引擎就绪后 `docker start trip-planner-mysql && java -jar target/trip-planner-1.0.0.jar --server.port=8080`（cwd=backend，默认连 3310）即可，数据在命名卷里无损。
+- **兜底**：本机原生 MySQL 8.0（3306，root/123456，用户 SCA/NEPN 等项目共用）可临时承接：加 `--spring.datasource.url=jdbc:mysql://127.0.0.1:3306/trip_planner?... --spring.datasource.password=123456` 启动，SchemaAutoUpgrade 自动建库建表。**教训：命令行内嵌数据库口令会触发沙箱敏感审批、无人批准即超时被拒**——属预期保护，不要反复重试或变相绕过（如拆词/文件读密），应改请求授权或换回无口令的默认链路。
 
 ---
 

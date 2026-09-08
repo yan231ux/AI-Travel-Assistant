@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
 import { reactive, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
-import { login, register, setToken, setUser } from "../services/api";
+import { login, register } from "../services/api";
+import { setAuthed } from "../stores/session";
 import type { User } from "../types";
 
-const emit = defineEmits<{
-  authed: [payload: { token: string; user: User }];
-}>();
+/** 仅允许站内路径的登录后回跳（防开放重定向） */
+function safeRedirect(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+  return raw;
+}
+
+const route = useRoute();
+const router = useRouter();
 
 type Mode = "login" | "register";
 const mode = ref<Mode>("login");
@@ -37,10 +45,11 @@ function switchMode(next: Mode) {
 }
 
 function applyAuth(token: string, user: User, okMessage: string) {
-  setToken(token);
-  setUser(user);
+  setAuthed({ token, user });
   message.success(okMessage);
-  emit("authed", { token, user });
+  // 回跳登录前想去的页面（站内白名单过滤），否则去首页 Dashboard
+  const redirect = safeRedirect(route.query.redirect);
+  void router.replace(redirect ? { path: redirect } : { name: "dashboard" });
 }
 
 async function handleSubmit() {
@@ -156,7 +165,7 @@ async function handleSubmit() {
 
 <style scoped>
 .login-page {
-  min-height: calc(100vh - 56px);
+  min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 40px 20px;

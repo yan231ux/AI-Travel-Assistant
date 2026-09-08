@@ -5,8 +5,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
+import java.nio.file.Paths;
 import java.util.Arrays;
 
 /**
@@ -21,6 +23,10 @@ public class WebConfig implements WebMvcConfigurer {
     @Value("${cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173}")
     private String allowedOrigins;
 
+    /** 图片上传存储目录（与 UploadService 同源配置）；对外以 /uploads/** 静态映射访问 */
+    @Value("${app.upload-dir:./uploads}")
+    private String uploadDir;
+
     private final JwtAuthInterceptor jwtAuthInterceptor;
 
     public WebConfig(JwtAuthInterceptor jwtAuthInterceptor) {
@@ -29,10 +35,20 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 除 /auth/** 注册/登录外，所有请求需携带有效 JWT（无效返回 401）
+        // 除 /auth/** 注册/登录外，所有请求需携带有效 JWT（无效返回 401）。
+        // /uploads/** 为图片静态资源：<img> 加载不带 Authorization 头，必须放行；
+        // 上传接口在 /file/**（不在排除内），仍需登录。
+        // /system/health 为运行健康检查（审查报告 P2-6）：部署/演示前探测依赖状态，须免登录。
         registry.addInterceptor(jwtAuthInterceptor)
                 .addPathPatterns("/**")
-                .excludePathPatterns("/auth/**");
+                .excludePathPatterns("/auth/**", "/uploads/**", "/system/health");
+    }
+
+    /** 上传图片静态映射：/uploads/xxx.jpg → 文件系统 ${app.upload-dir}/xxx.jpg */
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        String location = "file:" + Paths.get(uploadDir).toAbsolutePath().normalize().toString().replace("\\", "/") + "/";
+        registry.addResourceHandler("/uploads/**").addResourceLocations(location);
     }
 
     @Override

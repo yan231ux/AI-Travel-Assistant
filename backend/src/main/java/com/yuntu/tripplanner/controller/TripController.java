@@ -5,6 +5,7 @@ import com.yuntu.tripplanner.exception.CityValidationException;
 import com.yuntu.tripplanner.model.*;
 import com.yuntu.tripplanner.security.UserContext;
 import com.yuntu.tripplanner.service.CityValidator;
+import com.yuntu.tripplanner.service.TripGenerationFinalizer;
 import com.yuntu.tripplanner.service.TripRecordService;
 import com.yuntu.tripplanner.service.UserProfileService;
 import jakarta.validation.Valid;
@@ -27,13 +28,16 @@ public class TripController {
     private final TripRecordService tripRecordService;
     private final CityValidator cityValidator;
     private final UserProfileService userProfileService;
+    private final TripGenerationFinalizer tripGenerationFinalizer;
 
     public TripController(TravelAgent travelAgent, TripRecordService tripRecordService,
-                          CityValidator cityValidator, UserProfileService userProfileService) {
+                          CityValidator cityValidator, UserProfileService userProfileService,
+                          TripGenerationFinalizer tripGenerationFinalizer) {
         this.travelAgent = travelAgent;
         this.tripRecordService = tripRecordService;
         this.cityValidator = cityValidator;
         this.userProfileService = userProfileService;
+        this.tripGenerationFinalizer = tripGenerationFinalizer;
     }
 
     /**
@@ -70,6 +74,24 @@ public class TripController {
     }
 
     /**
+     * 统一生成收尾（非流式入口；与流式入口语义一致，见 PLAN §8.4 问题六）：
+     * 真实生成成功 → 推荐理由回填 + 推荐日志 + 候选证据落库 + 个性化摘要（统一收尾服务），
+     * 失败仅告警，不阻断响应。
+     */
+    private void finalizeGeneration(TripRequest request, AgentTraceResponse response) {
+        if (response == null || !Boolean.TRUE.equals(response.getSuccess())
+                || response.getItinerary() == null || request == null
+                || request.getUserId() == null || request.getUserId().isBlank()) {
+            return;
+        }
+        try {
+            tripGenerationFinalizer.finalizeGeneration(request.getUserId(), request, response);
+        } catch (Exception e) {
+            log.warn("行程统一收尾失败（不影响生成）: {}", e.getMessage());
+        }
+    }
+
+    /**
      * 获取历史行程列表
      */
     @GetMapping
@@ -94,6 +116,9 @@ public class TripController {
             log.info("生成行程请求: {}", request.getDestination());
 
             AgentTraceResponse response = travelAgent.execute(request);
+
+            // 统一收尾（与流式入口一致）：理由回填/推荐日志/候选证据/个性化摘要；失败不阻断响应
+            finalizeGeneration(request, response);
 
             if (Boolean.TRUE.equals(response.getSuccess()) && response.getItinerary() != null) {
                 return ResponseEntity.ok(response.getItinerary());
@@ -124,6 +149,9 @@ public class TripController {
             log.info("生成行程（带轨迹）请求: {}", request.getDestination());
 
             AgentTraceResponse response = travelAgent.execute(request);
+
+            // 统一收尾（与流式入口一致）：理由回填/推荐日志/候选证据/个性化摘要；失败不阻断响应
+            finalizeGeneration(request, response);
 
             return ResponseEntity.ok(response);
             

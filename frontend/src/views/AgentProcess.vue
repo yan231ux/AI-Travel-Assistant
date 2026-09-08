@@ -1,27 +1,30 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import AgentTracePanel from "../components/AgentTracePanel.vue";
 import AmapTripMap from "../components/AmapTripMap.vue";
 import { streamGenerateTrip } from "../services/api";
-import type { AgentTraceStep, Itinerary, TripRequestPayload } from "../types";
+import {
+  agentMode,
+  pendingPayload,
+  replayItinerary,
+  replayTrace,
+  setFinished,
+} from "../stores/trip";
+import type { AgentTraceStep } from "../types";
 
 /**
- * Agent 过程视图（双模式）
+ * Agent 过程视图（双模式，入参来自 trip store）
  * - live：生成时实时消费 SSE 流，逐步展示 AI 思考，完成自动跳结果页
  * - replay：历史行程轨迹逐条播放（播放/暂停/上一步/下一步），播完展示行程+地图
  */
-const props = defineProps<{
-  mode: "live" | "replay";
-  payload?: TripRequestPayload | null;
-  itinerary?: Itinerary | null;
-  trace?: AgentTraceStep[] | null;
-}>();
+const router = useRouter();
 
-const emit = defineEmits<{
-  finished: [itinerary: Itinerary, trace: AgentTraceStep[], tokenUsage?: Record<string, number> | null];
-  backHome: [];
-}>();
+const mode = computed(() => agentMode.value);
+const payload = computed(() => pendingPayload.value);
+const itinerary = computed(() => replayItinerary.value);
+const trace = computed(() => replayTrace.value);
 
 const steps = ref<AgentTraceStep[]>([]);
 const error = ref("");
@@ -51,7 +54,7 @@ const displayStepLabel = computed(() => String(currentStep.value));
 
 // 地图点位（照抄 Result.vue 的 mapPoints 计算）
 const mapPoints = computed(() => {
-  const it = props.itinerary;
+  const it = itinerary.value;
   if (!it) return [];
   return it.days.flatMap((day) =>
     day.spots.map((spot) => ({
@@ -71,7 +74,7 @@ const mapPoints = computed(() => {
 });
 
 async function runLive() {
-  if (!props.payload) {
+  if (!payload.value) {
     error.value = "缺少生成参数";
     return;
   }
@@ -83,7 +86,7 @@ async function runLive() {
   controller = new AbortController();
   try {
     const result = await streamGenerateTrip(
-      props.payload,
+      payload.value,
       {
         onProgress: (p, msg) => {
           phase.value = p;
@@ -97,7 +100,9 @@ async function runLive() {
     );
     done.value = true;
     if (result.itinerary) {
-      emit("finished", result.itinerary, result.trace, result.token_usage);
+      // live 生成完成 → 产物写入工作区并跳结果页
+      setFinished(result.itinerary, result.trace, result.token_usage);
+      void router.replace({ name: "result" });
     } else {
       error.value = "生成结束但未返回行程，请重试。";
     }
@@ -111,7 +116,7 @@ async function runLive() {
 // ===== replay 控制 =====
 // currentStep 与 AgentTraceStep.step（1..N）对齐；0 = 未开始
 function initReplay() {
-  steps.value = props.trace && props.trace.length > 0 ? props.trace : [];
+  steps.value = trace.value && trace.value.length > 0 ? trace.value : [];
   currentStep.value = 0;
   playing.value = false;
   replayFinished.value = false;
@@ -166,19 +171,24 @@ function replayAgain() {
 }
 
 function viewFull() {
-  if (props.itinerary) {
+  if (itinerary.value) {
     // replay 路径无实时 token 统计，传 null，下游不展示
-    emit("finished", props.itinerary, props.trace || [], null);
+    setFinished(itinerary.value, trace.value || [], null);
+    void router.replace({ name: "result" });
   }
 }
 
 onMounted(() => {
-  if (props.mode === "live") {
+  if (mode.value === "live") {
     void runLive();
   } else {
     initReplay();
   }
 });
+
+function goPlan() {
+  void router.push({ name: "plan" });
+}
 
 onBeforeUnmount(() => {
   stopPlayback();
@@ -214,7 +224,7 @@ onBeforeUnmount(() => {
           <p class="agent-error__msg">{{ error }}</p>
           <div class="agent-error__actions">
             <button class="ios-btn ios-btn--primary ios-btn--sm" @click="runLive">重试</button>
-            <button class="ios-btn ios-btn--sm" @click="emit('backHome')">返回规划</button>
+            <button class="ios-btn ios-btn--sm" @click="goPlan">返回规划</button>
           </div>
         </div>
       </template>

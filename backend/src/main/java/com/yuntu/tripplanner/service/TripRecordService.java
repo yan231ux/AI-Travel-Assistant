@@ -22,13 +22,16 @@ public class TripRecordService {
     private final TripRecordRepository tripRecordRepository;
     private final AgentTraceRepository agentTraceRepository;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     public TripRecordService(TripRecordRepository tripRecordRepository,
                              AgentTraceRepository agentTraceRepository,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             AuditService auditService) {
         this.tripRecordRepository = tripRecordRepository;
         this.agentTraceRepository = agentTraceRepository;
         this.objectMapper = objectMapper;
+        this.auditService = auditService;
     }
     
     /**
@@ -96,6 +99,11 @@ public class TripRecordService {
         }
 
         saveAgentTrace(request);
+        // 全链路审计（阶段四任务 10）：行程保存/更新（destination 作人读上下文）
+        auditService.record(userId, AuditLog.CAT_TRIP, existing != null ? "trip_updated" : "trip_saved",
+                "trip", request.getTripId(),
+                AuditService.detailOf("destination",
+                        request.getItinerary() == null ? null : request.getItinerary().getDestination()));
     }
 
     /**
@@ -148,6 +156,9 @@ public class TripRecordService {
                         .eq(TripRecord::getTripId, tripId)
                         .eq(TripRecord::getUserId, userId)
         );
+        // 全链路审计（阶段四任务 10）：删除本人行程（非本人删除不会命中任何行）
+        auditService.record(userId, AuditLog.CAT_TRIP, "trip_deleted",
+                "trip", tripId, null);
     }
     
     /**

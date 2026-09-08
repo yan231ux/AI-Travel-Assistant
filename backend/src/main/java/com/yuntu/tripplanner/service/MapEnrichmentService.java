@@ -140,6 +140,13 @@ public class MapEnrichmentService {
         if (spot.getPoiId() == null) {
             spot.setPoiId((String) place.getOrDefault("poi_id", ""));
         }
+        // 高德业态 type 写入景点（供校验层判定"商铺/公寓等非游览场所不得当景点"）
+        if (spot.getPoiType() == null) {
+            Object poiType = place.get("type");
+            if (poiType != null && !poiType.toString().isBlank()) {
+                spot.setPoiType(poiType.toString());
+            }
+        }
         return true;
     }
 

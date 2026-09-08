@@ -27,6 +27,10 @@ public class User {
     @TableField("nickname")
     private String nickname;
 
+    /** 角色：USER/ADMIN（阶段二社区；存量老用户为 NULL 时按 USER 处理） */
+    @TableField("role")
+    private String role;
+
     @TableField(value = "created_at", fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

@@ -1,6 +1,8 @@
 package com.yuntu.tripplanner.config;
 
 import com.yuntu.tripplanner.exception.CityValidationException;
+import com.yuntu.tripplanner.exception.ForbiddenException;
+import com.yuntu.tripplanner.exception.PostNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -47,6 +49,45 @@ public class GlobalExceptionHandler {
         response.put("message", ex.getMessage());
 
         return ResponseEntity.badRequest().body(response);
+    }
+
+    /**
+     * 参数/业务校验失败（社区与画像层通用）→ 400
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("参数或业务校验失败: {}", ex.getMessage());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("error", "参数错误");
+        response.put("message", ex.getMessage());
+        return ResponseEntity.badRequest().body(response);
+    }
+
+    /**
+     * 社区对象不存在（帖子/评论/举报目标）→ 404
+     */
+    @ExceptionHandler(PostNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handlePostNotFoundException(PostNotFoundException ex) {
+        log.warn("社区对象不存在: {}", ex.getMessage());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("error", "内容不存在");
+        response.put("message", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+    }
+
+    /**
+     * 无操作权限（非作者/非 ADMIN）→ 403
+     */
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<Map<String, Object>> handleForbiddenException(ForbiddenException ex) {
+        log.warn("无操作权限: {}", ex.getMessage());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("error", "无操作权限");
+        response.put("message", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.yuntu.tripplanner.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.yuntu.tripplanner.model.AuditLog;
 import com.yuntu.tripplanner.model.User;
 import com.yuntu.tripplanner.repository.UserRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -18,10 +19,12 @@ import org.springframework.stereotype.Service;
 public class AuthService {
 
     private final UserRepository userRepository;
+    private final AuditService auditService;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
-    public AuthService(UserRepository userRepository) {
+    public AuthService(UserRepository userRepository, AuditService auditService) {
         this.userRepository = userRepository;
+        this.auditService = auditService;
     }
 
     /**
@@ -40,6 +43,9 @@ public class AuthService {
         user.setNickname(nickname == null || nickname.isBlank() ? null : nickname.trim());
         userRepository.insert(user);
         log.info("新用户注册: {}", username);
+        auditService.record(String.valueOf(user.getId()), AuditLog.CAT_USER, "user_registered",
+                "user", String.valueOf(user.getId()),
+                AuditService.detailOf("username", username));
         return user;
     }
 
@@ -50,12 +56,19 @@ public class AuthService {
         User user = userRepository.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username));
         if (user == null) {
+            auditService.record(null, AuditLog.CAT_USER, "login_failed",
+                    "user", null, AuditService.detailOf("username", username, "reason", "not_found"));
             return null;
         }
         if (!encoder.matches(password, user.getPasswordHash())) {
             log.warn("登录失败：密码错误 {}", username);
+            auditService.record(null, AuditLog.CAT_USER, "login_failed",
+                    "user", String.valueOf(user.getId()),
+                    AuditService.detailOf("username", username, "reason", "bad_password"));
             return null;
         }
+        auditService.record(String.valueOf(user.getId()), AuditLog.CAT_USER, "login_success",
+                "user", String.valueOf(user.getId()), null);
         return user;
     }
 }

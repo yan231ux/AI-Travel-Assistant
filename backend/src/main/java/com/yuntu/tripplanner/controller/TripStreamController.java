@@ -10,6 +10,8 @@ import com.yuntu.tripplanner.model.TripRequest;
 import com.yuntu.tripplanner.security.UserContext;
 import com.yuntu.tripplanner.service.CacheService;
 import com.yuntu.tripplanner.service.CityValidator;
+import com.yuntu.tripplanner.service.PersonalizedScoreCalculator;
+import com.yuntu.tripplanner.service.TripGenerationFinalizer;
 import com.yuntu.tripplanner.service.UserProfileService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -57,17 +59,20 @@ public class TripStreamController {
     private final CityValidator cityValidator;
     private final CacheService cacheService;
     private final UserProfileService userProfileService;
+    private final TripGenerationFinalizer tripGenerationFinalizer;
 
     public TripStreamController(TravelAgent travelAgent,
                                 @Qualifier("agentExecutor") Executor agentExecutor,
                                 CityValidator cityValidator,
                                 CacheService cacheService,
-                                UserProfileService userProfileService) {
+                                UserProfileService userProfileService,
+                                TripGenerationFinalizer tripGenerationFinalizer) {
         this.travelAgent = travelAgent;
         this.agentExecutor = agentExecutor;
         this.cityValidator = cityValidator;
         this.cacheService = cacheService;
         this.userProfileService = userProfileService;
+        this.tripGenerationFinalizer = tripGenerationFinalizer;
     }
 
     @PostMapping(value = "/generate-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -120,6 +125,16 @@ public class TripStreamController {
 
         CompletableFuture.runAsync(() -> {
             AgentTraceResponse resp = travelAgent.execute(request, callback);
+            // 统一收尾（写缓存之前；缓存命中复用旧结果，不会重复执行）：
+            // 推荐理由回填 + 推荐日志 + 候选证据落库 + 个性化摘要；无画像用户自动跳过，
+            // 失败仅告警不影响生成（finalizer 内部各步已 try/catch，此处再兜一层）
+            if (resp != null && Boolean.TRUE.equals(resp.getSuccess()) && resp.getItinerary() != null) {
+                try {
+                    tripGenerationFinalizer.finalizeGeneration(request.getUserId(), request, resp);
+                } catch (Exception e) {
+                    log.warn("行程统一收尾失败（不影响生成）: {}", e.getMessage());
+                }
+            }
             // 生成成功后写入结果缓存（下次同参数直接秒回）
             if (resp != null && Boolean.TRUE.equals(resp.getSuccess()) && resp.getItinerary() != null) {
                 cacheService.set(cacheKey, resp, TRIP_CACHE_TTL_SECONDS);
@@ -211,9 +226,12 @@ public class TripStreamController {
 
     /**
      * 生成结果缓存 key：对行程参数做 SHA-256 哈希，参数一致即复用同一份结果。
-     * 含 userId：个性化后不同用户的记忆不同，缓存必须按用户隔离，防止串味。
+     * 含 userId、画像版本号与排序算法版本号（PLAN §2.2 问题七）：
+     * 行为反馈（收藏/不感兴趣）使画像版本递增 → 同参数不命中旧缓存；
+     * 排序规则变更（RANKING_VERSION bump）→ 旧缓存同样隔离，不复用旧口径结果。
      */
     private String buildTripCacheKey(TripRequest r) {
+        int profileVersion = userProfileService.getProfileVersion(r.getUserId());
         String raw = String.join("|",
                 String.valueOf(r.getUserId()),
                 String.valueOf(r.getDestination()),
@@ -225,7 +243,9 @@ public class TripStreamController {
                 String.valueOf(r.getPace()),
                 String.valueOf(r.getPreferences()),
                 String.valueOf(r.getDietaryPreferences()),
-                String.valueOf(r.getSpecialNotes()));
+                String.valueOf(r.getSpecialNotes()),
+                "profile-v" + profileVersion,
+                "rank-v" + PersonalizedScoreCalculator.RANKING_VERSION);
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] h = md.digest(raw.getBytes(StandardCharsets.UTF_8));

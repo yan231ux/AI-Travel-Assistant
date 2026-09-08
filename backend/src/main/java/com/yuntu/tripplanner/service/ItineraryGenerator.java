@@ -38,20 +38,34 @@ public class ItineraryGenerator {
     private final ObjectMapper objectMapper;
     private final MapEnrichmentService mapEnrichmentService;
     private final ItineraryValidator itineraryValidator;
+    private final PersonalizedRankingService personalizedRankingService;
 
     public ItineraryGenerator(LlmClient llmClient, ObjectMapper objectMapper,
                               MapEnrichmentService mapEnrichmentService,
-                              ItineraryValidator itineraryValidator) {
+                              ItineraryValidator itineraryValidator,
+                              PersonalizedRankingService personalizedRankingService) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.mapEnrichmentService = mapEnrichmentService;
         this.itineraryValidator = itineraryValidator;
+        this.personalizedRankingService = personalizedRankingService;
     }
 
     /**
      * 生成行程
      */
     public Itinerary generate(TripRequest request, CollectedData collectedData) {
+        // 0. 个性化候选排序（阶段三）：有登录用户与画像时，对 POI 候选做确定性打分重排并产出说明。
+        //    说明写入 collectedData.personalizedNotes，供步骤 1 数据摘要与来源说明展示；
+        //    未登录/无画像/失败 → 静默跳过，行为与个性化前一致。
+        try {
+            if (personalizedRankingService != null) {
+                personalizedRankingService.rankAndFilter(request.getUserId(), request, collectedData);
+            }
+        } catch (Exception e) {
+            log.warn("个性化候选排序失败（不影响生成）: {}", e.getMessage());
+        }
+
         // 1. 准备数据摘要
         String dataSummary = prepareDataSummary(collectedData);
 
@@ -88,6 +102,7 @@ public class ItineraryGenerator {
         itinerary.getSourceNotes().add("天气应对严格依据天气预报原文执行");
         addRagSourceNote(itinerary, collectedData);
         addUserMemoryNote(itinerary, collectedData);
+        addPersonalizationNote(itinerary, collectedData);
 
         // 6. 补充高德地图信息（图片、坐标、地址）；成功时 source_notes 由 MapEnrichmentService 内部统一追加
         try {
@@ -197,6 +212,18 @@ public class ItineraryGenerator {
             }
         }
 
+        // 个性化候选排序说明（阶段三）：确定性打分结果，告诉模型靠前的候选更符合用户偏好。
+        // 注意：POI 候选列表本身已按该排序重排（见 PersonalizedRankingService），此处只做强调。
+        if (collectedData.getPersonalizedNotes() != null && !collectedData.getPersonalizedNotes().isEmpty()) {
+            summary.append("\n【个性化候选参考】（依据用户画像的确定性评分，供取舍参考）\n");
+            for (String note : collectedData.getPersonalizedNotes()) {
+                summary.append("- ").append(note).append("\n");
+            }
+            summary.append("要求：同等条件下优先选择标记「匹配你的偏好」的候选；")
+                    .append("对标记「近期不感兴趣/已降低优先级」的候选应避免安排；")
+                    .append("标记「已体验过」的如无必要不再重复安排（除非用户点名要去）。\n");
+        }
+
         // 用户长期记忆（个性化）：基于历史行程的画像，让模型延续用户偏好、避免重复推荐
         if (collectedData.getUserMemory() != null && !collectedData.getUserMemory().isBlank()) {
             summary.append("\n【用户历史记忆】\n").append(collectedData.getUserMemory()).append("\n");
@@ -260,6 +287,7 @@ public class ItineraryGenerator {
                         {
                           "name": "餐厅名称",
                           "meal_type": "午餐/晚餐",
+                          "start_time": "HH:mm",
                           "estimated_cost": 人均消费,
                           "notes": "推荐菜品"
                         }
@@ -293,7 +321,7 @@ public class ItineraryGenerator {
                 1. 景点、餐厅名称必须来自上面的真实数据（【POI数据】或【本地攻略】或【搜索结果】），禁止编造不存在的景点或餐厅
                 2. 禁止重复：同一景点、同一餐厅在整份行程中只能出现一次，跨天也不得重复
                 3. 餐厅必须选择当地特色餐厅（火锅、本帮菜、小吃等），禁止推荐连锁快餐或连锁品牌（如肯德基、麦当劳、汉堡王、星巴克、必胜客等）
-                4. 时间安排要合理，考虑景点间的距离
+                4. 时间安排要合理，考虑景点间的距离；餐饮（meals）必须给出 start_time 并插在景点之间：早餐 07:00-08:30、午餐 11:30-13:00、晚餐 17:30-19:00，先结束前一景点的游览再去吃饭，同一时刻只能有一项活动，不得把全部餐饮排在景点之后
                 5. 预算分配要符合用户总预算，餐饮人均、交通费用要贴合实际，不得明显偏低或虚高
                 6. 每天安排2-4个主要景点
                 7. transport 中的 from_place / to_place 必须使用【POI数据】中的真实地点名称或明确地标（如"洪崖洞""解放碑"），禁止使用"出发点""市区""酒店附近"等模糊表述；mode 必须明确（步行/地铁/公交/打车/驾车）
@@ -304,9 +332,11 @@ public class ItineraryGenerator {
                 12. 餐厅必须从【POI数据】的「餐厅」分类中选取真实餐厅名称（用户偏好含"美食/吃/餐厅"时务必优先使用），禁止自行编造餐厅；仅在「餐厅」分类为空时才允许推荐本地特色且须真实存在
                 13. 酒店价格建模：经济型约 150-250 元/间/晚，舒适型约 300-500 元/间/晚，豪华型约 600-1200 元/间/晚。多人出行需按房间数计算：房间数≈ceil(人数/2)，总住宿=房间数×单间价×晚数；餐饮、门票按实际 人数累加；单价需贴合所选档次，不得明显偏低
 14. source_notes（数据来源说明）只能说明数据来源（如「本地攻略命中 N 条」「酒店/餐厅来自高德POI」），禁止在其中核算或编造预算金额与总数；所有金额以系统「预算明细」为准，不要在 source_notes 里复述预算
-15. spots 字段只能放景点/地标，禁止把入住的酒店、客栈、民宿、青年旅舍或任何餐厅/火锅店/饭店列为景点；酒店必须只写在 hotel 字段，餐厅必须只写在 meals 字段
-16. 【用户点名景点】中列出的景点是用户明确要求，必须出现在行程 spots 中，不得遗漏；若确因数据源未收录或不在本城市而无法安排，必须在 source_notes 中说明原因，禁止静默忽略
-17. 用户特别要求中提到的具体地点或活动（例如"体验红花湖骑行"中的红花湖、"去XX拍照"中的XX）都必须作为当天核心景点或活动安排到 spots 中，不得用其他无关景点（如海洋馆、商场）替代；若用户表达的是活动（骑行/徒步/拍照/泡温泉），应安排到对应的真实地点，并在当天主题或备注中体现该活动，禁止只把它当成泛泛的"主题"而实际填入无关景点
+15. spots 字段只能放可游览的景点/地标：禁止把入住的酒店、客栈、民宿、青年旅舍、公寓或任何餐厅/火锅店/饭店列为景点；也禁止把商铺（专卖店/门店/卖场/旗舰店/体验店等）、写字楼/办公楼、住宅小区等非游览商业场所列为景点。酒店必须只写在 hotel 字段，餐厅必须只写在 meals 字段；商铺/公寓类只允许在当天备注中提示"可顺路前往"，不得作为主要景点
+16. 【用户点名景点】中列出的地点是用户明确要求，仅当其为可游览景点（景区/公园/博物馆/老街/山川湖海等）时才必须出现在 spots 中且不得遗漏；若确因数据源未收录或不在本城市而无法安排，必须在 source_notes 中说明原因，禁止静默忽略。若点名地点本质是商铺/公寓/写字楼/餐厅等非游览场所（名称含 专卖店/门店/公寓/客栈/餐厅 等），不得放入 spots、也不算"未安排"，如用户确有兴致只在当天备注写"可顺路前往"，严禁把这类场所排成主要景点
+17. 用户特别要求中提到的具体地点或活动（例如"体验红花湖骑行"中的红花湖、"去XX拍照"中的XX）若为可游览地点，必须作为当天核心景点或活动安排到 spots 中，不得用其他无关景点（如海洋馆、商场）替代；若为商铺/公寓/写字楼等非游览场所，不得作为景点安排，只能作顺访提示。若用户表达的是活动（骑行/徒步/拍照/泡温泉），应安排到对应的真实地点，并在当天主题或备注中体现该活动，禁止只把它当成泛泛的"主题"而实际填入无关景点
+18. 酒店档次与店型必须匹配：hotel.name 若为青年旅舍/民宿/公寓/客栈/招待所，level 只能标"经济型"；用户要求舒适型/高档型/豪华型时，必须选择与档次相符的真实酒店（名称通常是"XX大酒店/XX酒店/XX度假酒店"），禁止用青旅/民宿/公寓冒充高档
+19. 旅行建议 tips 中不得把商铺、专卖店、公寓、写字楼等非游览场所写成"建议优先安排参观/必去"之类，仅可表述为"若感兴趣可顺路前往"
 
                 请开始生成：
                 """,
@@ -404,7 +434,7 @@ public class ItineraryGenerator {
                   "days": [{
                     "day_index": 1, "date": "YYYY-MM-DD", "theme": "string",
                     "spots": [{"name": "string", "description": "string", "estimated_cost": 0.0}],
-                    "meals": [{"name": "string", "meal_type": "string", "estimated_cost": 0.0, "notes": "string"}],
+                    "meals": [{"name": "string", "meal_type": "string", "start_time": "string", "estimated_cost": 0.0, "notes": "string"}],
                     "hotel": {"name": "string", "level": "string", "estimated_cost": 0.0, "location": "string"},
                     "transport": [{"mode": "string", "estimated_cost": 0.0}],
                     "notes": ["string"]
@@ -479,6 +509,29 @@ public class ItineraryGenerator {
             itinerary.getSourceNotes().add("✨ 已结合你的历史行程定制（延续偏好、避免重复推荐）");
         } catch (Exception e) {
             log.debug("添加用户记忆来源说明失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 来源说明：标注本次候选经过个性化排序（阶段三）。取前几条代表性说明拼进
+     * 「数据来源说明」，让结果页直接可见"系统按你的画像调整了候选优先级"。
+     */
+    private void addPersonalizationNote(Itinerary itinerary, CollectedData collectedData) {
+        List<String> notes = collectedData.getPersonalizedNotes();
+        if (notes == null || notes.isEmpty()) {
+            return;
+        }
+        try {
+            if (itinerary.getSourceNotes() == null) {
+                itinerary.setSourceNotes(new ArrayList<>());
+            }
+            int shown = Math.min(3, notes.size());
+            itinerary.getSourceNotes().add("🎯 已按你的偏好与历史对候选景点/餐厅排序（前 " + shown + " 条依据）：");
+            for (int i = 0; i < shown; i++) {
+                itinerary.getSourceNotes().add("· " + notes.get(i));
+            }
+        } catch (Exception e) {
+            log.debug("添加个性化排序来源说明失败: {}", e.getMessage());
         }
     }
 

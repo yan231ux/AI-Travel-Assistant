@@ -1,424 +1,351 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from "vue";
-import { message } from "ant-design-vue";
-import dayjs, { type Dayjs } from "dayjs";
+import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
-import type { TripRequestPayload } from "../types";
+import PostCard from "../components/PostCard.vue";
+import SpotCard from "../components/SpotCard.vue";
+import { DASHBOARD_CITY_SHORTCUTS } from "../constants/cities";
+import { getPosts, getProfileSummary, getRecommendations, newFeedTrace } from "../services/api";
+import { displayName } from "../stores/session";
+import type { PostItem, ProfileSummary, RecommendationFeed } from "../types";
 
-const emit = defineEmits<{
-  startGenerate: [payload: TripRequestPayload];
-}>();
+/**
+ * 首页 Dashboard（产品化阶段一，PRODUCT_EVOLUTION_PLAN §4；阶段三加社区攻略位）。
+ *
+ * 职责：让个性化能力被用户看见 —— 画像摘要卡（实时聚合 summary，Q5 修复数据源）、
+ * 三个主入口（生成我的行程/发现景点 + 历史/收藏）、按城市预览的"为你推荐"、
+ * 社区攻略"为你推荐"（阶段三：GET /community/posts?sort=recommended，无画像自动降级热门）。
+ * 推荐卡收藏/不感兴趣后自动刷新对应流，演示"反馈 → 画像版本变化 → 排序变化"闭环。
+ */
+const router = useRouter();
 
-const preferenceOptions = [
-  "自然风景",
-  "拍照",
-  "美食",
-  "古镇",
-  "休闲",
-];
+/* ---------- 画像摘要（GET /user/profile/summary：实时聚合 trip_record，不用过期快照） ---------- */
+const summary = ref<ProfileSummary | null>(null);
+const summaryLoaded = ref(false);
 
-const dietaryOptions = [
-  "少辣",
-  "不吃香菜",
-  "不吃葱",
-];
-
-function formatDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-const today = new Date();
-const todayPlus2 = new Date(today);
-todayPlus2.setDate(todayPlus2.getDate() + 2);
-
-const formState = reactive({
-  destination: "",
-  startDate: formatDate(today),
-  endDate: formatDate(todayPlus2),
-  travelers: 2,
-  budget: 3200,
-  hotelLevel: "舒适型",
-  pace: "轻松",
-  preferences: [] as string[],
-  dietaryPreferences: [] as string[],
-  notes: "",
+const greeting = computed(() => {
+  const nick = summary.value?.nickname || displayName.value || "旅行者";
+  const hour = new Date().getHours();
+  const period = hour < 6 ? "夜深了" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+  return `${period}，${nick}`;
 });
 
-const MAX_DAYS = 7;
-
-function calcDays(start: string, end: string): number {
-  const s = new Date(start);
-  const e = new Date(end);
-  const diff = e.getTime() - s.getTime();
-  const d = Math.floor(diff / 86400000) + 1;
-  return isNaN(d) || d < 1 ? 1 : Math.min(d, MAX_DAYS);
+function splitCsv(s?: string | null): string[] {
+  if (!s) return [];
+  return s.split(",").map((x) => x.trim()).filter(Boolean);
 }
 
-const todayStart = dayjs().startOf("day");
-
-// 日历选择器绑定的 dayjs 值（与 formState 字符串双向联动）
-const startDate = ref<Dayjs>(dayjs());
-const endDate = ref<Dayjs>(dayjs().add(2, "day"));
-
-// 开始日期：今天及以后可选（不能选过去时间）
-function disabledStartDate(current: Dayjs | null): boolean {
-  return !!current && current.isBefore(todayStart, "day");
-}
-
-// 结束日期：不能早于开始日期，且最长不超过 MAX_DAYS 天
-function disabledEndDate(current: Dayjs): boolean {
-  if (!current) return false;
-  if (current.isBefore(startDate.value, "day")) return true;
-  return current.isAfter(startDate.value.add(MAX_DAYS - 1, "day"), "day");
-}
-
-const dayCount = ref(calcDays(formState.startDate, formState.endDate));
-
-// 开始/结束/天数三联动：改开始 → 自动修正结束；改天数 → 联动结束
-watch(startDate, (s) => {
-  if (endDate.value.isBefore(s, "day")) {
-    endDate.value = s;
-  }
-  formState.startDate = formatDate(s.toDate());
-  formState.endDate = formatDate(endDate.value.toDate());
-  dayCount.value = calcDays(formState.startDate, formState.endDate);
+const summaryChips = computed(() => {
+  const s = summary.value;
+  if (!s) return [];
+  const out: string[] = [];
+  const styles = splitCsv(s.travel_styles);
+  if (styles.length) out.push(`风格 ${styles.slice(0, 2).join("/")}`);
+  if (s.pace_preference) out.push(`节奏 ${s.pace_preference}`);
+  const foods = splitCsv(s.food_preferences);
+  if (foods.length) out.push(`爱 ${foods.slice(0, 2).join("/")}`);
+  if (s.hotel_preference) out.push(`住 ${s.hotel_preference}`);
+  return out.slice(0, 3);
 });
 
-watch(endDate, (e) => {
-  formState.endDate = formatDate(e.toDate());
-  dayCount.value = calcDays(formState.startDate, formState.endDate);
-});
+const hasNoProfile = computed(() =>
+  summary.value !== null
+  && summaryChips.value.length === 0
+  && (summary.value.trip_count || 0) === 0
+);
 
-watch(dayCount, (dc) => {
-  const valid = Math.max(1, Math.min(MAX_DAYS, dc));
-  if (valid !== dc) {
-    dayCount.value = valid;
-    return;
-  }
-  endDate.value = startDate.value.add(valid - 1, "day");
-  formState.endDate = formatDate(endDate.value.toDate());
-});
+const recentCities = computed(() => (summary.value?.visited_cities || []).slice(0, 6));
 
-function togglePreference(list: string[], value: string) {
-  const idx = list.indexOf(value);
-  if (idx >= 0) {
-    list.splice(idx, 1);
-  } else {
-    list.push(value);
+async function loadSummary() {
+  try {
+    summary.value = await getProfileSummary();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    summaryLoaded.value = true;
   }
 }
 
-function handleSubmit() {
-  if (!formState.destination.trim()) {
-    message.warning("请填写目的地城市");
-    return;
+/* ---------- 为你推荐（城市快捷切换 + 个性化/热门排序流） ---------- */
+const previewCity = ref("");
+const feed = ref<RecommendationFeed | null>(null);
+const feedLoading = ref(false);
+const feedError = ref("");
+
+const recommendedCities = computed(() => {
+  const set = new Set(DASHBOARD_CITY_SHORTCUTS);
+  for (const c of recentCities.value) {
+    if (!set.has(c)) set.add(c);
   }
+  return Array.from(set).slice(0, 10);
+});
 
-  const payload: TripRequestPayload = {
-    destination: formState.destination,
-    start_date: formState.startDate,
-    end_date: formState.endDate,
-    travelers: formState.travelers,
-    budget: formState.budget,
-    preferences: formState.preferences,
-    pace: formState.pace,
-    dietary_preferences: formState.dietaryPreferences,
-    hotel_level: formState.hotelLevel,
-    special_notes: formState.notes,
-  };
+async function loadFeed() {
+  if (!previewCity.value) return;
+  feedLoading.value = true;
+  feedError.value = "";
+  try {
+    feed.value = await getRecommendations(previewCity.value, 1, 8, "personalized");
+  } catch {
+    feedError.value = "推荐加载失败，请稍后重试。";
+  } finally {
+    feedLoading.value = false;
+  }
+}
 
-  // 立即切换到 agent 实时视图，边生成边展示思考过程
-  emit("startGenerate", payload);
+function switchCity(city: string) {
+  if (city === previewCity.value) return;
+  previewCity.value = city;
+  void loadFeed();
+}
+
+/* 卡片反馈（收藏/不感兴趣）后：画像/回避信号已变 → 刷新当前城市推荐（闭环可见） */
+function onFeedChanged() {
+  void loadFeed();
+}
+
+/* ---------- 社区攻略 · 为你推荐（阶段三：个性化帖子预览，无画像降级热门） ---------- */
+const posts = ref<PostItem[]>([]);
+const postsLoading = ref(true);
+const postsError = ref("");
+// P1-5：帖子推荐预览同样带上会话幂等键（页面存续期共享，防双写曝光）
+const postFeedTrace = newFeedTrace();
+
+async function loadPosts() {
+  postsLoading.value = true;
+  postsError.value = "";
+  try {
+    const resp = await getPosts({ sort: "recommended", pageSize: 4, feedTrace: postFeedTrace });
+    posts.value = resp.items.slice(0, 4);
+  } catch {
+    postsError.value = "攻略加载失败，请稍后重试。";
+  } finally {
+    postsLoading.value = false;
+  }
+}
+
+function go(name: string, query?: Record<string, string>) {
+  void router.push(query ? { name, query } : { name });
+}
+
+function goCityTopic(c: string) {
+  void router.push({ name: "city-topic", params: { name: c } });
+}
+
+onMounted(() => {
+  void loadSummary().then(() => {
+    // 默认城市：最近去过城市优先，否则热门第一城
+    const first = summary.value?.visited_cities?.[0];
+    previewCity.value = first && first.trim() ? first.trim() : DASHBOARD_CITY_SHORTCUTS[0];
+    void loadFeed();
+  });
+  void loadPosts();
+});
+
+/* ---------- 骨架占位 ---------- */
+function skeletons(n: number) {
+  return new Array(n).fill(0).map((_, i) => i);
 }
 </script>
 
 <template>
-  <section class="home-page">
-    <!-- 目的地与日期 -->
-    <div class="ios-card">
-      <div class="ios-card__header">
-        <span class="ios-card__icon">📍</span>
-        <span class="ios-card__title">目的地与日期</span>
+  <section class="dashboard">
+    <!-- 欢迎 + 画像摘要卡（点击去偏好页完善） -->
+    <div
+      class="ios-card dash-profile"
+      role="button"
+      tabindex="0"
+      @click="go('profile')"
+      @keyup.enter="go('profile')"
+    >
+      <div class="dash-profile__head">
+        <div>
+          <h2 class="dash-profile__greet">{{ greeting }}</h2>
+          <p class="dash-profile__sub" v-if="summaryLoaded">
+            <template v-if="hasNoProfile">我还不了解你的偏好 —— 点这里告诉我，推荐会更懂你</template>
+            <template v-else>系统记得你的偏好，行程与推荐会自动贴合</template>
+          </p>
+        </div>
+        <span class="dash-profile__more">完善偏好 ›</span>
       </div>
 
-      <div class="ios-form-row">
-        <div class="ios-field ios-field--full">
-          <label class="ios-label">目的地城市</label>
-          <input v-model="formState.destination" class="ios-input" placeholder="例如：大理、三亚、成都" />
-        </div>
+      <div v-if="summaryChips.length" class="ios-chips dash-profile__chips">
+        <span v-for="chip in summaryChips" :key="chip" class="ios-chip ios-chip--mem">{{ chip }}</span>
       </div>
 
-      <div class="ios-form-row ios-form-row--3col">
-        <div class="ios-field">
-          <label class="ios-label">开始日期</label>
-          <a-date-picker
-            v-model:value="startDate"
-            :disabled-date="disabledStartDate"
-            class="ios-input"
-            style="width: 100%"
-            placeholder="选择开始日期"
-          />
+      <div v-if="summary" class="dash-profile__stats">
+        <div class="stat">
+          <div class="stat__value">{{ summary.trip_count }}</div>
+          <div class="stat__label">历史行程</div>
         </div>
-        <div class="ios-field">
-          <label class="ios-label">结束日期</label>
-          <a-date-picker
-            v-model:value="endDate"
-            :disabled-date="disabledEndDate"
-            class="ios-input"
-            style="width: 100%"
-            placeholder="选择结束日期"
-          />
+        <div class="stat">
+          <div class="stat__value">{{ summary.visited_cities?.length ?? 0 }}</div>
+          <div class="stat__label">去过的城市</div>
         </div>
-        <div class="ios-field">
-          <label class="ios-label">人数</label>
-          <input v-model.number="formState.travelers" type="number" class="ios-input" min="1" />
-        </div>
-      </div>
-
-      <div class="ios-info-row">
-        <span class="ios-info-label">旅行天数</span>
-        <div class="ios-day-count">
-          <input
-            v-model.number="dayCount"
-            type="number"
-            class="ios-input ios-input--sm"
-            min="1"
-            max="7"
-          />
-          <span class="ios-day-unit">天</span>
+        <div class="stat stat--cities">
+          <div class="stat__value stat__value--sm">{{ (recentCities || []).join(" · ") || "—" }}</div>
+          <div class="stat__label">最近去过</div>
         </div>
       </div>
     </div>
 
-    <!-- 偏好设置 -->
-    <div class="ios-card">
-      <div class="ios-card__header">
-        <span class="ios-card__icon">⚙️</span>
-        <span class="ios-card__title">偏好设置</span>
-      </div>
-
-      <div class="ios-form-row ios-form-row--3col">
-        <div class="ios-field">
-          <label class="ios-label">节奏偏好</label>
-          <select v-model="formState.pace" class="ios-select">
-            <option value="轻松">轻松</option>
-            <option value="适中">适中</option>
-            <option value="紧凑">紧凑</option>
-          </select>
-        </div>
-        <div class="ios-field">
-          <label class="ios-label">住宿偏好</label>
-          <select v-model="formState.hotelLevel" class="ios-select">
-            <option value="舒适型">舒适型</option>
-            <option value="高档型">高档型</option>
-            <option value="经济型">经济型</option>
-          </select>
-        </div>
-        <div class="ios-field">
-          <label class="ios-label">预算（元）</label>
-          <input v-model.number="formState.budget" type="number" class="ios-input" min="0" />
-        </div>
-      </div>
-
-      <div class="ios-field" style="margin-top: 16px">
-        <label class="ios-label">旅行偏好</label>
-        <div class="ios-chips">
-          <button
-            v-for="opt in preferenceOptions"
-            :key="opt"
-            :class="['ios-chip', { 'ios-chip--active': formState.preferences.includes(opt) }]"
-            @click="togglePreference(formState.preferences, opt)"
-          >
-            {{ opt }}
-          </button>
-        </div>
-      </div>
-
-      <div class="ios-field" style="margin-top: 16px">
-        <label class="ios-label">饮食偏好</label>
-        <div class="ios-chips">
-          <button
-            v-for="opt in dietaryOptions"
-            :key="opt"
-            :class="['ios-chip', { 'ios-chip--active': formState.dietaryPreferences.includes(opt) }]"
-            @click="togglePreference(formState.dietaryPreferences, opt)"
-          >
-            {{ opt }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 额外要求 -->
-    <div class="ios-card">
-      <div class="ios-card__header">
-        <span class="ios-card__icon">💬</span>
-        <span class="ios-card__title">额外要求</span>
-      </div>
-      <textarea
-        v-model="formState.notes"
-        class="ios-textarea"
-        rows="3"
-        placeholder="例如：不想太早起床，希望安排适合看日落的地点"
-      />
-    </div>
-
-    <!-- 提交 -->
-    <div class="submit-area">
-      <button class="ios-button ios-button--primary" @click="handleSubmit">
-        开始规划
+    <!-- 快捷入口 -->
+    <div class="dash-cta">
+      <button type="button" class="cta cta--primary" @click="go('plan')">
+        <span class="cta__icon">✈️</span>
+        <span class="cta__title">生成我的行程</span>
+        <span class="cta__desc">AI 实时规划 · 结合你的偏好</span>
       </button>
-      <p class="submit-hint">提交后会实时展示 AI 思考过程</p>
+      <button type="button" class="cta" @click="go('recommendations')">
+        <span class="cta__icon">🗺️</span>
+        <span class="cta__title">发现景点</span>
+        <span class="cta__desc">个性化推荐 + 城市攻略</span>
+      </button>
+      <button type="button" class="cta" @click="go('history')">
+        <span class="cta__icon">🧳</span>
+        <span class="cta__title">历史行程</span>
+        <span class="cta__desc">回看已保存的计划</span>
+      </button>
+      <button type="button" class="cta" @click="go('favorites')">
+        <span class="cta__icon">💛</span>
+        <span class="cta__title">我的收藏</span>
+        <span class="cta__desc">收藏过的景点</span>
+      </button>
+    </div>
+
+    <!-- 为你推荐 -->
+    <div class="rec-block">
+      <div class="rec-block__head">
+        <h3 class="rec-block__title">{{ previewCity ? `「${previewCity}」为你推荐` : "为你推荐" }}</h3>
+        <div class="rec-block__ops">
+          <button
+            v-if="previewCity"
+            type="button"
+            class="rec-block__more"
+            @click="goCityTopic(previewCity)"
+          >
+            城市专题 ›
+          </button>
+          <button
+            v-if="previewCity"
+            type="button"
+            class="rec-block__more"
+            @click="go('recommendations', { city: previewCity })"
+          >
+            去发现更多 ›
+          </button>
+        </div>
+      </div>
+
+      <div class="rec-block__cities">
+        <button
+          v-for="c in recommendedCities"
+          :key="c"
+          type="button"
+          :class="['city-chip', { 'city-chip--active': c === previewCity }]"
+          @click="switchCity(c)"
+        >
+          {{ c }}
+        </button>
+      </div>
+
+      <div v-if="feedLoading" class="spot-grid">
+        <div v-for="i in skeletons(4)" :key="i" class="skel" />
+      </div>
+      <div v-else-if="feedError" class="rec-empty">{{ feedError }}</div>
+      <div v-else-if="feed && feed.items.length" class="spot-grid">
+        <SpotCard
+          v-for="item in feed.items"
+          :key="item.spot_id"
+          :item="item"
+          :reload-on-change="true"
+          @changed="onFeedChanged"
+        />
+      </div>
+      <div v-else class="rec-empty">
+        该城市暂时没有可推荐的景点，<button type="button" class="rec-empty__link" @click="loadFeed">再试一次</button>
+      </div>
+    </div>
+
+    <!-- 社区攻略 · 为你推荐（阶段三：帖子行为闭环与社区入口，画像为空自动降级热门） -->
+    <div class="rec-block">
+      <div class="rec-block__head">
+        <h3 class="rec-block__title">📖 社区攻略 · 为你推荐</h3>
+        <button type="button" class="rec-block__more" @click="go('community')">进入社区 ›</button>
+      </div>
+
+      <div v-if="postsLoading" class="post-grid">
+        <div v-for="i in skeletons(4)" :key="i" class="skel" />
+      </div>
+      <div v-else-if="postsError" class="rec-empty">{{ postsError }}</div>
+      <div v-else-if="posts.length" class="post-grid">
+        <PostCard
+          v-for="p in posts"
+          :key="p.id"
+          :post="p"
+          @changed="loadPosts"
+        />
+      </div>
+      <div v-else class="rec-empty">
+        还没有公开攻略 —— 先去发一篇你的旅行经验吧。
+        <button type="button" class="rec-empty__link" @click="go('community')">去看看 ›</button>
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.home-page {
+.dashboard {
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 
-/* iOS 卡片 */
 .ios-card {
-  padding: 20px;
-  border-radius: 12px;
+  border-radius: 14px;
   background: #FFFFFF;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.ios-card__header {
+/* 画像摘要卡 */
+.dash-profile {
+  padding: 20px;
+  cursor: pointer;
+  border: 0.5px solid rgba(0, 122, 255, 0.16);
+  transition: box-shadow 0.2s ease;
+}
+
+.dash-profile:hover {
+  box-shadow: 0 2px 10px rgba(0, 122, 255, 0.12);
+}
+
+.dash-profile__head {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
-}
-
-.ios-card__icon {
-  font-size: 17px;
-}
-
-.ios-card__title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1C1C1E;
-}
-
-/* iOS 表单 */
-.ios-form-row {
-  display: grid;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
 }
 
-.ios-form-row--3col {
-  grid-template-columns: repeat(3, 1fr);
+.dash-profile__greet {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #1C1C1E;
 }
 
-.ios-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.ios-field--full {
-  grid-column: 1 / -1;
-}
-
-.ios-label {
-  font-size: 13px;
-  font-weight: 500;
+.dash-profile__sub {
+  margin: 6px 0 0;
+  font-size: 12.5px;
   color: #8E8E93;
 }
 
-.ios-input,
-.ios-select {
-  height: 36px;
-  padding: 0 12px;
-  border: 1px solid #D1D1D6;
-  border-radius: 8px;
-  background: #FFFFFF;
-  font-size: 15px;
-  color: #1C1C1E;
-  outline: none;
-  transition: border-color 0.2s ease;
+.dash-profile__more {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #007AFF;
 }
 
-.ios-input:focus,
-.ios-select:focus {
-  border-color: #007AFF;
-}
-
-.ios-textarea {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #D1D1D6;
-  border-radius: 8px;
-  background: #FFFFFF;
-  font-size: 15px;
-  color: #1C1C1E;
-  outline: none;
-  resize: vertical;
-  transition: border-color 0.2s ease;
-  font-family: inherit;
-}
-
-.ios-textarea:focus {
-  border-color: #007AFF;
-}
-
-/* iOS 信息行 */
-.ios-info-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
-}
-
-.ios-info-label {
-  font-size: 13px;
-  color: #8E8E93;
-}
-
-.ios-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 12px;
-  border-radius: 20px;
-  background: #007AFF;
-  color: #FFFFFF;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.ios-day-count {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.ios-input--sm {
-  width: 70px;
-  text-align: center;
-}
-
-.ios-day-unit {
-  font-size: 14px;
-  color: #1C1C1E;
-  font-weight: 500;
-}
-
-/* iOS Chip 标签 */
-.ios-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.dash-profile__chips {
+  margin-top: 14px;
 }
 
 .ios-chip {
@@ -428,60 +355,197 @@ function handleSubmit() {
   background: #FFFFFF;
   font-size: 13px;
   color: #1C1C1E;
-  cursor: pointer;
-  transition: all 0.2s ease;
 }
 
-.ios-chip:active {
-  transform: scale(0.97);
+.ios-chip--mem {
+  background: rgba(0, 122, 255, 0.06);
+  border-color: rgba(0, 122, 255, 0.18);
+  color: #185FA5;
 }
 
-.ios-chip--active {
-  border-color: #007AFF;
-  background: #007AFF;
-  color: #FFFFFF;
+.dash-profile__stats {
+  display: flex;
+  gap: 28px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
 }
 
-/* iOS 按钮 */
-.ios-button {
-  border: none;
-  border-radius: 12px;
-  padding: 14px 32px;
-  font-size: 17px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
+.stat__value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1C1C1E;
 }
 
-.ios-button:active {
-  transform: scale(0.97);
-}
-
-.ios-button--primary {
-  background: #007AFF;
-  color: #FFFFFF;
-}
-
-.ios-button--primary:disabled {
-  opacity: 0.5;
-  cursor: wait;
-}
-
-/* 提交区 */
-.submit-area {
-  text-align: center;
-  padding: 8px 0;
-}
-
-.submit-hint {
-  margin-top: 10px;
+.stat__value--sm {
   font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat__label {
+  margin-top: 2px;
+  font-size: 11.5px;
   color: #8E8E93;
 }
 
-@media (max-width: 768px) {
-  .ios-form-row--3col {
-    grid-template-columns: 1fr;
+.stat--cities {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 快捷入口 */
+.dash-cta {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.cta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 16px;
+  border: none;
+  border-radius: 14px;
+  background: #FFFFFF;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.cta:hover {
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+}
+
+.cta:active {
+  transform: scale(0.98);
+}
+
+.cta--primary {
+  background: linear-gradient(135deg, #007AFF, #4DA3FF);
+  color: #FFFFFF;
+}
+
+.cta__icon {
+  font-size: 18px;
+}
+
+.cta__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cta__desc {
+  font-size: 11.5px;
+  opacity: 0.75;
+}
+
+/* 为你推荐 */
+.rec-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 2px 10px;
+}
+
+.rec-block__ops {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.rec-block__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #1C1C1E;
+}
+
+.rec-block__more {
+  border: none;
+  background: none;
+  color: #007AFF;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.rec-block__cities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.city-chip {
+  border: 1px solid #E2E2E7;
+  border-radius: 16px;
+  padding: 5px 13px;
+  background: #FFFFFF;
+  color: #3C3C43;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.city-chip--active {
+  background: #007AFF;
+  border-color: #007AFF;
+  color: #FFFFFF;
+}
+
+.spot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.post-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.skel {
+  height: 280px;
+  border-radius: 14px;
+  background: linear-gradient(100deg, #EFEFF4 40%, #F8F8FA 50%, #EFEFF4 60%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -80% 0; }
+}
+
+.rec-empty {
+  padding: 40px 20px;
+  text-align: center;
+  border-radius: 14px;
+  background: #FFFFFF;
+  color: #8E8E93;
+  font-size: 14px;
+}
+
+.rec-empty__link {
+  border: none;
+  background: none;
+  color: #007AFF;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+@media (max-width: 900px) {
+  .dash-cta {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 </style>

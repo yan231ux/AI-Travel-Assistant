@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.agent;
 
+import com.yuntu.tripplanner.model.CandidateEvidence;
 import com.yuntu.tripplanner.model.TokenUsage;
 import lombok.Data;
 
@@ -60,4 +61,17 @@ public class CollectedData {
      * 空/null = 该用户暂无历史，不注入。
      */
     private String userMemory;
+
+    /**
+     * 个性化候选排序说明（个性化阶段三：PersonalizedRankingService 按画像对 POI 候选
+     * 确定性打分/过滤后产生，形如「[景点] 故宫：匹配你的偏好"历史文化"」）。
+     * 供生成提示词「候选优先级参考」使用；空 = 未触发个性化排序。
+     */
+    private List<String> personalizedNotes = new ArrayList<>();
+
+    /**
+     * 候选阶段排序证据（口径统一轮：排序服务为每个候选记录 原序/得分/命中/回避/是否已体验，
+     * 收尾落库 candidate_evidence 表；空 = 未触发个性化排序或候选不足）。
+     */
+    private List<CandidateEvidence> candidateEvidence = new ArrayList<>();
 }

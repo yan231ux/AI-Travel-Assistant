@@ -21,6 +21,8 @@ Thumbs.db
 # Application
 application-local.yml
 .env
+# 本地上传图片（UploadService 运行期目录，不提交）
+uploads/
 
 # Frontend
 frontend/node_modules/
@@ -33,3 +35,9 @@ backend/chroma-data*/
 
 # WorkBuddy AI memory (local notes/cache, not project source)
 .workbuddy/
+
+# Word 交付物与临时文件（正式 SRS 以 软件需求规格说明书.md 维护，docx 仅本地交付，不入库）
+*.docx
+*.docx.bak
+*.docx.tmp
+~$*.docx

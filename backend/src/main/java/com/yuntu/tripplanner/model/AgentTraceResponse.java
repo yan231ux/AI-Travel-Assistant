@@ -31,4 +31,12 @@ public class AgentTraceResponse {
     
     @JsonProperty("errors")
     private List<String> errors = new ArrayList<>();
+
+    /**
+     * 候选阶段排序证据（个性化口径统一轮：TravelAgent 收尾时从 CollectedData 透传，
+     * 供 TripGenerationFinalizer 在写缓存前补 tripId/selected 后落库 candidate_evidence；
+     * 仅内存传递用，历史/响应序列化不依赖该字段）。
+     */
+    @JsonProperty("candidate_evidence")
+    private List<CandidateEvidence> candidateEvidence = new ArrayList<>();
 }

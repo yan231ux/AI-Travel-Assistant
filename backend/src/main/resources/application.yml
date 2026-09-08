@@ -28,12 +28,27 @@ spring:
     time-zone: Asia/Shanghai
     serialization:
       write-dates-as-timestamps: false
+
+  # Multipart Upload（帖子封面上传：请求级上限略高于单文件校验 5MB）
+  servlet:
+    multipart:
+      max-file-size: 6MB
+      max-request-size: 8MB
       
   # SQL Initialization
   sql:
     init:
       mode: always
       schema-locations: classpath:schema.sql
+
+# 本地上传图片存储（UploadService/WebConfig 同源；建议 .gitignore 排除）
+app:
+  upload-dir: ${UPLOAD_DIR:./uploads}
+
+# 存量库结构自动升级：关键列 ALTER 失败默认阻止启动（审查报告 P0-4，避免"假在线"运行时才报
+# Unknown column）；旧库确需手工修复时用 SCHEMA_AUTO_UPGRADE_STRICT=false 逃生（仅告警）。
+schema:
+  auto-upgrade-strict: ${SCHEMA_AUTO_UPGRADE_STRICT:true}
 
 # MyBatis Plus Configuration
 mybatis-plus:
@@ -90,6 +105,11 @@ known-cities: 北京,大理,成都,三亚,厦门,西安
 # CORS 允许来源（前端开发服务器，逗号分隔）
 cors:
   allowed-origins: http://localhost:5173,http://127.0.0.1:5173,http://192.168.137.1:5173
+
+# 社区管理（阶段二）：首个管理员账号由启动初始化（生产必须用环境变量覆盖弱口令）
+community:
+  admin-username: ${COMMUNITY_ADMIN_USERNAME:admin}
+  admin-password: ${COMMUNITY_ADMIN_PASSWORD:admin123}
 
 # Logging Configuration
 logging:

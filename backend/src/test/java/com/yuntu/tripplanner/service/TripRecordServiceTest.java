@@ -38,6 +38,9 @@ class TripRecordServiceTest {
     @Mock
     private AgentTraceRepository agentTraceRepository;
 
+    @Mock
+    private AuditService auditService;
+
     private TripRecordService service;
 
     @BeforeEach
@@ -45,7 +48,8 @@ class TripRecordServiceTest {
         // 注册实体 TableInfo，否则 LambdaQueryWrapper 的方法引用在无 Spring 环境解析失败
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), TripRecord.class);
-        service = new TripRecordService(tripRecordRepository, agentTraceRepository, new ObjectMapper());
+        service = new TripRecordService(tripRecordRepository, agentTraceRepository,
+                new ObjectMapper(), auditService);
     }
 
     @Test
