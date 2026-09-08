@@ -413,6 +413,15 @@
 
 ---
 
+### 13.4 景点详情页 "正在加载..." 死循环：TDZ ReferenceError（2026-09-08）
+- **现象**：从首页点城市进入 /spots/:id，页面永远停在「正在加载景点...」。控制台：`Uncaught (in promise) ReferenceError: Cannot access 'collected' before initialization at load (SpotDetail.vue:42) at await in watchImmediate (SpotDetail.vue:55) at setup (SpotDetail.vue:155)`。
+- **根因**：典型 ES 模块 TDZ（Temporal Dead Zone）。`watch(props.id, load, { immediate: true })` 在 setup 阶段同步触发 `load()`，而 `load()` 体内给 `collected.value / ignored.value` 赋值。这两个 `const collected = ref(false)` 却在原文件 62/97 行声明——晚于 `load` 函数被定义。`function` 声明本身被提升，但 `const` 不会，访问尚未初始化的绑定直接抛 ReferenceError。Promise 失败被框架吞了，UI 就一直转圈。
+- **解法**：把所有 `load()` 会写到的 ref（`collected / favBusy / pendingDislike / dislikeBusy / ignored`）上移到 `load` 之前的「ref 区」统一声明，函数留在原位。
+- **预防扫描**：用一行 node 启发式找出「`const X = ref(...)` 之前出现 `X.value`」的文件——本次扫描全 `views/components` 无其他命中。**类比教训**：`watch(..., { immediate: true })` / `computed(() => ...)` 立即求值的回调里写到的 ref 必须保证声明在它之前。React/Vue3 SFC 同病相怜——可推广为项目级 lint 规则（vue/no-setup-props-destructure 之外再加一条 "ref 优先于其消费方"）。
+- **答辩话术**：「这个 bug 不是逻辑写错，是 ES 模块的声明顺序问题——`watch` 立即触发，但 `const` 没提升，运行到那一行就抛了，promise 又被吞。改成把所有 ref 先声明、函数后定义就好了。**这也是 Vue3 比 Vue2 更需要顶层声明习惯的副作用**，从此我写 setup 段都把 ref 集中放最前面。」
+
+---
+
 ## 待办 / 已规划（未实施）
 - 方向三：ECharts 可视化（预算饼图/行程时间轴/天气曲线）——答辩视觉冲击最大，建议答辩前做。
 - 方向四：工程加固（JWT 强密钥 / Docker 全栈一键编排 / 搜索重试降级）。
