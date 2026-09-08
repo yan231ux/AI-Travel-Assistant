@@ -1540,7 +1540,7 @@ async function handleSave() {
 }
 
 .ios-src--verified { color: #1B7F3B; background: rgba(52, 199, 89, 0.12); border: 0.5px solid rgba(52, 199, 89, 0.35); }
-.ios-src--system { color: #0A5DC2; background: rgba(47, 119, 112, 0.1); border: 0.5px solid rgba(0, 122, 255, 0.3); }
+.ios-src--system { color: var(--brand-deep); background: rgba(47, 119, 112, 0.1); border: 0.5px solid rgba(47, 119, 112, 0.3); }
 .ios-src--model { color: #B25E00; background: rgba(255, 149, 0, 0.14); border: 0.5px solid rgba(255, 149, 0, 0.4); }
 .ios-src--unknown { color: var(--text-secondary); background: rgba(142, 142, 147, 0.12); border: 0.5px solid rgba(142, 142, 147, 0.3); }
 
@@ -1853,7 +1853,7 @@ async function handleSave() {
 }
 .filtered-item__ev.fc-ev--hard { background: rgba(255, 149, 0, 0.12); color: var(--warning); }
 .filtered-item__ev.fc-ev--soft { background: rgba(47, 119, 112, 0.10); color: var(--brand-deep); }
-.filtered-item__ev.fc-ev--weather { background: rgba(88, 86, 214, 0.12); color: #5856D6; }
+.filtered-item__ev.fc-ev--weather { background: rgba(47, 119, 112, 0.12); color: var(--brand-teal); }
 .ios-badge {
   display: inline-block;
   font-size: 10px;

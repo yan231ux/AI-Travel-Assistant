@@ -48,13 +48,13 @@ defineProps<{
 .agent-step {
   border-radius: 10px;
   padding: 12px 14px;
-  background: #F2F2F7;
+  background: rgba(23, 33, 31, 0.05);
   border-left: 3px solid var(--brand-teal);
   transition: opacity 0.3s ease, box-shadow 0.3s ease;
 }
 
 .agent-step--active {
-  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.35);
+  box-shadow: 0 0 0 2px rgba(47, 119, 112, 0.35);
   background: var(--surface-white);
 }
 
@@ -73,7 +73,7 @@ defineProps<{
   font-size: 12px;
   font-weight: 600;
   color: var(--brand-teal);
-  background: rgba(0, 122, 255, 0.1);
+  background: rgba(47, 119, 112, 0.1);
   padding: 2px 8px;
   border-radius: 6px;
 }
