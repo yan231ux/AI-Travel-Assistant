@@ -20,6 +20,13 @@ public class SearchPlan {
      * 计划说明
      */
     private String planDescription;
+
+    /**
+     * 方案来源（ReAct 优化批次 3：存档复用需记录"这份计划是怎么来的"，便于答辩/运营追溯）：
+     * autonomous-native（自主 + 原生 tool_calls）/ autonomous-text（自主 + 文本 JSON）/
+     * legacy-text（legacy + 文本 JSON）/ rule（规则兜底）。
+     */
+    private String source;
     
     /**
      * 工具调用

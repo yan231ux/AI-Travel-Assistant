@@ -11,6 +11,7 @@ import com.yuntu.tripplanner.model.AgentTraceStep;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.TripRequest;
 import com.yuntu.tripplanner.model.WeatherForecastResponse;
+import com.yuntu.tripplanner.service.AgentPlanArchiveService;
 import com.yuntu.tripplanner.service.ItineraryGenerator;
 import com.yuntu.tripplanner.service.RagService;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +53,9 @@ class TravelAgentCallbackTest {
     private ItineraryGenerator itineraryGenerator;
     @Mock
     private RagService ragService;
+    /** 采集方案存档（legacy 模式不触碰；此处仅满足构造签名） */
+    @Mock
+    private AgentPlanArchiveService planArchiveService;
 
     private TravelAgent agent;
 
@@ -61,7 +65,7 @@ class TravelAgentCallbackTest {
         config.setMaxIterations(3);
         Executor synchronous = Runnable::run;
         agent = new TravelAgent(config, llmClient, amapClient, openMeteoClient, bingSearchClient,
-                itineraryGenerator, ragService, synchronous, new ObjectMapper());
+                itineraryGenerator, ragService, planArchiveService, synchronous, new ObjectMapper());
     }
 
     private TripRequest tripRequest() {

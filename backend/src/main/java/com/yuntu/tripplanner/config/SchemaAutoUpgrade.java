@@ -193,6 +193,26 @@ public class SchemaAutoUpgrade implements ApplicationRunner {
         } catch (Exception e) {
             log.warn("角色迁移失败（不影响启动，代码内 ADMIN→超管兼容映射仍生效）: {}", e.getMessage());
         }
+        // ReAct 优化批次 3：采集方案存档表（存量库兜底建表；新库由 schema.sql 直接建）。
+        // 自主模式"只自主一次 + 复用"依赖此表持久化工具计划，缺表时复用会静默降级为不复用
+        // （不阻断生成），但那样答辩演示看不到复用效果，故这里与其它新表一致走启动期建表。
+        checked += ensureTable("agent_plan_archive", "CREATE TABLE IF NOT EXISTS agent_plan_archive ("
+                + "id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',"
+                + "plan_key VARCHAR(255) NOT NULL COMMENT '复用键：userId|destination|preferences|pace|hotelLevel|dietary|specialNotes',"
+                + "user_id VARCHAR(50) COMMENT '用户ID（从 plan_key 拆出）',"
+                + "destination VARCHAR(64) COMMENT '目的地（从 plan_key 拆出）',"
+                + "plan_json TEXT NOT NULL COMMENT '方案快照JSON',"
+                + "plan_desc VARCHAR(500) COMMENT '计划说明',"
+                + "source VARCHAR(32) COMMENT '方案来源：autonomous-native/autonomous-text/legacy-text',"
+                + "tool_count INT NOT NULL DEFAULT 0 COMMENT '工具调用数量',"
+                + "observation_summary VARCHAR(1000) COMMENT '关键观察摘要',"
+                + "reuse_count INT NOT NULL DEFAULT 0 COMMENT '被复用次数',"
+                + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',"
+                + "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',"
+                + "UNIQUE KEY uk_plan_key (plan_key),"
+                + "INDEX idx_plan_user (user_id, updated_at),"
+                + "INDEX idx_plan_dest (destination, updated_at)"
+                + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ReAct 采集方案存档'");
         log.info("存量库结构自动升级完成：共检查 {} 个关键列/表", checked);
     }
 

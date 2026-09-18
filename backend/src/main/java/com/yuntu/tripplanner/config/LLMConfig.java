@@ -59,6 +59,19 @@ public class LLMConfig {
     private String toolCalling = "auto";
 
     /**
+     * autonomous 模式下"允许由 LLM 决策的补轮次数"上限（默认 1）。
+     *
+     * <p>为什么要有这个上限：每轮补轮都问一次模型，prompt token 会随轮数线性上升
+     * （实测 3 轮时是 legacy 的 3.3 倍）。首次补轮最需要模型判断（它才知道"上一轮为什么失败、
+     * 该换什么关键词"）；再往后继续问，边际收益下降而成本照付。
+     * 因此默认只让模型决策**第一次补轮**，之后的补轮改由规则按缺口补齐。
+     *
+     * <p>设为 0 = 补轮全部走规则（最省，等同放弃失败自纠）；设大 = 更自主但更贵。
+     * 补轮总次数仍受 {@link #maxIterations} 约束。
+     */
+    private Integer llmGapfillRounds = 1;
+
+    /**
      * 文本向量化模型（RAG 用）
      */
     private String embeddingModel = "text-embedding-v3";

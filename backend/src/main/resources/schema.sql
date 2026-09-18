@@ -730,3 +730,30 @@ CREATE TABLE IF NOT EXISTS content_moderation_task (
     INDEX idx_mod_target (target_type, target_id),
     INDEX idx_mod_hash (target_type, target_id, content_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 内容审核任务（规则+AI 初筛+人工复核）';
+
+-- =====================================================================
+-- ReAct 优化批次 3：采集方案存档复用（agent_plan_archive）
+-- =====================================================================
+-- 背景：autonomous 模式下模型每轮自由决定调哪些工具，同一输入两次生成可能拿到不同候选池，
+-- 使"个性化结果可复现、变化可归因"被引入第二个自变量（工具选择）而说不清。
+-- 解法：同用户+同目的地+同偏好"只自主一次"——首轮走完整自主链路，把最终生效的工具计划
+-- 落库存档；再次生成直接复用存档计划，候选池因此稳定，个性化排序的输入被钉死。
+-- 副产品：复用命中省掉一次 think LLM 调用（自主模式 think 是大头），是最实在的"压 token"。
+-- plan_key 与 TravelAgent#buildPlanCacheKey 同源（只取影响工具选择的参数，排除日期/人数/预算）。
+CREATE TABLE IF NOT EXISTS agent_plan_archive (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    plan_key VARCHAR(255) NOT NULL COMMENT '复用键：userId|destination|preferences|pace|hotelLevel|dietary|specialNotes',
+    user_id VARCHAR(50) COMMENT '用户ID（从 plan_key 拆出，便于按用户排查/清理）',
+    destination VARCHAR(64) COMMENT '目的地（从 plan_key 拆出，便于按城市排查）',
+    plan_json TEXT NOT NULL COMMENT '方案快照JSON：{"planDescription":...,"toolCalls":[{"tool":...,"query":...}]}',
+    plan_desc VARCHAR(500) COMMENT '计划说明（人读，进 trace 标注"沿用上次成功的采集方案"）',
+    source VARCHAR(32) COMMENT '方案来源：autonomous-native/autonomous-text/legacy-text',
+    tool_count INT NOT NULL DEFAULT 0 COMMENT '工具调用数量',
+    observation_summary VARCHAR(1000) COMMENT '关键观察摘要（各数据源实际规模，复用是否成立的证据）',
+    reuse_count INT NOT NULL DEFAULT 0 COMMENT '被复用次数（每次命中+1，可解释性）',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_plan_key (plan_key),
+    INDEX idx_plan_user (user_id, updated_at),
+    INDEX idx_plan_dest (destination, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ReAct 采集方案存档（自主一次+复用，稳定候选池/压 token）';

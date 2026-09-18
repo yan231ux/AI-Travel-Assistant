@@ -11,6 +11,7 @@ import com.yuntu.tripplanner.model.AgentTraceStep;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.TripRequest;
 import com.yuntu.tripplanner.model.WeatherForecastResponse;
+import com.yuntu.tripplanner.service.AgentPlanArchiveService;
 import com.yuntu.tripplanner.service.ItineraryGenerator;
 import com.yuntu.tripplanner.service.RagService;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,6 +60,13 @@ class TravelAgentAutonomousModeTest {
     private ItineraryGenerator itineraryGenerator;
     @Mock
     private RagService ragService;
+    /**
+     * 采集方案存档：默认 Mockito 对 Optional 返回 empty、void 不动作，
+     * 恰好等价于"无存档可用" → 既有用例走的仍是"正常决策"路径。
+     * 存档复用专项用例在 {@code TravelAgentPlanArchiveTest} 里单测。
+     */
+    @Mock
+    private AgentPlanArchiveService planArchiveService;
 
     private TravelAgent agent;
 
@@ -82,7 +90,7 @@ class TravelAgentAutonomousModeTest {
         // 同步 executor：工具任务立即执行，保证测试确定性
         Executor synchronous = Runnable::run;
         return new TravelAgent(config, llmClient, amapClient, openMeteoClient, bingSearchClient,
-                itineraryGenerator, ragService, synchronous, new ObjectMapper());
+                itineraryGenerator, ragService, planArchiveService, synchronous, new ObjectMapper());
     }
 
     private TripRequest tripRequest() {

@@ -91,6 +91,11 @@ llm:
   #   native      = 强制原生；text = 从不使用 tools（任何 chat 模型都能跑）。
   # 做成三态是为了能频繁更换模型（含免费额度模型）而不被 tools 支持度卡住。
   tool-calling: ${LLM_TOOL_CALLING:auto}
+  # autonomous 模式下"允许由 LLM 决策的补轮次数"上限（默认 1）：
+  #   首次补轮最需要模型判断（它才知道上一轮为什么失败、该换什么关键词）；
+  #   再往后继续问，边际收益下降而 token 照付（实测 3 轮时是 legacy 的 3.3 倍）。
+  #   0 = 补轮全走规则（最省）；调大 = 更自主但更贵。补轮总次数仍受 max-iterations 约束。
+  llm-gapfill-rounds: ${LLM_GAPFILL_ROUNDS:1}
 
 # Amap Configuration
 amap:

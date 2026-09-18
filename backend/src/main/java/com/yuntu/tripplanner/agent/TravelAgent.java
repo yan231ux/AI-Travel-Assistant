@@ -7,11 +7,13 @@ import com.yuntu.tripplanner.client.BingSearchClient;
 import com.yuntu.tripplanner.client.LlmClient;
 import com.yuntu.tripplanner.client.OpenMeteoClient;
 import com.yuntu.tripplanner.config.LLMConfig;
+import com.yuntu.tripplanner.model.AgentPlanArchive;
 import com.yuntu.tripplanner.model.AgentTraceResponse;
 import com.yuntu.tripplanner.model.AgentTraceStep;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.TokenUsage;
 import com.yuntu.tripplanner.model.TripRequest;
+import com.yuntu.tripplanner.service.AgentPlanArchiveService;
 import com.yuntu.tripplanner.service.ItineraryGenerator;
 import com.yuntu.tripplanner.service.RagService;
 import com.yuntu.tripplanner.common.SightseeingFilter;
@@ -49,6 +51,11 @@ public class TravelAgent {
     private final BingSearchClient bingSearchClient;
     private final ItineraryGenerator itineraryGenerator;
     private final RagService ragService;
+    /**
+     * 采集方案存档服务（持久化复用；仅自主模式使用）。改造前 planCache 只是内存 1h 缓存，
+     * 进程一重启就没了、也不可解释；存档表补齐"持久 + 可追溯 + 复用计数"。
+     */
+    private final AgentPlanArchiveService planArchiveService;
     private final Executor toolExecutor;
     private final ObjectMapper objectMapper;
 
@@ -133,6 +140,7 @@ public class TravelAgent {
                        BingSearchClient bingSearchClient,
                        ItineraryGenerator itineraryGenerator,
                        RagService ragService,
+                       AgentPlanArchiveService planArchiveService,
                        @Qualifier("toolExecutor") Executor toolExecutor,
                        ObjectMapper objectMapper) {
         this.llmConfig = llmConfig;
@@ -142,6 +150,7 @@ public class TravelAgent {
         this.bingSearchClient = bingSearchClient;
         this.itineraryGenerator = itineraryGenerator;
         this.ragService = ragService;
+        this.planArchiveService = planArchiveService;
         this.toolExecutor = toolExecutor;
         this.objectMapper = objectMapper;
     }
@@ -179,6 +188,9 @@ public class TravelAgent {
             // 跨轮上下文：上一轮的计划 + 每个工具调用的成败，供 autonomous 模式回灌给模型自纠
             SearchPlan lastPlan = null;
             List<ToolOutcome> lastOutcomes = List.of();
+            // 首轮计划 = 本次采集的主干方案（subsequent 补轮是"失败驱动的自适应层"，不算主干）。
+            // 采集结束后按 (用户+目的地+偏好) 归档，供同条件二次生成复用（稳定候选池）。
+            SearchPlan firstRoundPlan = null;
 
             for (int iteration = 0; iteration < maxIterations; iteration++) {
                 log.info("=== Agent迭代 {} ===", iteration + 1);
@@ -191,6 +203,9 @@ public class TravelAgent {
                 // THINK: 制定搜索计划（首轮 LLM 决策；autonomous 模式补轮也由 LLM 决策，legacy 按缺口规则补）
                 callback.onProgress("think", String.format("正在制定搜索计划（第 %d 轮）", iteration + 1));
                 SearchPlan plan = think(request, collectedData, iteration, lastPlan, lastOutcomes, agentUsage);
+                if (iteration == 0) {
+                    firstRoundPlan = plan;
+                }
 
                 // 记录本轮执行前已收集的数据量，用于判断本轮是否有新增
                 int searchBefore = collectedData.getSearchResults().size();
@@ -270,6 +285,10 @@ public class TravelAgent {
                     log.info("达到最大迭代次数 {}，强制进入生成阶段", maxIterations);
                 }
             }
+
+            // 采集结束：归档首轮采集方案（仅自主模式），供"同用户+同目的地+同偏好"二次生成复用。
+            // 放在这里而非 think 里，是因为需要采集后的真实数据规模作观察摘要（"复用是否仍成立"的依据）。
+            archiveFirstRoundPlan(request, firstRoundPlan, collectedData);
 
             // FINAL: 生成行程
             if (callback.isClosed()) {
@@ -355,26 +374,40 @@ public class TravelAgent {
         }
 
         if (isAutonomousMode()) {
-            // 补轮同样优先原生工具调用；模型不支持或没走 tool_calls 时退回文本 JSON 计划。
-            // 两条路径共用 fillPlanFromCalls()，行为一致（缺口过滤 / 类别归一 / 强制不变量）。
-            plan = buildPlanByNativeTools(request, collectedData, usage, true, previousPlan, previousOutcomes);
-            if (plan == null || plan.getToolCalls().isEmpty()) {
-                plan = buildGapFillPlanByLlm(request, collectedData, previousPlan, previousOutcomes, usage);
+            int llmRounds = llmGapfillRounds();
+            if (iteration <= llmRounds) {
+                // 补轮同样优先原生工具调用；模型不支持或没走 tool_calls 时退回文本 JSON 计划。
+                // 两条路径共用 fillPlanFromCalls()，行为一致（缺口过滤 / 类别归一 / 强制不变量）。
+                plan = buildPlanByNativeTools(request, collectedData, usage, true, previousPlan, previousOutcomes);
+                if (plan == null || plan.getToolCalls().isEmpty()) {
+                    plan = buildGapFillPlanByLlm(request, collectedData, previousPlan, previousOutcomes, usage);
+                }
+                if (!plan.getToolCalls().isEmpty()) {
+                    return plan;
+                }
+                // 模型没给出可执行的补充计划（判空 / 调用失败 / 解析失败）→ 回落规则补轮。
+                // 这是护栏而非单纯降级：解析失败与"模型认为够了"在文本层无法可靠区分，
+                // 回落规则可避免数据塌陷，且规则只补"仍为空"的数据源，不会重复采集。
+                SearchPlan fallback = new SearchPlan();
+                buildGapFillPlan(request, collectedData, fallback);
+                if (!fallback.getToolCalls().isEmpty()) {
+                    fallback.setPlanDescription(fallback.getPlanDescription() + "（LLM 补轮未产出可用计划，回落规则）");
+                } else {
+                    fallback.setPlanDescription("无数据缺口，直接生成");
+                }
+                return fallback;
             }
-            if (!plan.getToolCalls().isEmpty()) {
-                return plan;
-            }
-            // 模型没给出可执行的补充计划（判空 / 调用失败 / 解析失败）→ 回落规则补轮。
-            // 这是护栏而非单纯降级：解析失败与"模型认为够了"在文本层无法可靠区分，
-            // 回落规则可避免数据塌陷，且规则只补"仍为空"的数据源，不会重复采集。
-            SearchPlan fallback = new SearchPlan();
-            buildGapFillPlan(request, collectedData, fallback);
-            if (!fallback.getToolCalls().isEmpty()) {
-                fallback.setPlanDescription(fallback.getPlanDescription() + "（LLM 补轮未产出可用计划，回落规则）");
+            // 已达 LLM 补轮预算 → 改由规则补轮：首次补轮的"失败自纠"机会已经用掉，
+            // 继续问模型只是为同一件事重复付费（token 随轮数线性上涨）。
+            SearchPlan rulePlan = new SearchPlan();
+            buildGapFillPlan(request, collectedData, rulePlan);
+            if (rulePlan.getToolCalls().isEmpty()) {
+                rulePlan.setPlanDescription("无数据缺口，直接生成");
             } else {
-                fallback.setPlanDescription("无数据缺口，直接生成");
+                rulePlan.setPlanDescription(rulePlan.getPlanDescription()
+                        + "（LLM 补轮预算已用尽 " + llmRounds + " 次，改由规则补轮）");
             }
-            return fallback;
+            return rulePlan;
         }
 
         buildGapFillPlan(request, collectedData, plan);
@@ -386,9 +419,23 @@ public class TravelAgent {
         return MODE_AUTONOMOUS.equalsIgnoreCase(llmConfig.getAgentMode());
     }
 
+    /** 允许由 LLM 决策的补轮次数上限（默认 1；见 LLMConfig#llmGapfillRounds 的取舍说明） */
+    private int llmGapfillRounds() {
+        Integer configured = llmConfig.getLlmGapfillRounds();
+        return configured == null ? 1 : Math.max(0, configured);
+    }
+
     /**
      * think 计划缓存：同目的地+偏好（与日期/人数/预算无关，不影响工具选择）短时复用，
      * 命中直接返回计划快照，省一次 LLM 调用；未命中则 LLM 生成并写入缓存。
+     *
+     * <p>两级复用：
+     * <ol>
+     *   <li><b>内存缓存</b>（1h，进程内）——快，但重启即失效；</li>
+     *   <li><b>持久化存档</b>（仅自主模式，7d）——把自主模式"只自主一次"的原则落地：
+     *       同用户+同目的地+同偏好第二次生成直接沿用上次成功的采集方案，候选池因此稳定，
+     *       个性化排序的输入被钉死（可复现、可归因），同时省掉一次 think LLM 调用。</li>
+     * </ol>
      */
     private SearchPlan cachedPlanOrBuild(TripRequest request, CollectedData collectedData, TokenUsage usage) {
         String key = buildPlanCacheKey(request);
@@ -404,12 +451,121 @@ public class TravelAgent {
             log.info("think 计划缓存命中: {}", key);
             return copy;
         }
+        SearchPlan archived = reuseArchivedPlan(key);
+        if (archived != null) {
+            planCache.put(key, new CachedPlan(copyPlan(archived), now + PLAN_CACHE_TTL_MS));
+            return archived;
+        }
         SearchPlan plan = buildFirstRoundPlan(request, collectedData, usage);
         if (!plan.getToolCalls().isEmpty()) {
             planCache.put(key, new CachedPlan(copyPlan(plan), now + PLAN_CACHE_TTL_MS));
         }
         return plan;
     }
+
+    /** 计划来源（写进 SearchPlan.source，供存档记录"这份计划怎么来的"） */
+    private String textPlanSource() {
+        return isAutonomousMode() ? AgentPlanArchive.SOURCE_AUTONOMOUS_TEXT : AgentPlanArchive.SOURCE_LEGACY_TEXT;
+    }
+
+    /**
+     * 自主模式下查持久化存档并还原成计划；未命中 / 解析失败 / legacy 模式 → null（走正常决策）。
+     * 注意：legacy 模式<b>完全不碰</b>存档，保证改造前行为与测试基线不变。
+     */
+    private SearchPlan reuseArchivedPlan(String key) {
+        if (!isAutonomousMode()) {
+            return null;
+        }
+        try {
+            Optional<AgentPlanArchive> archived = planArchiveService.findReusable(key);
+            if (archived.isEmpty()) {
+                return null;
+            }
+            SearchPlan plan = deserializePlan(archived.get().getPlanJson());
+            if (plan == null || plan.getToolCalls().isEmpty()) {
+                return null;
+            }
+            plan.setPlanDescription((plan.getPlanDescription() == null ? "" : plan.getPlanDescription())
+                    + "；沿用上次成功的采集方案（存档复用第 " + archived.get().getReuseCount() + " 次）");
+            log.info("采集方案存档命中，复用首轮计划: key={}, reuseCount={}", key, archived.get().getReuseCount());
+            return plan;
+        } catch (Exception e) {
+            log.warn("采集方案存档复用失败，走正常决策: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 归档首轮采集方案（仅自主模式；legacy 不写）。
+     * 任何异常都吞掉——归档失败最多下次不复用，绝不影响本次行程生成。
+     */
+    private void archiveFirstRoundPlan(TripRequest request, SearchPlan firstRoundPlan, CollectedData collectedData) {
+        if (!isAutonomousMode() || firstRoundPlan == null || firstRoundPlan.getToolCalls().isEmpty()) {
+            return;
+        }
+        // 规则兜底方案不落库：LLM 解析失败是"临时状况"，若把兜底方案存下来复用 7 天，
+        // 等于用一次偶发失败永久钉死采集策略（所有人退化成默认全工具采集）。
+        if (AgentPlanArchive.SOURCE_RULE.equals(firstRoundPlan.getSource())) {
+            log.info("首轮方案为规则兜底，跳过归档（避免偶发 LLM 失败被长期复用）");
+            return;
+        }
+        try {
+            AgentPlanArchive archive = new AgentPlanArchive();
+            archive.setPlanKey(buildPlanCacheKey(request));
+            archive.setUserId(String.valueOf(request.getUserId()));
+            archive.setDestination(request.getDestination());
+            archive.setPlanJson(serializePlan(firstRoundPlan));
+            archive.setPlanDesc(firstRoundPlan.getPlanDescription());
+            archive.setSource(firstRoundPlan.getSource() != null ? firstRoundPlan.getSource()
+                    : AgentPlanArchive.SOURCE_AUTONOMOUS_TEXT);
+            archive.setToolCount(firstRoundPlan.getToolCalls().size());
+            archive.setObservationSummary(buildObservationSummary(collectedData));
+            planArchiveService.save(archive);
+        } catch (Exception e) {
+            log.warn("归档首轮采集方案失败（不影响本次生成）: {}", e.getMessage());
+        }
+    }
+
+    /** 计划 → JSON（存档用；失败返回 null，由 service 侧的空值保护兜底） */
+    private String serializePlan(SearchPlan plan) {
+        try {
+            return objectMapper.writeValueAsString(plan);
+        } catch (Exception e) {
+            log.warn("序列化采集方案失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** JSON → 计划（存档复用用；解析失败返回 null → 调用方走正常决策） */
+    private SearchPlan deserializePlan(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            SearchPlan plan = objectMapper.readValue(json, SearchPlan.class);
+            if (plan.getToolCalls() == null) {
+                plan.setToolCalls(new ArrayList<>());
+            }
+            return plan;
+        } catch (Exception e) {
+            log.warn("解析采集方案存档失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 观察摘要：各数据源实际拿到的规模。它是"复用是否仍成立"的人工判断依据，
+     * 也是答辩里"候选池稳定"的可读证据（例如两次生成都是 搜索结果 5 条/POI 3 类/天气已获取/攻略已获取）。
+     */
+    private String buildObservationSummary(CollectedData data) {
+        return String.format("搜索结果 %d 条；POI %d 类(%s)；天气 %s；本地攻略 %s",
+                data.getSearchResults().size(),
+                data.getPoiResults().size(),
+                data.getPoiResults().isEmpty() ? "无" : String.join("/", data.getPoiResults().keySet()),
+                data.getWeatherData().isEmpty() ? "无" : "已获取",
+                data.getRagData().isEmpty() ? "无" : "已获取");
+    }
+
 
     /**
      * 首轮计划：autonomous 模式下优先"原生工具调用"（结构化返回，不用抠文本），不可用或失败则退回文本 JSON；
@@ -445,6 +601,7 @@ public class TravelAgent {
     private SearchPlan copyPlan(SearchPlan src) {
         SearchPlan copy = new SearchPlan();
         copy.setPlanDescription(src.getPlanDescription());
+        copy.setSource(src.getSource());
         List<SearchPlan.ToolCall> tcs = new ArrayList<>();
         if (src.getToolCalls() != null) {
             for (SearchPlan.ToolCall tc : src.getToolCalls()) {
@@ -478,6 +635,7 @@ public class TravelAgent {
 
             List<String> toolNames = parsed.stream().map(SearchPlan.ToolCall::getTool).toList();
             plan.setPlanDescription("LLM 基于工具目录制定计划: " + String.join(", ", toolNames));
+            plan.setSource(textPlanSource());
 
             String destination = request.getDestination();
             // amap_poi 类别集合：只要 LLM 选用了 amap_poi，最终统一展开为 景点/餐厅/酒店 三类，
@@ -535,6 +693,7 @@ public class TravelAgent {
     private SearchPlan buildDefaultPlan(TripRequest request) {
         SearchPlan plan = new SearchPlan();
         plan.setPlanDescription("首轮采集：调用全部数据源");
+        plan.setSource(AgentPlanArchive.SOURCE_RULE);
         String destination = request.getDestination();
         plan.getToolCalls().add(createToolCall(TOOL_WEB_SEARCH,
                 String.format("%s %s 景点推荐 攻略", destination,
@@ -603,6 +762,7 @@ public class TravelAgent {
             fillPlanFromCalls(plan, request, collectedData, parsed, picked);
             if (!plan.getToolCalls().isEmpty()) {
                 plan.setPlanDescription("LLM 基于缺口重新决策: " + String.join(", ", picked));
+                plan.setSource(textPlanSource());
             }
         } catch (Exception e) {
             log.warn("LLM 补轮决策失败，将回落规则补轮: {}", e.getMessage());
@@ -772,6 +932,7 @@ public class TravelAgent {
         fillPlanFromCalls(plan, request, collectedData, parsed, picked);
         if (!plan.getToolCalls().isEmpty()) {
             plan.setPlanDescription("LLM 原生工具调用: " + String.join(", ", picked));
+            plan.setSource(AgentPlanArchive.SOURCE_AUTONOMOUS_NATIVE);
         }
         return plan;
     }
