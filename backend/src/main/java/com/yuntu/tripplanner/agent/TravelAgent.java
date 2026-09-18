@@ -62,6 +62,18 @@ public class TravelAgent {
     /** 自主决策模式取值：每轮由 LLM 决策 + 失败调用回灌自纠（见 LLMConfig.agentMode） */
     private static final String MODE_AUTONOMOUS = "autonomous";
 
+    /**
+     * 文本计划的输出要求：让模型回一段 JSON 由代码解析。
+     * 这是**保底路径**——任何 chat 模型都能照做，不依赖 function calling 能力。
+     */
+    private static final String INSTRUCTION_TEXT_JSON = """
+            只返回如下 JSON，不要包含其他说明文字：
+            {"tools": [{"tool": "web_search", "query": "成都 历史景点 美食 推荐"}, {"tool": "amap_poi", "query": "成都 景点"}, {"tool": "weather_forecast", "query": "成都"}]}""";
+
+    /** 原生工具调用的输出要求（配合 buildToolSchemas() 一起发给模型） */
+    private static final String INSTRUCTION_NATIVE_TOOLS = """
+            请直接调用合适的工具来获取数据（用工具调用回答，不要用文字描述你打算查什么）。""";
+
     /** POI 标准类别桶（与 normalizeCategory 的输出口径一致） */
     private static final List<String> POI_BUCKETS = List.of("景点", "餐厅", "酒店");
 
@@ -334,7 +346,7 @@ public class TravelAgent {
         SearchPlan plan = new SearchPlan();
 
         if (iteration == 0) {
-            plan = cachedPlanOrBuild(request, usage);
+            plan = cachedPlanOrBuild(request, collectedData, usage);
             if (plan.getToolCalls().isEmpty()) {
                 plan = buildDefaultPlan(request);
                 plan.setPlanDescription("LLM 计划解析失败，使用默认策略");
@@ -343,7 +355,12 @@ public class TravelAgent {
         }
 
         if (isAutonomousMode()) {
-            plan = buildGapFillPlanByLlm(request, collectedData, previousPlan, previousOutcomes, usage);
+            // 补轮同样优先原生工具调用；模型不支持或没走 tool_calls 时退回文本 JSON 计划。
+            // 两条路径共用 fillPlanFromCalls()，行为一致（缺口过滤 / 类别归一 / 强制不变量）。
+            plan = buildPlanByNativeTools(request, collectedData, usage, true, previousPlan, previousOutcomes);
+            if (plan == null || plan.getToolCalls().isEmpty()) {
+                plan = buildGapFillPlanByLlm(request, collectedData, previousPlan, previousOutcomes, usage);
+            }
             if (!plan.getToolCalls().isEmpty()) {
                 return plan;
             }
@@ -373,7 +390,7 @@ public class TravelAgent {
      * think 计划缓存：同目的地+偏好（与日期/人数/预算无关，不影响工具选择）短时复用，
      * 命中直接返回计划快照，省一次 LLM 调用；未命中则 LLM 生成并写入缓存。
      */
-    private SearchPlan cachedPlanOrBuild(TripRequest request, TokenUsage usage) {
+    private SearchPlan cachedPlanOrBuild(TripRequest request, CollectedData collectedData, TokenUsage usage) {
         String key = buildPlanCacheKey(request);
         long now = System.currentTimeMillis();
         // 惰性清理过期项，防止无界增长
@@ -387,11 +404,26 @@ public class TravelAgent {
             log.info("think 计划缓存命中: {}", key);
             return copy;
         }
-        SearchPlan plan = buildPlanFromLLM(request, usage);
+        SearchPlan plan = buildFirstRoundPlan(request, collectedData, usage);
         if (!plan.getToolCalls().isEmpty()) {
             planCache.put(key, new CachedPlan(copyPlan(plan), now + PLAN_CACHE_TTL_MS));
         }
         return plan;
+    }
+
+    /**
+     * 首轮计划：autonomous 模式下优先"原生工具调用"（结构化返回，不用抠文本），不可用或失败则退回文本 JSON；
+     * legacy 模式一律走文本计划（保证改造前行为与测试基线完全不变）。
+     * 两条路径最终都产出同构的 SearchPlan，下游（执行/反思/生成）完全无感。
+     */
+    private SearchPlan buildFirstRoundPlan(TripRequest request, CollectedData collectedData, TokenUsage usage) {
+        if (isAutonomousMode()) {
+            SearchPlan nativePlan = buildPlanByNativeTools(request, collectedData, usage, false, null, null);
+            if (nativePlan != null && !nativePlan.getToolCalls().isEmpty()) {
+                return nativePlan;
+            }
+        }
+        return buildPlanFromLLM(request, usage);
     }
 
     /**
@@ -433,7 +465,7 @@ public class TravelAgent {
     private SearchPlan buildPlanFromLLM(TripRequest request, TokenUsage usage) {
         SearchPlan plan = new SearchPlan();
         try {
-            String prompt = buildThinkPrompt(request);
+            String prompt = buildThinkPrompt(request, false);
             LlmClient.LlmResult result = callLlm(prompt, usage);
             if (result == null) {
                 return plan;
@@ -557,7 +589,7 @@ public class TravelAgent {
                                              TokenUsage usage) {
         SearchPlan plan = new SearchPlan();
         try {
-            String prompt = buildGapFillPrompt(request, collectedData, previousPlan, previousOutcomes);
+            String prompt = buildGapFillPrompt(request, collectedData, previousPlan, previousOutcomes, false);
             LlmClient.LlmResult result = callLlm(prompt, usage);
             if (result == null) {
                 return plan;
@@ -567,62 +599,8 @@ public class TravelAgent {
                 return plan;
             }
 
-            String destination = request.getDestination();
             Set<String> picked = new LinkedHashSet<>();
-            for (SearchPlan.ToolCall tc : parsed) {
-                // 已满足的数据源不再重复采集（模型可能仍把它列进来）
-                if (isSourceSatisfied(request, collectedData, tc.getTool())) {
-                    continue;
-                }
-                switch (tc.getTool()) {
-                    case TOOL_WEB_SEARCH -> {
-                        plan.getToolCalls().add(resolveQuery(tc, destination + " 旅行攻略 贴士"));
-                        picked.add(TOOL_WEB_SEARCH);
-                    }
-                    case TOOL_WEATHER -> {
-                        plan.getToolCalls().add(resolveQuery(tc, destination));
-                        picked.add(TOOL_WEATHER);
-                    }
-                    case TOOL_AMAP_POI -> {
-                        // 模型点名了类别就按其点名补；没点名就补齐仍为空的标准类别桶
-                        Set<String> missingBuckets = missingPoiBuckets(collectedData);
-                        Set<String> cats = new LinkedHashSet<>();
-                        if (containsAmapCategory(tc.getQuery())) {
-                            for (String cat : List.of("景点", "餐厅", "酒店", "购物", "交通")) {
-                                if (tc.getQuery().contains(cat)) {
-                                    cats.add(cat);
-                                }
-                            }
-                        }
-                        if (cats.isEmpty()) {
-                            cats.addAll(missingBuckets);
-                        }
-                        cats.retainAll(missingBuckets);
-                        for (String cat : cats) {
-                            plan.getToolCalls().add(createToolCall(TOOL_AMAP_POI, destination + " " + cat));
-                        }
-                        if (!cats.isEmpty()) {
-                            picked.add(TOOL_AMAP_POI);
-                        }
-                    }
-                    case TOOL_RAG -> {
-                        if (ragService.isKnownCity(destination)) {
-                            plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
-                            picked.add(TOOL_RAG);
-                        }
-                    }
-                    // 未知工具名忽略
-                    default -> { /* 忽略未识别工具 */ }
-                }
-            }
-
-            // 与首轮一致的强制不变量：已知城市 + 还没拿到攻略 → 必须补 RAG（哪怕模型漏选）
-            if (ragService.isKnownCity(destination) && collectedData.getRagData().isEmpty()
-                    && !planContainsTool(plan, TOOL_RAG)) {
-                plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
-                picked.add(TOOL_RAG);
-            }
-
+            fillPlanFromCalls(plan, request, collectedData, parsed, picked);
             if (!plan.getToolCalls().isEmpty()) {
                 plan.setPlanDescription("LLM 基于缺口重新决策: " + String.join(", ", picked));
             }
@@ -633,11 +611,233 @@ public class TravelAgent {
     }
 
     /**
+     * 把"模型给出的工具选择"规整成可执行计划——**文本计划与原生 tool_calls 共用这一套**，
+     * 保证两条路径的行为一致（缺口过滤、POI 类别桶归一、强制不变量）。
+     *
+     * @param plan          待填充的计划
+     * @param parsed        模型给出的 (tool, query) 列表
+     * @param picked        出参：实际采纳的工具名（写进计划描述，供前端/探针看出用了哪些）
+     */
+    private void fillPlanFromCalls(SearchPlan plan, TripRequest request, CollectedData collectedData,
+                                   List<SearchPlan.ToolCall> parsed, Set<String> picked) {
+        String destination = request.getDestination();
+        // 已规划过的 POI 类别桶：模型可能给**多个** amap_poi 调用（如分别点名景点/餐厅），
+        // 若不记录就会出现 景点/餐厅/酒店 各被重复规划一遍（实测重复了一整轮）。
+        Set<String> plannedPoiBuckets = new LinkedHashSet<>(collectedData.getPoiResults().keySet());
+        for (SearchPlan.ToolCall tc : parsed) {
+            // 已满足的数据源不再重复采集（模型可能仍把它列进来）
+            if (isSourceSatisfied(request, collectedData, tc.getTool())) {
+                continue;
+            }
+            switch (tc.getTool()) {
+                case TOOL_WEB_SEARCH -> {
+                    plan.getToolCalls().add(resolveQuery(tc, destination + " 旅行攻略 贴士"));
+                    picked.add(TOOL_WEB_SEARCH);
+                }
+                case TOOL_WEATHER -> {
+                    plan.getToolCalls().add(resolveQuery(tc, destination));
+                    picked.add(TOOL_WEATHER);
+                }
+                case TOOL_AMAP_POI -> {
+                    // 景点/餐厅/酒店 是下游校验与生成依赖的标准桶，必须覆盖到（首轮路径同理：
+                    // 只用模型给的单一类别会导致 POI 只有 1 类、数据偏薄）；
+                    // 模型额外点名的类别（购物/交通）一并采纳。
+                    Set<String> cats = new LinkedHashSet<>();
+                    if (containsAmapCategory(tc.getQuery())) {
+                        for (String cat : List.of("景点", "餐厅", "酒店", "购物", "交通")) {
+                            if (tc.getQuery().contains(cat)) {
+                                cats.add(cat);
+                            }
+                        }
+                    }
+                    cats.addAll(POI_BUCKETS);
+                    cats.removeAll(plannedPoiBuckets);
+                    for (String cat : cats) {
+                        plan.getToolCalls().add(createToolCall(TOOL_AMAP_POI, destination + " " + cat));
+                    }
+                    plannedPoiBuckets.addAll(cats);
+                    if (!cats.isEmpty()) {
+                        picked.add(TOOL_AMAP_POI);
+                    }
+                }
+                case TOOL_RAG -> {
+                    if (ragService.isKnownCity(destination)) {
+                        plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
+                        picked.add(TOOL_RAG);
+                    }
+                }
+                // 未知工具名忽略
+                default -> { /* 忽略未识别工具 */ }
+            }
+        }
+
+        // 强制不变量：已知城市 + 还没拿到攻略 → 必须补 RAG（哪怕模型漏选）
+        if (ragService.isKnownCity(destination) && collectedData.getRagData().isEmpty()
+                && !planContainsTool(plan, TOOL_RAG)) {
+            plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
+            picked.add(TOOL_RAG);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 原生工具调用（function calling）接入
+    //
+    // 设计前提：**使用者会频繁更换模型**（常用免费额度模型），所以这里的原则是
+    // "能用原生就用，不能用就静默退回文本 JSON"，并且按模型名记住结论。
+    // 文本 JSON 计划是保底路径——任何 chat 模型都能跑，换模型不会把系统搞挂。
+    // ------------------------------------------------------------------
+
+    /** 是否应当尝试原生 tools：text=从不；native=强制；auto=该模型尚未被判定为不支持 */
+    private boolean shouldUseNativeTools() {
+        String mode = llmConfig.getToolCalling() == null ? "auto" : llmConfig.getToolCalling().trim().toLowerCase();
+        return switch (mode) {
+            case "text" -> false;
+            case "native" -> true;
+            default -> !llmClient.isNativeToolRejected(llmConfig.getModel());
+        };
+    }
+
+    /**
+     * 尝试用原生 tool_calls 生成计划。
+     *
+     * @return 成功时返回已规整的计划；null = 本模型不可用原生调用（或调用失败/模型没走 tool_calls），
+     *         由调用方退回文本 JSON 计划
+     */
+    private SearchPlan buildPlanByNativeTools(TripRequest request, CollectedData collectedData,
+                                             TokenUsage usage, boolean gapFill,
+                                             SearchPlan previousPlan, List<ToolOutcome> previousOutcomes) {
+        if (!shouldUseNativeTools()) {
+            return null;
+        }
+        String model = llmConfig.getModel();
+        try {
+            String userPrompt = gapFill
+                    ? buildGapFillPrompt(request, collectedData, previousPlan, previousOutcomes, true)
+                    : buildThinkPrompt(request, true);
+            List<Map<String, Object>> messages = List.of(Map.of("role", "user", "content", userPrompt));
+
+            LlmClient.ToolChatResult result = llmClient.chatWithTools(messages, buildToolSchemas());
+            if (result == null) {
+                return null;                    // 网络/5xx 失败：本轮退回文本计划，但不标记"不支持"
+            }
+            if (result.rejectedTools()) {
+                llmClient.markNativeToolRejected(model);   // 记住这个模型不行，后续不再白试
+                return null;
+            }
+            if (usage != null) {
+                usage.setPromptTokens(usage.getPromptTokens() + result.promptTokens());
+                usage.setCompletionTokens(usage.getCompletionTokens() + result.completionTokens());
+            }
+            if (result.toolCalls().isEmpty()) {
+                // 模型接受了 tools 却只回文字：可能是它不支持、也可能是它觉得无需调工具。
+                // 一律退回文本计划（文本侧还能从 content 里解析出计划；确实不需要工具时也自然为空）。
+                log.info("模型 {} 未返回 tool_calls，退回文本计划解析", model);
+                return null;
+            }
+            SearchPlan plan = planFromNativeCalls(request, collectedData, result.toolCalls());
+            log.info("使用原生工具调用制定计划：{}", plan.getPlanDescription());
+            return plan;
+        } catch (Exception e) {
+            log.warn("原生工具调用失败，退回文本计划: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 把原生 tool_calls 映射成与文本计划同构的 (tool, query)，再复用 {@link #fillPlanFromCalls}。
+     * 各工具的参数字段由 {@link #buildToolSchemas()} 声明，query 的拼接方式与文本路径保持一致。
+     */
+    private SearchPlan planFromNativeCalls(TripRequest request, CollectedData collectedData,
+                                           List<LlmClient.ToolCall> nativeCalls) {
+        SearchPlan plan = new SearchPlan();
+        String destination = request.getDestination();
+        List<SearchPlan.ToolCall> parsed = new ArrayList<>();
+        for (LlmClient.ToolCall call : nativeCalls) {
+            JsonNode args = readArgs(call.arguments());
+            String query = switch (call.name()) {
+                case TOOL_WEB_SEARCH -> argText(args, "query", destination + " 景点 美食 攻略");
+                case TOOL_WEATHER -> argText(args, "location", destination);
+                case TOOL_AMAP_POI -> argText(args, "destination", destination) + " "
+                        + argText(args, "category", "景点");
+                case TOOL_RAG -> argText(args, "destination", destination);
+                default -> null;
+            };
+            if (query == null) {
+                log.debug("忽略未识别的原生工具调用: {}", call.name());
+                continue;
+            }
+            parsed.add(createToolCall(call.name(), query));
+        }
+        Set<String> picked = new LinkedHashSet<>();
+        fillPlanFromCalls(plan, request, collectedData, parsed, picked);
+        if (!plan.getToolCalls().isEmpty()) {
+            plan.setPlanDescription("LLM 原生工具调用: " + String.join(", ", picked));
+        }
+        return plan;
+    }
+
+    /**
+     * 工具定义（OpenAI 兼容的 JSON Schema）。
+     * RAG 支持城市从 RagService 实时读取，避免新增攻略后这里仍写死旧城市列表。
+     */
+    private List<Map<String, Object>> buildToolSchemas() {
+        Set<String> cities = ragService.getSupportedCities();
+        String cityList = cities.isEmpty() ? "暂无" : String.join("/", cities);
+        return List.of(
+                toolSchema(TOOL_WEB_SEARCH, "联网搜索目的地的最新攻略、景点、餐厅、交通等信息，适合获取攻略文章与实时信息",
+                        Map.of("query", Map.of("type", "string",
+                                "description", "搜索关键词，如 \"成都 历史景点 美食 推荐\""))),
+                toolSchema(TOOL_WEATHER, "查询目的地未来天气预报（温度、降水概率、天气描述）",
+                        Map.of("location", Map.of("type", "string",
+                                "description", "目的地名称，如 \"成都\""))),
+                toolSchema(TOOL_AMAP_POI, "查询高德地图 POI，返回景点/餐厅/酒店的真实名称、地址、坐标、图片",
+                        Map.of("destination", Map.of("type", "string", "description", "目的地名称"),
+                                "category", Map.of("type", "string",
+                                        "description", "类别：景点/餐厅/酒店/购物/交通"))),
+                toolSchema(TOOL_RAG, "检索本地攻略知识库（已收录城市：" + cityList + "），命中时优先使用，可获得人工整理的精准攻略片段",
+                        Map.of("destination", Map.of("type", "string", "description", "目的地名称")))
+        );
+    }
+
+    private Map<String, Object> toolSchema(String name, String description, Map<String, Object> properties) {
+        Map<String, Object> function = new LinkedHashMap<>();
+        function.put("name", name);
+        function.put("description", description);
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("type", "object");
+        parameters.put("properties", properties);
+        parameters.put("required", new ArrayList<>(properties.keySet()));
+        function.put("parameters", parameters);
+
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "function");
+        schema.put("function", function);
+        return schema;
+    }
+
+    /** 解析工具参数字符串（非法/空 JSON 按空对象处理，不让参数格式问题打断整轮规划） */
+    private JsonNode readArgs(String arguments) {
+        try {
+            return objectMapper.readTree(arguments == null || arguments.isBlank() ? "{}" : arguments);
+        } catch (Exception e) {
+            log.warn("解析工具参数失败（按空参数处理）: {}", arguments);
+            return objectMapper.createObjectNode();
+        }
+    }
+
+    private String argText(JsonNode args, String field, String fallback) {
+        JsonNode value = args.path(field);
+        String text = value.isMissingNode() || value.isNull() ? "" : value.asText("");
+        return text.isBlank() ? fallback : text.trim();
+    }
+
+    /**
      * 构建补轮决策提示词：已获数据 + 上一轮调用明细 + 失败原因，
      * 要求模型给出"与上次不同关键词"的补充计划（这是失败自纠的落地方式）。
      */
     private String buildGapFillPrompt(TripRequest request, CollectedData collectedData,
-                                      SearchPlan previousPlan, List<ToolOutcome> previousOutcomes) {
+                                      SearchPlan previousPlan, List<ToolOutcome> previousOutcomes,
+                                      boolean nativeTools) {
         List<String> previousCalls = (previousPlan == null || previousPlan.getToolCalls().isEmpty())
                 ? List.of("（无）")
                 : previousPlan.getToolCalls().stream()
@@ -652,7 +852,6 @@ public class TravelAgent {
 
         return String.format("""
                 %s
-
                 用户需求：
                 - 目的地：%s
                 - 日期：%s 至 %s
@@ -673,10 +872,9 @@ public class TravelAgent {
                 1. 不要重复调用已经成功拿到数据的工具；
                 2. 同一个工具的 query 必须与上次不同（换更宽泛或更具体的关键词）；
                 3. 确实没有可补充时返回 {"tools": []}。
-                只返回如下 JSON，不要包含其他说明文字：
-                {"tools": [{"tool": "web_search", "query": "..."}]}
+                %s
                 """,
-                buildToolCatalog(),
+                nativeTools ? "" : buildToolCatalog(),
                 request.getDestination(),
                 request.getStartDate(),
                 request.getEndDate(),
@@ -687,7 +885,8 @@ public class TravelAgent {
                 collectedData.getPoiResults().isEmpty() ? "无" : String.join("/", collectedData.getPoiResults().keySet()),
                 collectedData.getWeatherData().isEmpty() ? "无" : "已获取",
                 collectedData.getRagData().isEmpty() ? "无" : "已获取",
-                failureBlock
+                failureBlock,
+                nativeTools ? INSTRUCTION_NATIVE_TOOLS : INSTRUCTION_TEXT_JSON
         );
     }
 
@@ -1191,10 +1390,15 @@ public class TravelAgent {
     /**
      * 构建思考提示词（注入工具目录，要求 tool+query 成对输出）
      */
-    private String buildThinkPrompt(TripRequest request) {
+    private String buildThinkPrompt(TripRequest request, boolean nativeTools) {
+        // 原生工具调用时不再把"工具目录"塞进提示词——tools schema 已经带了同样的描述，
+        // 两份都发等于把工具说明算两遍 token（实测原生路径 prompt token 因此翻倍）
+        String catalog = nativeTools ? "" : buildToolCatalog();
+        String task = nativeTools
+                ? "请调用合适的工具获取本次规划所需的数据。"
+                : "请从工具目录中挑选本次规划需要调用的工具，并为每个工具给出具体的搜索关键词。";
         return String.format("""
                 %s
-
                 用户需求：
                 - 目的地：%s
                 - 日期：%s 至 %s
@@ -1204,11 +1408,10 @@ public class TravelAgent {
                 - 节奏：%s
                 - 特别要求：%s
 
-                请从工具目录中挑选本次规划需要调用的工具，并为每个工具给出具体的搜索关键词。
-                只返回如下 JSON，不要包含其他说明文字：
-                {"tools": [{"tool": "web_search", "query": "成都 历史景点 美食 推荐"}, {"tool": "amap_poi", "query": "成都 景点"}, {"tool": "weather_forecast", "query": "成都"}]}
+                %s
+                %s
                 """,
-                buildToolCatalog(),
+                catalog,
                 request.getDestination(),
                 request.getStartDate(),
                 request.getEndDate(),
@@ -1216,7 +1419,9 @@ public class TravelAgent {
                 request.getBudget() != null ? request.getBudget() : 0,
                 request.getPreferences() != null ? request.getPreferences() : "无特别偏好",
                 request.getPace(),
-                request.getSpecialNotes() != null ? request.getSpecialNotes() : "无"
+                request.getSpecialNotes() != null ? request.getSpecialNotes() : "无",
+                task,
+                nativeTools ? INSTRUCTION_NATIVE_TOOLS : INSTRUCTION_TEXT_JSON
         );
     }
 

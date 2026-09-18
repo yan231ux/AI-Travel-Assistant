@@ -86,6 +86,11 @@ llm:
   #   autonomous    = 每轮都由 LLM 看已获数据决定下一步，并把失败调用（超时/空结果）回灌给模型自纠
   # 默认 legacy 以保证既有行为与测试基线不变；切 autonomous 需配套跑 probe_generation_smoke.py
   agent-mode: ${LLM_AGENT_MODE:legacy}
+  # 原生工具调用（function calling）策略，仅在 agent-mode=autonomous 时生效：
+  #   auto（默认）= 先试原生 tools，模型明确不接受则自动降级为文本 JSON 计划并按模型名记住；
+  #   native      = 强制原生；text = 从不使用 tools（任何 chat 模型都能跑）。
+  # 做成三态是为了能频繁更换模型（含免费额度模型）而不被 tools 支持度卡住。
+  tool-calling: ${LLM_TOOL_CALLING:auto}
 
 # Amap Configuration
 amap:

@@ -110,7 +110,8 @@ public ToolCallResult chatWithTools(List<Map<String,Object>> messages,
 3. 模型返回的 `tool_calls` **直接**映射成 `SearchPlan.ToolCall`，删掉 `parseToolCalls()` / `extractJson()` / `isKnownTool()`。
 
 - **收益**：不再依赖"模型恰好输出合法 JSON"。解析失败率归零，`buildDefaultPlan()` 兜底触发率大幅下降。
-- **前提**：`qwen3-max` 在 DashScope OpenAI 兼容模式下支持 `tools`。**必须先用 `backend/probe_generation_smoke.py` 验证**（本项目踩过"模型可用 ≠ 能用"的坑，见 TROUBLESHOOTING §21）。
+- **前提**：`qwen3-max` 在 DashScope OpenAI 兼容模式下支持 `tools`。✅ **2026-09-18 已实测确认支持**，见第十一节。
+- **模型无关的硬要求**：不能因为接了 `tools` 就绑死模型。必须做"不支持就自动降级 + 按模型名记住"，见第十一节（使用者会频繁更换免费模型）。
 - **保留兜底**：`chatWithTools` 失败/返回空 → 回落到现有 `buildDefaultPlan()`，与旧行为一致。
 
 ### 改动 3：失败回灌自纠
@@ -276,6 +277,64 @@ C. autonomous + 复用 —— B 的基础上，二次生成复用存档计划（
 
 ### 下一步（待确认）
 
-- **批次 2**：原生 tool calling。风险点是 `LlmClient` 目前不支持 `tools` 参数，且既有测试用 `when(llmClient.chat(anyString()))` 打桩 → 新增 `chatWithTools` 时**必须同样加开关**，否则既有用例的桩会失效返回 null。动手前先跑探针确认 qwen3-max 支持 `function calling`。
 - **可选调优（若嫌 token 贵）**：把 autonomous 的补轮限制为"仅第一次补轮由 LLM 决策，其后回落规则"，用 `max-iterations=3` 的既有上限兜住。需要先明确是否接受"少一次自纠机会"。
+
+---
+
+## 十一、批次 2 实测结果（2026-09-18，已实施完成）
+
+### 核心约束（用户明确要求）
+
+> "我到时候可能会比较频繁的更换模型，因为我都是选免费模型来白嫖，尽量别只适配一种模型。"
+
+因此批次 2 的设计目标不是"接上原生 tool calling"，而是**"接上原生 tool calling，同时保证任何一个 chat 模型都能跑"**。
+
+### 实施内容
+
+| 项 | 落地 |
+|---|---|
+| 客户端能力 | `LlmClient.chatWithTools(messages, tools)` → `ToolChatResult(toolCalls, content, rejectedTools, tokens)`；解析 `choices[0].message.tool_calls` |
+| 识别"不支持" | 4xx 且响应体含 tool / function call / unsupported / not support → `rejectedTools=true` |
+| 按模型名记住 | `Map<模型名, 已拒绝>`，**由 LlmClient 自己写入**（调用方忘调也不会每轮白试）；换模型自动重新探测 |
+| 不误伤 | 5xx / 超时走重试，失败返回 null 但**不写能力缓存**（故障 ≠ 能力不足） |
+| 三态开关 | `llm.tool-calling` = `auto`（默认）/ `native` / `text` |
+| 保底路径 | 模型不支持 / 没回 tool_calls / 调用失败 → 一律退回文本 JSON 计划，功能不受影响 |
+| 生效范围 | 仅 `agent-mode=autonomous`；legacy 保持改造前行为 |
+| 共用归一化 | `fillPlanFromCalls()` 被文本路径与原生路径共用（缺口过滤 / 类别桶 / 强制不变量行为一致） |
+| 去重 | `plannedPoiBuckets` 保证"每类只规划一次" |
+| 去重复计费 | 原生路径不再把工具目录塞进提示词（描述已由 `tools` schema 承载） |
+
+### 实测发现的真实缺陷（不是推理出来的）
+
+1. **重复规划**：模型一次返回**两个** `amap_poi` 调用，而归一化对每个调用都展开标准三类桶 → 实测打出 **6 次** amap 调用（`景点/餐厅/酒店` × 2）。
+2. **工具说明发两遍**：提示词里的工具目录 + 请求体的 `tools` schema → 同一份描述计费两次（该轮 `prompt_tokens=3296`）。
+
+### 验证
+
+- 全量 `mvn.cmd -o clean test`：**626 用例全绿**（批次 1 后为 616，本批新增 10）。
+- 新增单测：`TravelAgentAutonomousModeTest` 4→11 例、`LlmClientTest` 4→7 例（覆盖原生生效、降级、按模型名记住、5xx 不误判、强制 text/native、legacy 不碰原生、重复 amap 去重）。
+- 真实模型实测（qwen3-max，8081 `autonomous` + `auto`）：
+  - trace = `LLM 原生工具调用: rag_guide, weather_forecast, amap_poi`
+  - `amap_poi` **正好 3 次**（去重生效）
+  - 第 2 轮把天气换成 `weather_forecast("北京 2026年10月")`（自纠仍工作）
+  - `prompt_tokens` 3296 → **2429**（修复去重后 -26%）
+  - 结果：success，3 天行程，94~95s
+
+### 三种形态的成本对比（同一请求，各一次采样）
+
+| 形态 | think `prompt_tokens` | 说明 |
+|---|---|---|
+| legacy（文本 JSON，规则补轮） | 475 | 只问一次模型 |
+| autonomous + 文本 JSON | 1580 | 每轮补轮多一次模型往返 |
+| autonomous + 原生 tool calling | 2429 | 额外承担 `tools` schema 的开销 |
+
+**注意：原生 tool calling 不省 token**。它买到的是**结构可靠性**（不再依赖"模型恰好输出合法 JSON"），不是成本优势。答辩时别把这两件事混着说。
+
+### 结论（诚实版）
+
+1. **"不绑死模型"已落地**：任意 chat 模型都有一条能跑通的路径（`text`），工具调用能力强的模型自动用原生，不支持的自动降级且被记住。
+2. **qwen3-max 确认支持 `tools`**（实测，非查文档推断）。
+3. **成本排序**：legacy < autonomous+text < autonomous+native。要省钱就别开 autonomous。
+4. **未验证项**：真实"不支持 tools 的模型"没有条件实测，该路径目前仅由单测覆盖（模拟 400 拒绝 + 5xx 不误判）。换到具体免费模型时，第一次生成看 trace 里是"原生工具调用"还是"基于工具目录制定计划"即可判断走到了哪条路。
+
 

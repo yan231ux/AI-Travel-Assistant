@@ -47,6 +47,18 @@ public class LLMConfig {
     private String agentMode = "legacy";
 
     /**
+     * 原生工具调用（function calling）策略，仅在 agent-mode=autonomous 时生效：
+     * - auto（默认）：先试原生 tools；模型返回 4xx 明确不接受时，自动降级为文本 JSON 计划，
+     *                 并按模型名记住结论（换模型会重新探测）
+     * - native：强制走原生 tools（模型不支持则会失败并回落文本计划）
+     * - text  ：从不使用 tools，一律用文本 JSON 计划（任何 chat 模型都能跑，最稳）
+     *
+     * 之所以做成三态：本系统需要能频繁更换模型（常用免费额度模型），
+     * 不能让"是否支持 tools"成为换模型的门槛。
+     */
+    private String toolCalling = "auto";
+
+    /**
      * 文本向量化模型（RAG 用）
      */
     private String embeddingModel = "text-embedding-v3";
