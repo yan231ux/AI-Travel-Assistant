@@ -238,10 +238,53 @@ public class TripGenerationFinalizer {
     private void attachPersonalizationSummary(String userId, TripRequest request, Itinerary itinerary,
                                               List<CandidateEvidence> evidence) {
         PersonalizationSummary summary = userProfileService.buildPersonalizationSummary(userId, request, evidence);
+        // 「已减少重复」必须描述结果而不是意图（详见 resultAwareNoveltyNote）
+        summary.setNoveltyNote(resultAwareNoveltyNote(itinerary, evidence, summary.getNoveltyNote()));
         boolean empty = (summary.getMatchedPreferences() == null || summary.getMatchedPreferences().isEmpty())
                 && (summary.getAppliedConstraints() == null || summary.getAppliedConstraints().isEmpty())
                 && (summary.getNoveltyNote() == null || summary.getNoveltyNote().isBlank());
         itinerary.setPersonalizationSummary(empty ? null : summary);
+    }
+
+    /**
+     * 「已减少历史行程中出现过的重复景点」这句必须描述<b>结果</b>，不能只描述<b>意图</b>。
+     *
+     * <p>原实现只要"候选证据里存在 visited=1 的项"就写上这句话。于是实测三亚出现自相矛盾：
+     * 凤凰岛桥头公园、大东海广场因"去过"被降级排除，鹿回头风景区同样"去过"却照样排进第 4 天，
+     * 而页面顶部还宣称「已减少重复」——用户看到的不是规则，是"规则时灵时不灵"。
+     *
+     * <p>现在按最终行程实算：一个都没安排 → 说清避开了几个；安排了若干 → 直接点名是哪几个，
+     * 并说明原因是"候选不足或你点名"（与校验层 excludeVisitedSpots 的处理一一对应）。
+     */
+    private String resultAwareNoveltyNote(Itinerary itinerary, List<CandidateEvidence> evidence,
+                                          String original) {
+        if (evidence == null || evidence.isEmpty()) {
+            return original;
+        }
+        List<SelectedSpot> spots = collectSelectedSpots(itinerary);
+        Set<String> mealNames = collectNames(itinerary, true);
+        int visitedTotal = 0;
+        List<String> kept = new ArrayList<>();
+        for (CandidateEvidence ev : evidence) {
+            if (ev == null || ev.getVisited() == null || ev.getVisited() != 1
+                    || ev.getItemName() == null || ev.getItemName().isBlank()) {
+                continue;
+            }
+            visitedTotal++;
+            if (isSelected(ev, spots, mealNames)) {
+                kept.add(ev.getItemName());
+            }
+        }
+        if (visitedTotal == 0) {
+            return original;
+        }
+        if (kept.isEmpty()) {
+            return String.format("已避开历史行程中出现过的 %d 个地点，本次全部安排新地点", visitedTotal);
+        }
+        int capped = Math.min(kept.size(), 3);
+        String list = String.join("、", kept.subList(0, capped)) + (kept.size() > capped ? " 等" : "");
+        return String.format("历史行程出现过 %d 个候选，本次已换掉 %d 个；「%s」因候选不足或你点名保留",
+                visitedTotal, visitedTotal - kept.size(), list);
     }
 
     /** 「为什么没有推荐」最多展示多少条（防刷屏；HARD 优先，SOFT 兜底） */

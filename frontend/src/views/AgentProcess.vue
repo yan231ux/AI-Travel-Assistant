@@ -57,7 +57,7 @@ const mapPoints = computed(() => {
   const it = itinerary.value;
   if (!it) return [];
   return it.days.flatMap((day) =>
-    day.spots.map((spot) => ({
+    (day.spots ?? []).map((spot) => ({
       key: `${day.day_index}-${spot.name}`,
       dayIndex: day.day_index,
       date: day.date || "待定",
@@ -277,7 +277,7 @@ onBeforeUnmount(() => {
         <div class="replay-result__days">
           <div v-for="day in itinerary.days" :key="day.day_index" class="replay-day">
             <span class="replay-day__title">第{{ day.day_index }}天 · {{ day.theme || "" }}</span>
-            <span class="replay-day__spots">{{ day.spots.map((s) => s.name).join(" → ") || "未安排" }}</span>
+            <span class="replay-day__spots">{{ (day.spots ?? []).map((s) => s.name).join(" → ") || "未安排" }}</span>
           </div>
         </div>
         <div class="replay-result__map">

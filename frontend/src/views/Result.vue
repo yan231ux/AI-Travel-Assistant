@@ -146,9 +146,10 @@ const trustStats = computed<{ items: TrustBucket[]; resolved: number; spotTotal:
 const dayBudgetItems = computed(() => {
   if (!itinerary.value) return [];
   return itinerary.value.days.map((day) => {
-    const tickets = day.spots.reduce((s, sp) => s + (sp.estimated_cost ?? 0), 0);
-    const meals = day.meals.reduce((s, m) => s + (m.estimated_cost ?? 0), 0);
-    const transport = day.transport.reduce((s, t) => s + (t.estimated_cost ?? 0), 0);
+    // 空数组防御：校验层在"删掉全部交通段"等场景下会把该键置 null，缺键统一兜底为 []
+    const tickets = (day.spots ?? []).reduce((s, sp) => s + (sp.estimated_cost ?? 0), 0);
+    const meals = (day.meals ?? []).reduce((s, m) => s + (m.estimated_cost ?? 0), 0);
+    const transport = (day.transport ?? []).reduce((s, t) => s + (t.estimated_cost ?? 0), 0);
     const hotel = day.hotel?.estimated_cost ?? 0;
     return { key: day.day_index, title: `第${day.day_index}天`, subtitle: day.theme || "", tickets, meals, transport, hotel, total: tickets + meals + transport + hotel };
   });
@@ -157,7 +158,7 @@ const dayBudgetItems = computed(() => {
 const mapPoints = computed(() => {
   if (!itinerary.value) return [];
   return itinerary.value.days.flatMap((day) =>
-    day.spots.map((spot) => ({
+    (day.spots ?? []).map((spot) => ({
       key: `${day.day_index}-${spot.name}`,
       dayIndex: day.day_index,
       date: day.date || "待定",
@@ -379,10 +380,17 @@ function buildDayTimeline(day: DayPlan): DayTimeline {
     stats.visitHours = Math.max(0, Math.round((minutes / 60) * 10) / 10);
   }
   // —— 交通总量（确定性累加，字段缺失则不展示对应项）
+  // 只在「每一段都带该字段」时才给合计：否则累加出来的是"部分段之和"，却标成"合计"更误导
+  // （实测三亚第 1 天 5 段里只有机场段有里程，页面却写「合计 11.2 km」）。
+  // 口径与上面的游览时长一致：字段不齐宁可不展示，也不估算。
   const kms = transports.map((t) => t.distance_km).filter((v): v is number => v != null);
-  if (kms.length) stats.totalKm = Math.round(kms.reduce((a, b) => a + b, 0) * 10) / 10;
+  if (transports.length && kms.length === transports.length) {
+    stats.totalKm = Math.round(kms.reduce((a, b) => a + b, 0) * 10) / 10;
+  }
   const mins = transports.map((t) => t.estimated_minutes).filter((v): v is number => v != null);
-  if (mins.length) stats.totalMinutes = mins.reduce((a, b) => a + b, 0);
+  if (transports.length && mins.length === transports.length) {
+    stats.totalMinutes = mins.reduce((a, b) => a + b, 0);
+  }
   // —— 未锚定交通衔接段（保持原始顺序，完整展示）
   for (const t of looseTransports) {
     timeline.push({ kind: "transport", tag: t.mode || "衔接", title: transportText(t), timeLabel: "", sub: null, desc: null, fee: fee(t.estimated_cost), source: t.source ?? null, tone: sourceTone(t.source), personalNote: null });

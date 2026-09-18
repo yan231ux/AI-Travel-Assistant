@@ -3,6 +3,7 @@ package com.yuntu.tripplanner.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuntu.tripplanner.agent.CollectedData;
 import com.yuntu.tripplanner.client.LlmClient;
+import com.yuntu.tripplanner.model.CandidateEvidence;
 import com.yuntu.tripplanner.model.DayPlan;
 import com.yuntu.tripplanner.model.HotelItem;
 import com.yuntu.tripplanner.model.Itinerary;
@@ -1030,5 +1031,262 @@ class ItineraryValidatorTest {
         assertTrue(d3.getSpots().get(0).getDescription().contains("骑行"), "子景点独立简介保留");
         assertTrue(it.getSourceNotes().stream().noneMatch(n -> n.contains("简介")),
                 "共享区域背景但简介不同 → 不触发简介串用警告");
+    }
+
+    /* ================= 生成后一致性修复（2026-09-18 三亚案例评审） =================
+     * 共同根因两条：① 数据被改了、引用它的文案/行没跟着改；② 约束只在候选排序阶段生效，
+     * 生成后没人校验结构是否闭合。下面按这两条各覆盖一组。
+     * ========================================================================= */
+
+    private Itinerary itineraryOf(DayPlan day, String dest) {
+        Itinerary it = new Itinerary();
+        it.setDestination(dest);
+        it.setDays(List.of(day));
+        it.setSourceNotes(new ArrayList<>());
+        return it;
+    }
+
+    private CandidateEvidence evidence(String name, int visited) {
+        CandidateEvidence ev = new CandidateEvidence();
+        ev.setItemName(name);
+        ev.setBucket("景点");
+        ev.setVisited(visited);
+        return ev;
+    }
+
+    private HotelItem hotel(String name, String level, double cost) {
+        HotelItem h = new HotelItem();
+        h.setName(name);
+        h.setLevel(level);
+        h.setEstimatedCost(cost);
+        return h;
+    }
+
+    /** ① 交通段端点与当天行程毫无关系（"幽灵餐厅"当端点）→ 删段 + 如实说明 */
+    @Test
+    void transportLegWithForeignEndpoints_droppedWithHonestNote() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区（三亚市区西侧沿海）"));
+        TransportItem phantom = new TransportItem();
+        phantom.setMode("打车");
+        phantom.setFromPlace("城市乐园");
+        phantom.setToPlace("绿茶餐厅(三亚蓝海购物广场店)");
+        d1.getTransport().add(phantom);
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertTrue(d1.getTransport() == null || d1.getTransport().isEmpty(),
+                "端点不在当天行程里的交通段必须被移除，不能展示不存在的路线");
+        assertTrue(d1.getNotes() != null && d1.getNotes().stream()
+                        .anyMatch(n -> n.contains("与当天行程不符的交通段")),
+                "移除要如实说明，不能静默消失");
+    }
+
+    /** ① 端点写得不准但明显指向当天某地点（相似度够）→ 改写成当天真实名称，不删段 */
+    @Test
+    void transportLegWithSimilarAnchor_rewrittenToRealPlace() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("亚龙湾热带天堂森林公园", "亚龙湾路"));
+        d1.setMeals(new ArrayList<>(List.of(meal("大东海海鲜广场"))));
+        TransportItem t = new TransportItem();
+        t.setMode("打车");
+        t.setFromPlace("亚龙湾天堂森林公园"); // 名称变体：不相等，但明显是同一个地方
+        t.setToPlace("大东海");                // 与「大东海海鲜广场」名称互含 → 视为同一地点，无需改写
+        d1.getTransport().add(t);
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(1, d1.getTransport().size(), "能对上当天地点的交通段不该被删");
+        assertEquals("亚龙湾热带天堂森林公园", t.getFromPlace(), "名称变体应改写成当天真实名称");
+        assertEquals("大东海", t.getToPlace(), "名称互含即视为同一地点，不硬改");
+    }
+
+    /** ② 结构缺口：当天漏排午餐/晚餐 → 用候选池里的真实餐厅补位；返程日不补晚餐 */
+    @Test
+    void missingMeals_filledFromCandidates() {
+        DayPlan d1 = day(1);
+        SpotItem s1 = spot("亚龙湾", "亚龙湾路");
+        s1.setLatitude(18.22);
+        s1.setLongitude(109.63);
+        d1.getSpots().add(s1);
+
+        DayPlan d2 = day(2);
+        SpotItem s2 = spot("天涯海角", "天涯区");
+        s2.setLatitude(18.29);
+        s2.setLongitude(109.34);
+        d2.getSpots().add(s2);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiWithCoord("亚龙湾海鲜广场", 18.23, 109.64),
+                poiWithCoord("天涯镇海鲜店", 18.30, 109.35),
+                poiWithCoord("天涯海角渔村餐厅", 18.30, 109.36)));
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(restaurants, null));
+
+        assertEquals(2, d1.getMeals().size(), "第 1 天午餐与晚餐都应补上");
+        assertTrue(d1.getMeals().stream().anyMatch(m -> "午餐".equals(m.getMealType())),
+                "缺午餐应补午餐");
+        assertEquals(1, d2.getMeals().size(), "返程日只补午餐，不补晚餐");
+        assertEquals("午餐", d2.getMeals().get(0).getMealType());
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("已补入")),
+                "补位动作要在来源说明里可追溯");
+    }
+
+    /** 假期中的最后一天只缺午餐 → 只补午餐（不因为"没晚餐"误补） */
+    @Test
+    void lastDayWithoutDinner_notFilled() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(poiWithCoord("三亚湾海鲜广场", 18.25, 109.50)));
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(restaurants, null));
+
+        assertEquals(1, d1.getMeals().size(), "最后一天只补午餐");
+        assertEquals("午餐", d1.getMeals().get(0).getMealType());
+    }
+
+    /** ② 历史去过的景点要"不安排"：候选池里还有没去过的新景点 → 直接换掉 */
+    @Test
+    void visitedSpot_replacedByUnvisitedCandidate() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("鹿回头风景区", "鹿岭路"));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        CollectedData c = collectedWithPoi(Map.of("景点", List.of(
+                Map.of("name", "鹿回头风景区", "address", "鹿岭路"),
+                Map.of("name", "椰梦长廊", "address", "天涯区"))), null);
+        c.setCandidateEvidence(List.of(evidence("鹿回头风景区", 1)));
+
+        validator.validateAndRepair(it, request("三亚"), c);
+
+        assertEquals("椰梦长廊", d1.getSpots().get(0).getName(),
+                "历史去过的景点应换成候选池里没去过的新景点");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("历史去过") && n.contains("换成新地点")),
+                "换掉的动作要可解释，而不是静默替换");
+    }
+
+    /** ② 用户点名的景点优先于历史去重：保留 + 讲清原因 */
+    @Test
+    void visitedButRequestedSpot_keptWithExplanation() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("鹿回头风景区", "鹿岭路"));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        CollectedData c = collectedWithPoi(Map.of("景点", List.of(
+                Map.of("name", "鹿回头风景区", "address", "鹿岭路"),
+                Map.of("name", "椰梦长廊", "address", "天涯区"))), null);
+        c.setCandidateEvidence(List.of(evidence("鹿回头风景区", 1)));
+        c.setRequestedSpots(new ArrayList<>(List.of("鹿回头风景区")));
+
+        validator.validateAndRepair(it, request("三亚"), c);
+
+        assertEquals("鹿回头风景区", d1.getSpots().get(0).getName(),
+                "点名优先：不得被历史去重规则换掉");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("是你点名的景点")),
+                "保留原因要讲清，避免看起来像「规则时灵时不灵」");
+    }
+
+    /** ② 历史去过但无新景点可换 → 保留 + 如实说明（不粉饰成"已避开重复"） */
+    @Test
+    void visitedSpotWithoutReplacement_keptWithHonestNote() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("鹿回头风景区", "鹿岭路"));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        CollectedData c = collectedWithPoi(Map.of(), null);
+        c.setCandidateEvidence(List.of(evidence("鹿回头风景区", 1)));
+
+        validator.validateAndRepair(it, request("三亚"), c);
+
+        assertEquals("鹿回头风景区", d1.getSpots().get(0).getName(), "无候选时不得凭空空换");
+        assertTrue(d1.getNotes().stream().anyMatch(n -> n.contains("已无新的真实景点可替换")),
+                "换不掉要如实说明原因，不静默粉饰");
+    }
+
+    /** ① 餐次被换掉后，引用旧店名的交通段端点必须一起改（"幽灵餐厅"的正解） */
+    @Test
+    void mealReplacement_propagatesToTransportEndpoints() {
+        MealItem lunch1 = meal("人人捞火锅(商品街店)");
+        lunch1.setSource("高德POI");
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setMeals(new ArrayList<>(List.of(lunch1)));
+
+        MealItem lunch2 = meal("人人捞火锅(商品街店)");
+        lunch2.setSource("高德POI");
+        DayPlan d2 = day(2);
+        d2.getSpots().add(spot("鹿回头风景区", "鹿岭路"));
+        d2.setMeals(new ArrayList<>(List.of(lunch2)));
+        TransportItem leg = new TransportItem();
+        leg.setMode("打车");
+        leg.setFromPlace("人人捞火锅(商品街店)");
+        leg.setToPlace("鹿回头风景区");
+        d2.getTransport().add(leg);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(List.of(d1, d2));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiNoCoord("人人捞火锅(商品街店)"),
+                poiNoCoord("朋派烤肉自助料理(蓝海购物广场店)")));
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(restaurants, null));
+
+        assertNotEquals("人人捞火锅(商品街店)", d2.getMeals().get(0).getName(),
+                "跨天重复的餐厅应被换掉");
+        assertEquals(d2.getMeals().get(0).getName(), leg.getFromPlace(),
+                "交通段端点必须跟着改名——不能留下「当了端点却从不是任何一餐」的幽灵餐厅");
+        assertEquals(1, d2.getTransport().size(), "端点改名后不再落空，交通段应保留而不是被删");
+    }
+
+    /** ① 住宿口径收口：LLM 写的过期金额/档次断言清掉，改由系统按最终数据重述一条 */
+    @Test
+    void staleLodgingClaim_removedAndRestatedFromRealData() {
+        TripRequest req = request("三亚");
+        req.setBudget(8000.0);
+
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setHotel(hotel("三亚湾海景假日酒店", "舒适型", 320.0));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        it.setTips(new ArrayList<>(List.of(
+                "住宿建议：选择高档型酒店，约 780 元/晚，4 晚共 3120 元（占预算 39%）",
+                "防晒：三亚紫外线强，正午尽量待在室内")));
+
+        validator.validateAndRepair(it, req, collectedWithPoi(Map.of(), null));
+
+        assertTrue(it.getTips().stream().noneMatch(t -> t.contains("780")),
+                "与最终数据矛盾的住宿断言必须移除（同一页面不能有两套数字）");
+        assertTrue(it.getTips().stream().anyMatch(t -> t.startsWith("住宿：")
+                        && t.contains("三亚湾海景假日酒店") && t.contains("320")),
+                "改由系统按最终数据重述一条住宿事实");
+        assertTrue(it.getTips().stream().anyMatch(t -> t.contains("防晒")),
+                "与住宿无关的正常提示不得误删");
+    }
+
+    /** ① 系统住宿事实行必须幂等：同一行程被校验两次也只留一条 */
+    @Test
+    void systemLodgingTip_notDuplicatedOnRepeatValidation() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setHotel(hotel("三亚湾海景假日酒店", "舒适型", 320.0));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        CollectedData c = collectedWithPoi(Map.of(), null);
+
+        validator.validateAndRepair(it, request("三亚"), c);
+        validator.validateAndRepair(it, request("三亚"), c);
+
+        long n = it.getTips() == null ? 0 : it.getTips().stream().filter(t -> t.startsWith("住宿：")).count();
+        assertEquals(1, n, "系统住宿事实行不能每校验一次就追加一条");
     }
 }

@@ -5,6 +5,7 @@ import com.yuntu.tripplanner.agent.CollectedData;
 import com.yuntu.tripplanner.client.LlmClient;
 import com.yuntu.tripplanner.common.SightseeingFilter;
 import com.yuntu.tripplanner.common.SpotText;
+import com.yuntu.tripplanner.model.CandidateEvidence;
 import com.yuntu.tripplanner.model.DayPlan;
 import com.yuntu.tripplanner.model.FilteredCandidate;
 import com.yuntu.tripplanner.model.HotelItem;
@@ -217,8 +218,7 @@ public class ItineraryValidator {
                 if (isDuplicate(norm, usedSpots)) {
                     String replacement = popFree(spotPool, usedSpots);
                     if (replacement != null) {
-                        spot.setName(replacement);
-                        spot.setSource("高德POI");
+                        replaceSpot(itinerary, spot, replacement, poiAddressMap, request);
                         usedSpots.add(normalize(replacement));
                     } else {
                         spot.setSource("LLM建议（需核实）");
@@ -231,6 +231,11 @@ public class ItineraryValidator {
                 }
             }
         }
+
+        // 1.7 历史去重落地为"不安排"（而不是只降权）：最近行程去过的景点，若用户没点名要，
+        //     就用候选池里"历史未去过"的真实景点替换；换不掉（候选不足）则保留并如实说明原因。
+        //     放在餐食处理之前，保证 usedSpots/spotPool 状态与后续一致。
+        excludeVisitedSpots(itinerary, collectedData, spotPool, usedSpots, poiAddressMap, request);
 
         // 2. 餐厅：跨天去重 + 连锁快餐替换 + 真实性标注
         // 替换候选池排除连锁品牌（避免去重/连锁替换时把汉堡王等选进候选）
@@ -259,8 +264,7 @@ public class ItineraryValidator {
                     }
                     String replacement = popFree(mealPool, usedMeals);
                     if (replacement != null) {
-                        meal.setName(replacement);
-                        meal.setSource("高德POI");
+                        replaceMeal(itinerary, meal, replacement);
                         usedMeals.add(normalize(replacement));
                     } else if (chain || isDuplicate(norm, usedMeals)) {
                         meal.setSource("LLM建议（需核实）");
@@ -276,8 +280,13 @@ public class ItineraryValidator {
         //     （替换只改名称不改价格，不影响预算口径）。
         checkMealLocation(itinerary, collectedData, mealPool, usedMeals);
 
+        // 2.6 每日餐次完整性：午餐/晚餐缺失时用候选池里"离当天活动区域最近"的真实餐厅补位，
+        //     补不到就如实标注"自行解决"。放在就餐就近校验之后（补位天然满足就近），预算之前（补的价格要进合计）。
+        fillMissingMeals(itinerary, collectedData, mealPool, usedMeals);
+
         // 3. Plan B：恶劣天气日 → 替换为室内候选（无候选则备注警示）
-        applyPlanB(itinerary, collectedData, poiSpotNames, usedSpots, spotPool, ragText);
+        applyPlanB(itinerary, collectedData, poiSpotNames, usedSpots, spotPool, ragText,
+                poiAddressMap, request);
 
         // 4. 交通：统一「交通段必须带金额」口径 + 未由高德路线补全的项标注为估算（LLM）；并统一时长格式
         for (DayPlan day : itinerary.getDays()) {
@@ -315,6 +324,12 @@ public class ItineraryValidator {
             }
         }
 
+        // 4.2 交通段端点对齐：每一段的起点/终点必须是"当天真实落地的地点"（酒店/景点/餐厅，
+        //     或机场车站这类合理中转枢纽）。LLM 常拿候选池里另一个同类地点（甚至别的天的餐厅）
+        //     当端点，于是出现"去 A 店吃饭，路线却写 B 店"这种页面自相矛盾。
+        //     放在预算计算之前：删段会影响当天交通合计。
+        alignTransportEndpoints(itinerary);
+
         // 4.5 预算硬收敛（Q3）：超支 >20% 时先本地降住宿档次重算（确定性、零 token），
         //     压回预算后再交给 repairBudget 处理残余偏差，避免"LLM 修不动→超支放行"
         collapseHotelForBudget(itinerary, request);
@@ -328,6 +343,11 @@ public class ItineraryValidator {
 
         // 6.1 酒店档次与类型一致性：高档型不能住青旅（通用校验）
         validateHotelLevelMatch(itinerary);
+
+        // 6.2 住宿口径收口：LLM 在「旅行提示」「每日备注」里写下的住宿金额/档次，会在
+        //     4.5/5/6.1 改动酒店数据之后变成过期值（实测同一页面出现「780 元/晚、占 39%」
+        //     与「¥200/晚、10%」两套数字）。凡是金额/档次断言一律清掉，改由系统按最终数据补一条。
+        cleanStaleLodgingClaims(itinerary, request);
 
         // 7. 景点描述交叉检测：描述中出现其他地点名 → 警示（防 LLM 张冠李戴）
         checkDescriptionMismatch(itinerary, poiSpotNames, poiAddressMap);
@@ -880,7 +900,8 @@ public class ItineraryValidator {
      */
     private void applyPlanB(Itinerary itinerary, CollectedData collectedData,
                             List<String> poiSpotNames, Set<String> usedSpots,
-                            List<String> spotPool, String ragText) {
+                            List<String> spotPool, String ragText,
+                            Map<String, String> poiAddressMap, TripRequest request) {
         Object raw = collectedData.getWeatherData() == null
                 ? null : collectedData.getWeatherData().get("forecast");
         if (!(raw instanceof WeatherForecastResponse wf)
@@ -918,8 +939,7 @@ public class ItineraryValidator {
                         // Plan B 替换真实发生：把被替换的户外景点记录进 filtered_candidates（WEATHER_API/HARD），
                         // 支撑结果页「为什么没安排这些」（OPTIMIZATION_TODO P0③；TripGenerationFinalizer 收尾合并展示）
                         addWeatherFiltered(itinerary, day, nm, badWeather);
-                        spot.setName(replacement);
-                        spot.setSource("高德POI");
+                        replaceSpot(itinerary, spot, replacement, poiAddressMap, request);
                         usedSpots.add(normalize(replacement));
                         indoor = true;
                     }
@@ -1558,7 +1578,7 @@ public class ItineraryValidator {
                     String old = meal.getName();
                     usedMeals.remove(normalize(old));
                     mealPool.removeIf(n -> n != null && normalize(n).equals(normalize(replacement)));
-                    meal.setName(replacement);
+                    replaceMeal(itinerary, meal, replacement);
                     meal.setSource("高德POI·已按当天活动区域就近调整");
                     usedMeals.add(normalize(replacement));
                     log.info("Q1 就餐就近修正：第 {} 天「{}」(距当天景点中心 {:.0f}km) → 「{}」",
@@ -1904,5 +1924,610 @@ public class ItineraryValidator {
 
     private static double round2(double v) {
         return Math.round(v * 100.0) / 100.0;
+    }
+
+    /* ===================================================================================
+     * 生成后一致性修复（2026-09-18，三亚案例评审）
+     *
+     * 共同根因只有两条，下面所有方法都是这两条的落地：
+     *   ① 「数据被改了，引用它的文案/引用它的行没跟着改」——住宿金额、交通段端点都属此类；
+     *   ② 「约束只在候选排序阶段生效，生成后没人校验结构是否闭合」——餐次缺失、
+     *      历史去过的地方是否真的没安排，都属此类。
+     * =================================================================================== */
+
+    /** 合理中转枢纽：不是当天的景点/餐厅，但作为交通端点完全成立（到达/离开） */
+    private static final List<String> TRANSIT_HUB_WORDS =
+            List.of("机场", "火车站", "高铁站", "动车站", "地铁站", "汽车站", "客运站",
+                    "码头", "港口", "轮渡", "口岸", "服务区");
+
+    /** 金额断言（LLM 写了就会被后续校验改掉，属于过期值） */
+    private static final java.util.regex.Pattern MONEY_CLAIM =
+            java.util.regex.Pattern.compile("(\\d+\\s*(元|万)|[¥￥]\\s*\\d+)");
+    /** 住宿类字样 */
+    private static final java.util.regex.Pattern LODGING_WORD =
+            java.util.regex.Pattern.compile("(酒店|住宿|房价|房费|公寓|民宿|客栈|旅舍|青旅|招待所)");
+    /** 住宿档次字样 */
+    private static final java.util.regex.Pattern LODGING_LEVEL_WORD =
+            java.util.regex.Pattern.compile("(高档|豪华|舒适型|经济型|轻奢)");
+
+    /**
+     * 名称是否指向同一地点：规范化后精确相等，或两者中较短的一个（≥2 字）被另一个包含。
+     * 与 {@link #isDuplicate} 同口径，避免"交通段端点判定"和"跨天去重判定"两套标准。
+     */
+    private boolean samePlace(String a, String b) {
+        if (a == null || b == null || a.isBlank() || b.isBlank()) {
+            return false;
+        }
+        String na = normalize(a);
+        String nb = normalize(b);
+        if (na.isEmpty() || nb.isEmpty()) {
+            return false;
+        }
+        return na.equals(nb)
+                || (Math.min(na.length(), nb.length()) >= 2 && (na.contains(nb) || nb.contains(na)));
+    }
+
+    /** 名称是否命中集合中的任一项（同地点判定） */
+    private boolean matchesAny(Set<String> names, String name) {
+        if (names == null || names.isEmpty() || name == null) {
+            return false;
+        }
+        for (String n : names) {
+            if (samePlace(n, name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 改名传播：某个景点/餐次被换成新地点后，把引用旧名称的地方一起改掉——
+     * 交通段的起终点、每天的备注文本。
+     *
+     * <p>不这么做就会出现页面自相矛盾：实测三亚行程把连锁店「绿茶餐厅」替换成了
+     * 「朋派烤肉」，餐次名称换了，交通段却仍写「城市乐园 → 绿茶餐厅」，
+     * 于是这家"幽灵餐厅"在一趟行程里当了 4 次交通端点、却从来不是任何一餐。
+     */
+    private void propagateRename(Itinerary itinerary, String oldName, String newName) {
+        if (itinerary == null || itinerary.getDays() == null
+                || oldName == null || oldName.isBlank() || newName == null || newName.isBlank()
+                || samePlace(oldName, newName)) {
+            return;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getTransport() != null) {
+                for (TransportItem t : day.getTransport()) {
+                    if (samePlace(t.getFromPlace(), oldName)) {
+                        t.setFromPlace(newName);
+                    }
+                    if (samePlace(t.getToPlace(), oldName)) {
+                        t.setToPlace(newName);
+                    }
+                }
+            }
+            if (day.getNotes() != null && oldName.length() >= 3) {
+                for (int i = 0; i < day.getNotes().size(); i++) {
+                    String n = day.getNotes().get(i);
+                    if (n != null && n.contains(oldName)) {
+                        day.getNotes().set(i, n.replace(oldName, newName));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 景点换位（同槽位换地点）：同步改名引用，并用真实数据重建这个景点的属性。
+     * 旧地点的简介/图片/个性化理由/业态/价格一律清空——它们描述的是被换掉的那个地方，
+     * 留着就是张冠李戴；地址与简介优先用高德 POI 与攻略卡片重新取一次。
+     */
+    private void replaceSpot(Itinerary itinerary, SpotItem spot, String newName,
+                             Map<String, String> poiAddressMap, TripRequest request) {
+        if (spot == null || newName == null || newName.isBlank()) {
+            return;
+        }
+        propagateRename(itinerary, spot.getName(), newName);
+        spot.setName(newName);
+        spot.setSource("高德POI");
+        spot.setDescription(null);
+        spot.setImageUrl(null);
+        spot.setPersonalNote(null);
+        spot.setPoiType(null);
+        spot.setPoiId(null);
+        spot.setLatitude(null);
+        spot.setLongitude(null);
+        spot.setEstimatedCost(null);
+        spot.setAddress(poiAddressMap == null ? null : bestPoiAddress(poiAddressMap, newName));
+        if (ragService != null && request != null && request.getDestination() != null) {
+            Map<String, String> card = ragService.findSpotCard(request.getDestination(), newName);
+            if (card != null) {
+                if (card.get("location") != null && !card.get("location").isBlank()) {
+                    spot.setAddress(card.get("location"));
+                }
+                if (card.get("intro") != null && !card.get("intro").isBlank()) {
+                    spot.setDescription(card.get("intro"));
+                }
+                applyCardTicket(spot, card.get("ticket"));
+                spot.setSource("本地攻略");
+            }
+        }
+    }
+
+    /**
+     * 餐次换位：同步改名引用，并清掉 notes —— 那是"上一家店"的推荐菜。
+     * （实测：把「绿茶餐厅」换成「朋派烤肉」后，备注仍写着"推荐绿茶烤鸡、面包诱惑"。）
+     */
+    private void replaceMeal(Itinerary itinerary, MealItem meal, String newName) {
+        if (meal == null || newName == null || newName.isBlank()) {
+            return;
+        }
+        propagateRename(itinerary, meal.getName(), newName);
+        meal.setName(newName);
+        meal.setSource("高德POI");
+        meal.setNotes(null);
+        meal.setPersonalNote(null);
+    }
+
+    /** 最近历史行程去过的候选地点名（来源：个性化排序落下的候选证据；无证据返回空集） */
+    private Set<String> visitedSpotNames(CollectedData collectedData) {
+        Set<String> names = new HashSet<>();
+        if (collectedData == null || collectedData.getCandidateEvidence() == null) {
+            return names;
+        }
+        for (CandidateEvidence ev : collectedData.getCandidateEvidence()) {
+            if (ev != null && ev.getVisited() != null && ev.getVisited() == 1
+                    && ev.getItemName() != null && !ev.getItemName().isBlank()) {
+                names.add(ev.getItemName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * 历史去重落地：「上次去过」要变成"这次不安排"，而不是只降排序权重。
+     *
+     * <p>只降权会让同类情况得出相反结论——实测三亚：凤凰岛桥头公园、大东海广场因"去过"
+     * 被降级排除，鹿回头风景区同样"去过"却照样排进第 4 天，而页面顶部还宣称
+     * 「已减少历史行程中出现过的重复景点」。用户看到的不是"规则"，是"规则时灵时不灵"。
+     *
+     * <p>三条边界：① 用户点名的景点不排除（点名优先于去重）；② 候选池里先把"历史去过的"
+     * 剔掉，否则"换掉一个去过的"可能换成另一个去过的；③ 实在换不到就保留并如实说明原因，
+     * 不静默粉饰成"已经避开重复"。
+     */
+    private void excludeVisitedSpots(Itinerary itinerary, CollectedData collectedData,
+                                     List<String> spotPool, Set<String> usedSpots,
+                                     Map<String, String> poiAddressMap, TripRequest request) {
+        if (itinerary == null || itinerary.getDays() == null) {
+            return;
+        }
+        Set<String> visited = visitedSpotNames(collectedData);
+        if (visited.isEmpty()) {
+            return;
+        }
+        Set<String> requested = collectedData.getRequestedSpots() == null
+                ? new HashSet<>() : new HashSet<>(collectedData.getRequestedSpots());
+        // 候选池剔除"历史去过的"，保证换过去的确实是新地点
+        if (spotPool != null) {
+            spotPool.removeIf(n -> n != null && matchesAny(visited, n));
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() == null) {
+                continue;
+            }
+            for (SpotItem spot : day.getSpots()) {
+                String nm = spot.getName();
+                if (nm == null || nm.isBlank() || !matchesAny(visited, nm)) {
+                    continue;
+                }
+                if (matchesAny(requested, nm)) {
+                    addSourceNote(itinerary, String.format(
+                            "↺ 「%s」是你点名的景点，虽然上次行程去过，本次仍按你的要求安排", nm));
+                    continue;
+                }
+                String replacement = spotPool == null ? null : popFree(spotPool, usedSpots);
+                if (replacement != null) {
+                    replaceSpot(itinerary, spot, replacement, poiAddressMap, request);
+                    usedSpots.add(normalize(replacement));
+                    log.info("历史去重硬排除：第 {} 天「{}」(历史去过) → 「{}」",
+                            day.getDayIndex(), nm, replacement);
+                    addSourceNote(itinerary, String.format("↺ 第 %s 天已把历史去过的「%s」换成新地点「%s」",
+                            day.getDayIndex(), nm, replacement));
+                } else {
+                    if (day.getNotes() == null) {
+                        day.setNotes(new ArrayList<>());
+                    }
+                    day.getNotes().add("↺ 「" + nm + "」你上次行程去过；当日候选池里已无新的真实景点可替换，"
+                            + "本次保留（如不想重复，可换个目的地或补充候选）");
+                    log.warn("历史去过且无替代候选，保留：第 {} 天「{}」", day.getDayIndex(), nm);
+                }
+            }
+        }
+    }
+
+    /** 解析 HH:mm / H:mm 为"从 0 点起的分钟数"，无法解析返回 null（不猜） */
+    private static Integer parseClockMinutes(String clock) {
+        if (clock == null) {
+            return null;
+        }
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})").matcher(clock);
+        if (!m.find()) {
+            return null;
+        }
+        int h = Integer.parseInt(m.group(1));
+        int min = Integer.parseInt(m.group(2));
+        return (h < 0 || h > 23 || min < 0 || min > 59) ? null : h * 60 + min;
+    }
+
+    /**
+     * 当天是否已有指定餐次。判定顺序：meal_type 含"午/中"或"晚"；
+     * meal_type 缺失时按开始时间落在哪个饭点判断（11-15 午餐 / 17-21 晚餐）。
+     */
+    private boolean hasMealType(List<MealItem> meals, boolean lunch) {
+        if (meals == null) {
+            return false;
+        }
+        for (MealItem m : meals) {
+            if (m == null) {
+                continue;
+            }
+            String t = m.getMealType() == null ? "" : m.getMealType().trim();
+            if (!t.isEmpty()) {
+                if (lunch && (t.contains("午") || t.contains("中"))) {
+                    return true;
+                }
+                if (!lunch && t.contains("晚")) {
+                    return true;
+                }
+                continue;
+            }
+            Integer start = parseClockMinutes(m.getStartTime());
+            if (start == null) {
+                continue;
+            }
+            int hour = start / 60;
+            if (lunch && hour >= 11 && hour <= 15) {
+                return true;
+            }
+            if (!lunch && hour >= 17 && hour <= 21) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 全程餐费均值（补位餐的金额按均值给；一条餐费数据都没有则返回 0 = 不编价格） */
+    private double averageMealCost(List<DayPlan> days) {
+        double sum = 0;
+        int n = 0;
+        for (DayPlan d : days) {
+            if (d.getMeals() == null) {
+                continue;
+            }
+            for (MealItem m : d.getMeals()) {
+                if (m != null && m.getEstimatedCost() != null && m.getEstimatedCost() > 0) {
+                    sum += m.getEstimatedCost();
+                    n++;
+                }
+            }
+        }
+        return n == 0 ? 0 : sum / n;
+    }
+
+    /**
+     * 每日餐次完整性：午餐/晚餐缺失时补一个真实候选，补不到就如实标注。
+     *
+     * <p>实测三亚：第 2 天在亚龙湾玩 6 小时没安排午餐，第 3、4 天没安排晚餐——
+     * 结构缺口全程没人管，因为"数据是否足够"只看数据源齐不齐，不看行程闭不闭合。
+     *
+     * <p>补位规则：优先用候选池里"离当天活动区域最近、且未被占用"的真实餐厅（与就餐就近
+     * 校验同一套判定，因此补出来必然满足空间自洽）；金额按全程餐费均值给并在来源里写明是估算，
+     * 不凭空编一个菜价。返程日（最后一天）不补晚餐。
+     */
+    private void fillMissingMeals(Itinerary itinerary, CollectedData collectedData,
+                                  List<String> mealPool, Set<String> usedMeals) {
+        if (itinerary == null || itinerary.getDays() == null || itinerary.getDays().isEmpty()) {
+            return;
+        }
+        List<DayPlan> days = itinerary.getDays();
+        Map<String, double[]> coordMap = collectPoiCoordMap(collectedData);
+        double avgCost = averageMealCost(days);
+        for (int i = 0; i < days.size(); i++) {
+            DayPlan day = days.get(i);
+            boolean needLunch = !hasMealType(day.getMeals(), true);
+            boolean needDinner = (i != days.size() - 1) && !hasMealType(day.getMeals(), false);
+            if (!needLunch && !needDinner) {
+                continue;
+            }
+            if (day.getMeals() == null) {
+                day.setMeals(new ArrayList<>());
+            }
+            if (needLunch) {
+                fillOneMeal(itinerary, day, "午餐", "12:00", coordMap, mealPool, usedMeals, avgCost);
+            }
+            if (needDinner) {
+                fillOneMeal(itinerary, day, "晚餐", "18:30", coordMap, mealPool, usedMeals, avgCost);
+            }
+        }
+    }
+
+    /** 补齐单个餐次（就近优先；无就近候选则退化为池中任意未占用项；全无则如实标注） */
+    private void fillOneMeal(Itinerary itinerary, DayPlan day, String label, String startTime,
+                             Map<String, double[]> coordMap, List<String> mealPool,
+                             Set<String> usedMeals, double avgCost) {
+        double[] center = day.getSpots() == null ? null : spotCenter(day.getSpots());
+        String pick = center == null ? null : nearestFreeMeal(mealPool, usedMeals, coordMap, center);
+        if (pick == null) {
+            pick = popFree(mealPool, usedMeals);
+        }
+        if (pick == null) {
+            if (day.getNotes() == null) {
+                day.setNotes(new ArrayList<>());
+            }
+            day.getNotes().add("⚠️ 系统检测：当日未安排" + label + "，且候选池中已无未占用的真实餐厅可用，"
+                    + "请按当天活动区域自行选择就餐地点");
+            return;
+        }
+        MealItem meal = new MealItem();
+        meal.setName(pick);
+        meal.setMealType(label);
+        meal.setStartTime(startTime);
+        meal.setSource(avgCost > 0 ? "高德POI·金额按全程餐费均值估算" : "高德POI");
+        if (avgCost > 0) {
+            meal.setEstimatedCost(round2(avgCost));
+        }
+        day.getMeals().add(meal);
+        usedMeals.add(normalize(pick));
+        log.info("餐次补位：第 {} 天补入{}「{}」", day.getDayIndex(), label, pick);
+        addSourceNote(itinerary, String.format("🔧 已补入第 %s 天的%s候选「%s」（原生成漏排该餐次）",
+                day.getDayIndex(), label, pick));
+    }
+
+    /** 当天真实落地的地点集合（酒店 / 景点 / 餐厅）——交通段端点的合法取值 */
+    private List<String> dayAnchors(DayPlan day) {
+        List<String> anchors = new ArrayList<>();
+        if (day.getHotel() != null && day.getHotel().getName() != null
+                && !day.getHotel().getName().isBlank()) {
+            anchors.add(day.getHotel().getName());
+        }
+        if (day.getSpots() != null) {
+            for (SpotItem s : day.getSpots()) {
+                if (s.getName() != null && !s.getName().isBlank()) {
+                    anchors.add(s.getName());
+                }
+            }
+        }
+        if (day.getMeals() != null) {
+            for (MealItem m : day.getMeals()) {
+                if (m.getName() != null && !m.getName().isBlank()) {
+                    anchors.add(m.getName());
+                }
+            }
+        }
+        return anchors;
+    }
+
+    /**
+     * 交通段端点对齐：每一段的起点/终点必须是"当天真实落地的地点"（酒店/景点/餐厅），
+     * 或机场、车站这类合理中转枢纽；未标注端点的松散衔接段不判定。
+     *
+     * <p>处理顺序：先在当天锚点里按名称相似度找替身（够像才认，避免乱点鸳鸯），
+     * 找不到就删掉这一段并如实说明——宁可少一条衔接，也不展示一条不存在的路线。
+     */
+    private void alignTransportEndpoints(Itinerary itinerary) {
+        if (itinerary == null || itinerary.getDays() == null) {
+            return;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            List<TransportItem> legs = day.getTransport();
+            if (legs == null || legs.isEmpty()) {
+                continue;
+            }
+            List<String> anchors = dayAnchors(day);
+            List<TransportItem> kept = new ArrayList<>();
+            List<String> dropped = new ArrayList<>();
+            for (TransportItem t : legs) {
+                boolean fromOk = resolveEndpoint(t, true, anchors);
+                boolean toOk = resolveEndpoint(t, false, anchors);
+                if (fromOk && toOk) {
+                    kept.add(t);
+                } else {
+                    dropped.add(describeLeg(t));
+                    log.warn("交通段端点与当天行程不符，已移除：第 {} 天 {}", day.getDayIndex(), describeLeg(t));
+                }
+            }
+            if (!dropped.isEmpty()) {
+                day.setTransport(kept.isEmpty() ? null : kept);
+                if (day.getNotes() == null) {
+                    day.setNotes(new ArrayList<>());
+                }
+                day.getNotes().add("🔧 已移除 " + dropped.size()
+                        + " 条衔接信息与当天行程不符的交通段（原标注：" + String.join("；", dropped)
+                        + "），避免展示不存在的路线");
+            }
+        }
+    }
+
+    /**
+     * 尝试让一个端点落在当天锚点里：本来就是锚点/中转枢纽 → true；
+     * 不是但能找到足够相似的当天地点 → 改写成它并返回 true；否则 false。
+     */
+    private boolean resolveEndpoint(TransportItem t, boolean from, List<String> anchors) {
+        String place = from ? t.getFromPlace() : t.getToPlace();
+        if (place == null || place.isBlank()) {
+            return true; // 松散衔接段（未标注端点）不判定
+        }
+        if (TRANSIT_HUB_WORDS.stream().anyMatch(place::contains)) {
+            return true;
+        }
+        if (matchesAny(new HashSet<>(anchors), place)) {
+            return true;
+        }
+        String sub = bestAnchorSubstitute(place, anchors);
+        if (sub == null) {
+            return false;
+        }
+        if (from) {
+            t.setFromPlace(sub);
+        } else {
+            t.setToPlace(sub);
+        }
+        log.info("交通段端点改写：{} → {}", place, sub);
+        return true;
+    }
+
+    /** 在当天锚点里找与 place 最像的一个（字符重合度 ≥ 0.34 才认，否则不硬凑） */
+    private String bestAnchorSubstitute(String place, List<String> anchors) {
+        if (place == null || place.isBlank() || anchors == null || anchors.isEmpty()) {
+            return null;
+        }
+        String best = null;
+        double bestRatio = 0;
+        for (String a : anchors) {
+            double r = charOverlapRatio(place, a);
+            if (r > bestRatio) {
+                bestRatio = r;
+                best = a;
+            }
+        }
+        return bestRatio >= 0.34 ? best : null;
+    }
+
+    /**
+     * 两个名称的字符重合度（按较短名的字符在较长名中的命中比例）。
+     * 只用来判断"这个名字像不像当天某个地点"，不用于去重（去重见 isDuplicate）。
+     */
+    private double charOverlapRatio(String a, String b) {
+        String na = normalize(a);
+        String nb = normalize(b);
+        if (na.isEmpty() || nb.isEmpty()) {
+            return 0;
+        }
+        String shorter = na.length() <= nb.length() ? na : nb;
+        String longer = shorter.equals(na) ? nb : na;
+        int hit = 0;
+        for (int i = 0; i < shorter.length(); i++) {
+            if (longer.indexOf(shorter.charAt(i)) >= 0) {
+                hit++;
+            }
+        }
+        return (double) hit / shorter.length();
+    }
+
+    /** 交通段的可读描述（日志/备注用） */
+    private String describeLeg(TransportItem t) {
+        String from = t.getFromPlace() == null || t.getFromPlace().isBlank() ? "？" : t.getFromPlace();
+        String to = t.getToPlace() == null || t.getToPlace().isBlank() ? "？" : t.getToPlace();
+        return "「" + from + " → " + to + "」";
+    }
+
+    /** 是不是"住宿金额/档次"类断言（LLM 写的，数据一改就过期） */
+    private boolean isStaleLodgingClaim(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        if (!LODGING_WORD.matcher(text).find()) {
+            return false;
+        }
+        return MONEY_CLAIM.matcher(text).find() || LODGING_LEVEL_WORD.matcher(text).find();
+    }
+
+    /**
+     * 住宿口径收口：清掉 LLM 在「旅行提示」「每日备注」里写的住宿金额/档次断言，改由系统按
+     * 最终数据重述一条。
+     *
+     * <p>实测三亚同一页面出现两套数字：旅行提示写「高档型…单晚 780 元，4 晚共 3120 元，占预算 39%」，
+     * 预算明细却是「¥200/晚、¥800、10%」——因为 4.5/5/6.1 改过酒店数据后，LLM 那段文案没人重算。
+     * 处理方式是"让 LLM 别写这类事实"（与 v1.1 起「来源说明由代码拼装」同一思路），
+     * 而不是回头再问一次模型（又慢又可能再编）。
+     */
+    private void cleanStaleLodgingClaims(Itinerary itinerary, TripRequest request) {
+        if (itinerary == null) {
+            return;
+        }
+        int removed = 0;
+        if (itinerary.getTips() != null && !itinerary.getTips().isEmpty()) {
+            List<String> kept = new ArrayList<>();
+            for (String tip : itinerary.getTips()) {
+                if (isStaleLodgingClaim(tip)) {
+                    log.warn("移除 LLM 写的过期住宿断言（旅行提示）：{}", tip);
+                    removed++;
+                    continue;
+                }
+                kept.add(tip);
+            }
+            itinerary.setTips(kept.isEmpty() ? null : kept);
+        }
+        if (itinerary.getDays() != null) {
+            for (DayPlan day : itinerary.getDays()) {
+                if (day.getNotes() == null || day.getNotes().isEmpty()) {
+                    continue;
+                }
+                List<String> kept = new ArrayList<>();
+                for (String n : day.getNotes()) {
+                    if (isStaleLodgingClaim(n)) {
+                        log.warn("移除 LLM 写的过期住宿断言（第 {} 天备注）：{}", day.getDayIndex(), n);
+                        removed++;
+                        continue;
+                    }
+                    kept.add(n);
+                }
+                day.setNotes(kept.isEmpty() ? null : kept);
+            }
+        }
+        appendSystemLodgingTip(itinerary, request);
+        if (removed > 0) {
+            log.info("住宿口径收口：清除 {} 条 LLM 过期住宿断言，已按最终数据重述", removed);
+        }
+    }
+
+    /** 按最终数据补一条住宿事实（名称/档次/单价/晚数/合计/占预算），与「预算明细」同口径 */
+    private void appendSystemLodgingTip(Itinerary itinerary, TripRequest request) {
+        if (itinerary.getDays() == null || itinerary.getDays().isEmpty()) {
+            return;
+        }
+        HotelItem hotel = null;
+        int nights = 0;
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getHotel() == null || day.getHotel().getName() == null) {
+                continue;
+            }
+            if (hotel == null) {
+                hotel = day.getHotel();
+            }
+            if (day.getHotel().getEstimatedCost() != null && day.getHotel().getEstimatedCost() > 0) {
+                nights++;
+            }
+        }
+        if (hotel == null) {
+            return;
+        }
+        // 幂等：先移除上一次由系统生成的住宿事实行（数据可能已变），避免同一条被重复追加
+        if (itinerary.getTips() != null) {
+            itinerary.getTips().removeIf(t -> t != null && t.startsWith("住宿：")
+                    && (t.contains("元/晚") || t.contains("未计住宿费用")));
+            if (itinerary.getTips().isEmpty()) {
+                itinerary.setTips(null);
+            }
+        }
+        StringBuilder sb = new StringBuilder("住宿：").append(hotel.getName());
+        if (hotel.getLevel() != null && !hotel.getLevel().isBlank()) {
+            sb.append("（").append(hotel.getLevel()).append("）");
+        }
+        double perNight = hotel.getEstimatedCost() == null ? 0 : hotel.getEstimatedCost();
+        if (perNight > 0 && nights > 0) {
+            double total = perNight * nights;
+            sb.append(String.format("约 %.0f 元/晚 × %d 晚 ≈ %.0f 元", perNight, nights, total));
+            Double budget = request == null ? null : request.getBudget();
+            if (budget != null && budget > 0) {
+                sb.append(String.format("（占预算 %.0f%%）", total / budget * 100));
+            }
+        } else if (nights == 0) {
+            sb.append("（未计住宿费用，请核实）");
+        }
+        if (itinerary.getTips() == null) {
+            itinerary.setTips(new ArrayList<>());
+        }
+        itinerary.getTips().add(sb.toString());
     }
 }
