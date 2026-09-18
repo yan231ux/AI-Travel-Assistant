@@ -52,7 +52,9 @@ __pycache__/
 *.pyc
 _mvn_exit.txt
 _probe_ps.txt
-# 本机验证临时产物（构建/探针输出，不入库）——统一用 backend/_*.txt 兜住，避免每加一次验证就漏一个
+# 本机验证临时产物（构建/探针输出/一次性小脚本，不入库）
+# 统一用下划线前缀兜住，避免每加一次验证就漏一个（真实的探针资产不带下划线前缀，不受影响）
 backend/_*.txt
+backend/_*.py
 frontend/dist_verify/
 frontend/dist_old_*/
