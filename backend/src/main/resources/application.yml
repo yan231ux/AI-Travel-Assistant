@@ -82,10 +82,13 @@ llm:
   timeout-seconds: 180
   max-iterations: 3
   # Agent 决策模式：
-  #   legacy（默认）= 首轮 LLM 决策 + 后续轮按数据缺口用规则补轮（改造前行为，可复现、成本可控）
-  #   autonomous    = 每轮都由 LLM 看已获数据决定下一步，并把失败调用（超时/空结果）回灌给模型自纠
-  # 默认 legacy 以保证既有行为与测试基线不变；切 autonomous 需配套跑 probe_generation_smoke.py
-  agent-mode: ${LLM_AGENT_MODE:legacy}
+  #   autonomous（默认）= 每轮都由 LLM 看已获数据决定下一步，并把失败调用（超时/空结果）回灌给模型自纠
+  #   legacy         = 首轮 LLM 决策 + 后续轮按数据缺口用规则补轮（改造前行为，可复现、成本可控）
+  # 2026-09-18 起默认 autonomous（qwen3-max 工具调用可用性已实测通过）：
+  #   买到的是"失败自纠"（不再拿同一 query 重复撞墙），代价是 think token 约为 legacy 的 3.3 倍；
+  #   已用 llm-gapfill-rounds=1 封顶、采集方案存档复用把同条件二次生成降到 0 token。
+  # 想回到改造前行为：设 LLM_AGENT_MODE=legacy，无需改代码。
+  agent-mode: ${LLM_AGENT_MODE:autonomous}
   # 原生工具调用（function calling）策略，仅在 agent-mode=autonomous 时生效：
   #   auto（默认）= 先试原生 tools，模型明确不接受则自动降级为文本 JSON 计划并按模型名记住；
   #   native      = 强制原生；text = 从不使用 tools（任何 chat 模型都能跑）。

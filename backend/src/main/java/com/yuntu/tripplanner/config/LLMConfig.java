@@ -39,12 +39,14 @@ public class LLMConfig {
 
     /**
      * Agent 决策模式：
-     * - legacy（默认）：首轮 LLM 决策 + 后续轮规则按缺口补轮（改造前行为，保持可复现与成本可控）
-     * - autonomous：每轮都由 LLM 看已获数据决定下一步，并把失败调用回灌让模型自纠
+     * - autonomous（默认）：每轮都由 LLM 看已获数据决定下一步，并把失败调用回灌让模型自纠
+     * - legacy：首轮 LLM 决策 + 后续轮规则按缺口补轮（改造前行为，保持可复现与成本可控）
      *
-     * 默认 legacy：既有 612 个用例与线上行为完全不变；切 autonomous 后新链路单独用例覆盖。
+     * 2026-09-18 起默认改为 autonomous，与 application.yml 的 llm.agent-mode 保持一致
+     * （yml 是唯一事实来源，此处仅是缺省兜底，避免删掉 yml 配置项时静默回退成旧行为）。
+     * 想回退：设环境变量 LLM_AGENT_MODE=legacy，无需改代码。
      */
-    private String agentMode = "legacy";
+    private String agentMode = "autonomous";
 
     /**
      * 原生工具调用（function calling）策略，仅在 agent-mode=autonomous 时生效：

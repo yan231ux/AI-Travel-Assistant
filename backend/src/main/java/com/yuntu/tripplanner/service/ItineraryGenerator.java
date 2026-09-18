@@ -29,10 +29,18 @@ import java.util.concurrent.TimeoutException;
 public class ItineraryGenerator {
 
     /** 主生成 LLM 调用超时（秒），防止模型慢响应导致前端无限卡“AI正在思考”。
-     * 3 天 + 多偏好行程输出结构较大，实测 45 秒不足，放宽到 90 秒（前端 API 超时 120 秒）。 */
+     * 3 天 + 多偏好行程输出结构较大，实测 45 秒不足，放宽到 180 秒。
+     * 说明：主力链路走 SSE（{@code /trip/generate-stream}），前端用原生 fetch 读流、不受 axios
+     * 120 秒超时约束；仅非流式 {@code /trip/generate} 仍受 120 秒约束。
+     * ⚠️ 本注释曾残留旧值“90 秒”而常量早已改为 180，排查线上问题时极易被误导——改常量务必同步改注释。 */
     private static final int GENERATION_TIMEOUT_SECONDS = 180;
-    /** JSON 修正 LLM 调用超时（秒），修正 prompt 较短，响应应更快 */
-    private static final int CORRECT_JSON_TIMEOUT_SECONDS = 20;
+    /** JSON 修正 LLM 调用超时（秒）。
+     * 修正步要把**整份行程 JSON** 重新输出一遍，输出量与主生成同量级（实测主生成约 68 秒成功）——
+     * 原值 20 秒是结构性不足，不是“偶发慢响应”：§35 日志实录修正步在 20.000 秒整超时，
+     * 导致整个请求失败（主生成其实已经成功）。
+     * 注意：这只是解析失败后的一次补救，正常链路走不到——未转义控制字符已由本地修复
+     * {@link #escapeRawControlChars} 处理，不需要回传 LLM。 */
+    private static final int CORRECT_JSON_TIMEOUT_SECONDS = 60;
 
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
@@ -391,15 +399,99 @@ public class ItineraryGenerator {
     }
 
     /**
-     * 尝试解析 JSON 为 Itinerary，失败返回 null
+     * 尝试解析 JSON 为 Itinerary，失败返回 null。
+     * 解析失败时先做一次**本地**修复（未转义控制字符），修复成功就不再回传 LLM 走 60 秒修正步。
+     * 依据：LLM 在字符串值里夹带裸换行是高频缺陷，属于纯格式问题，本地可确定性修好；
+     * 把它丢给 LLM 修正既慢（实测 20 秒超时→整个请求失败）又不可靠（模型可能再犯）。
      */
     private Itinerary tryParse(String jsonStr) {
+        if (jsonStr == null || jsonStr.isBlank()) {
+            return null;
+        }
+        Itinerary direct = tryParseStrict(jsonStr);
+        if (direct != null) {
+            return direct;
+        }
+        String repaired = escapeRawControlChars(jsonStr);
+        if (!repaired.equals(jsonStr)) {
+            Itinerary fixed = tryParseStrict(repaired);
+            if (fixed != null) {
+                log.warn("行程 JSON 含未转义控制字符，已在本地转义修复（未回传 LLM，省去修正步）");
+                return fixed;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 严格解析（不做任何修复），失败返回 null
+     */
+    private Itinerary tryParseStrict(String jsonStr) {
         try {
             return objectMapper.readValue(jsonStr, Itinerary.class);
         } catch (Exception e) {
             log.debug("解析行程 JSON 失败: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 转义 JSON 字符串字面量内部的裸控制字符（换行/回车/制表符等）。
+     * <p>Jackson 默认严格模式会拒绝 {@code CTRL-CHAR code 10} 这类未转义字符，
+     * 但 LLM 生成"多行描述"时经常直接换行，导致解析失败。这里按状态机只处理
+     * **双引号内部**的字符：字符串外的缩进/换行一律不动，避免破坏 JSON 结构；
+     * 已转义序列（如 {@code \n}、{@code \"}）整体保留，不会被二次转义。
+     *
+     * @return 转义后的文本；原文无需修改时逐字返回（调用方可据此判断有无改动）
+     */
+    static String escapeRawControlChars(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        StringBuilder sb = new StringBuilder(text.length() + 16);
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (escaped) {
+                // 前一个字符是反斜杠：当前字符属于已有转义序列，原样保留
+                sb.append(c);
+                escaped = false;
+                continue;
+            }
+            if (!inString) {
+                if (c == '"') {
+                    inString = true;
+                }
+                sb.append(c);
+                continue;
+            }
+            if (c == '\\') {
+                sb.append(c);
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                sb.append(c);
+                inString = false;
+                continue;
+            }
+            switch (c) {
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
 
     /**

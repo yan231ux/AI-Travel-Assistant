@@ -52,11 +52,7 @@ __pycache__/
 *.pyc
 _mvn_exit.txt
 _probe_ps.txt
-# 本机验证临时产物（构建/探针输出，不入库）
-backend/_test_out.txt
-backend/_pkg_out.txt
-backend/_probe*.txt
-backend/_health*.txt
-backend/_run*_env.txt
+# 本机验证临时产物（构建/探针输出，不入库）——统一用 backend/_*.txt 兜住，避免每加一次验证就漏一个
+backend/_*.txt
 frontend/dist_verify/
 frontend/dist_old_*/

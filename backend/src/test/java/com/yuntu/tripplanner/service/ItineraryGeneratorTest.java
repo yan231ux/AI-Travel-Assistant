@@ -18,6 +18,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -153,6 +155,52 @@ class ItineraryGeneratorTest {
         assertEquals("成都", itinerary.getDestination());
         // rewrite token 统计进 itinerary
         assertEquals(30, itinerary.getTokenUsage().getRewritePromptTokens());
+    }
+
+    @Test
+    void recoversFromRawNewlineInsideStringValueWithoutLlmRepair() {
+        // 回归 §35：模型在字符串值里塞了裸换行（Jackson 报 CTRL-CHAR code 10），
+        // 旧行为是回传 LLM 修正 → 20s 超时 → 整个请求失败（主生成其实已成功）。
+        // 期望：本地转义即可解析，且**只有 1 次 LLM 调用**（不触发修正步）。
+        String jsonWithRawNewline = "{\n"
+                + "  \"trip_id\": \"trip_成都_2026-05-01\",\n"
+                + "  \"destination\": \"成都\",\n"
+                + "  \"summary\": \"第一天：逛锦里\n第二天：都江堰\",\n"
+                + "  \"days\": [{\n"
+                + "    \"day_index\": 1, \"date\": \"2026-05-01\", \"theme\": \"文化\",\n"
+                + "    \"spots\": [{\"name\": \"武侯祠\", \"description\": \"三国\t文化\", \"estimated_cost\": 50.0}]\n"
+                + "  }]\n"
+                + "}";
+        when(llmClient.chat(anyString())).thenReturn(new LlmClient.LlmResult(jsonWithRawNewline, 100, 50));
+
+        Itinerary itinerary = generator.generate(tripRequest(), new CollectedData());
+
+        assertNotNull(itinerary);
+        assertEquals("成都", itinerary.getDestination());
+        assertTrue(itinerary.getSummary().contains("锦里"), "裸换行应被转义而不是丢掉内容");
+        assertEquals("武侯祠", itinerary.getDays().get(0).getSpots().get(0).getName());
+        // 关键断言：未走修正步（否则会多一次 LLM 调用 + 20s 超时风险）
+        verify(llmClient, times(1)).chat(anyString());
+        assertEquals(0, itinerary.getTokenUsage().getRewritePromptTokens());
+    }
+
+    @Test
+    void escapeRawControlCharsTouchesOnlyStringLiterals() {
+        String raw = "{\n  \"a\": \"x\ny\",\n  \"b\": \"已转义\\n不动\",\n  \"c\": \"引号\\\"后换行\n\",\n  \"d\": 1\n}";
+
+        String out = ItineraryGenerator.escapeRawControlChars(raw);
+
+        // 字符串外的结构缩进/换行保持原样（否则会被当成内容、破坏 JSON 结构）
+        assertTrue(out.startsWith("{\n  \"a\":"));
+        // 字符串内的裸换行被转义
+        assertTrue(out.contains("\"x\\ny\""));
+        // 已有转义序列不被二次转义
+        assertTrue(out.contains("\"已转义\\n不动\""));
+        // 转义引号后的裸换行也必须处理（不能因为引号状态判断错误而漏掉）
+        assertTrue(out.contains("\"引号\\\"后换行\\n\""));
+
+        // 幂等：修复过的文本再跑一次必须逐字不变，否则 tryParse 的"有无改动"判断会永远为 true
+        assertEquals(out, ItineraryGenerator.escapeRawControlChars(out));
     }
 
     @Test
