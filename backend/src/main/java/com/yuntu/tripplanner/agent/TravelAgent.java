@@ -59,6 +59,18 @@ public class TravelAgent {
     private static final String TOOL_AMAP_POI = "amap_poi";
     private static final String TOOL_RAG = "rag_guide";
 
+    /** 自主决策模式取值：每轮由 LLM 决策 + 失败调用回灌自纠（见 LLMConfig.agentMode） */
+    private static final String MODE_AUTONOMOUS = "autonomous";
+
+    /** POI 标准类别桶（与 normalizeCategory 的输出口径一致） */
+    private static final List<String> POI_BUCKETS = List.of("景点", "餐厅", "酒店");
+
+    /**
+     * 单次工具调用的结果。失败项（超时 / 空结果 / 异常）会连同原因回灌给模型，
+     * 让模型下一轮自行换关键词或换工具，而不是拿同一个 query 再打一次。
+     */
+    private record ToolOutcome(String tool, String query, boolean ok, String reason) {}
+
     /**
      * think 计划缓存：同一目的地+偏好下工具计划基本不变，短时复用可省一次 LLM 调用。
      * 内存缓存（计划对象小、无序列化开销），1 小时过期，超容量惰性清理。
@@ -152,6 +164,10 @@ public class TravelAgent {
         try {
             int maxIterations = llmConfig.getMaxIterations() != null ? llmConfig.getMaxIterations() : 3;
 
+            // 跨轮上下文：上一轮的计划 + 每个工具调用的成败，供 autonomous 模式回灌给模型自纠
+            SearchPlan lastPlan = null;
+            List<ToolOutcome> lastOutcomes = List.of();
+
             for (int iteration = 0; iteration < maxIterations; iteration++) {
                 log.info("=== Agent迭代 {} ===", iteration + 1);
 
@@ -160,9 +176,9 @@ public class TravelAgent {
                     return response;
                 }
 
-                // THINK: 制定搜索计划（首轮 LLM 决策，后续轮按缺口补充）
+                // THINK: 制定搜索计划（首轮 LLM 决策；autonomous 模式补轮也由 LLM 决策，legacy 按缺口规则补）
                 callback.onProgress("think", String.format("正在制定搜索计划（第 %d 轮）", iteration + 1));
-                SearchPlan plan = think(request, collectedData, iteration, agentUsage);
+                SearchPlan plan = think(request, collectedData, iteration, lastPlan, lastOutcomes, agentUsage);
 
                 // 记录本轮执行前已收集的数据量，用于判断本轮是否有新增
                 int searchBefore = collectedData.getSearchResults().size();
@@ -170,6 +186,7 @@ public class TravelAgent {
                 int weatherBefore = collectedData.getWeatherData().size();
                 int ragBefore = collectedData.getRagData().size();
 
+                List<ToolOutcome> outcomes = List.of();
                 if (!plan.getToolCalls().isEmpty()) {
                     AgentTraceStep thinkStep = new AgentTraceStep();
                     thinkStep.setStep(response.getTrace().size() + 1);
@@ -194,13 +211,17 @@ public class TravelAgent {
                     actStep.setAction("tool_execution");
 
                     long startTime = System.currentTimeMillis();
-                    executeTools(plan, request, collectedData, errors);
+                    outcomes = executeTools(plan, request, collectedData, errors);
                     long duration = System.currentTimeMillis() - startTime;
+                    logFailedOutcomes(outcomes);
 
                     actStep.setObservation(String.format("工具执行完成，耗时 %d ms", duration));
                     response.getTrace().add(actStep);
                     callback.onStep(actStep);
                 }
+                // 记录本轮上下文：autonomous 模式下下一轮决策要读"上一轮调了什么、哪些失败了"
+                lastPlan = plan;
+                lastOutcomes = outcomes;
 
                 // 本轮是否真的收集到了新数据（无工具可补 / 工具都失败 → false）
                 boolean newDataCollected =
@@ -301,10 +322,15 @@ public class TravelAgent {
 
     /**
      * THINK: 制定搜索计划
-     * 首轮用 LLM 基于工具目录决策（JSON 计划，解析失败用规则兜底）；
-     * 后续轮按数据缺口补充缺失工具。
+     * 首轮用 LLM 基于工具目录决策（JSON 计划，解析失败用规则兜底）。
+     * 后续轮：autonomous 模式由 LLM 看"已获数据 + 失败调用"重新决策下一步；
+     *         legacy 模式按数据缺口用规则补充（改造前行为）。
+     *
+     * <p>注意：本方法只决定"下一步调什么"，<b>不裁决"是否结束"</b>——终止始终由
+     * {@link #reflect} 的规则判定，与改造前一致（避免模型反复判"不够"导致空转）。
      */
-    private SearchPlan think(TripRequest request, CollectedData collectedData, int iteration, TokenUsage usage) {
+    private SearchPlan think(TripRequest request, CollectedData collectedData, int iteration,
+                             SearchPlan previousPlan, List<ToolOutcome> previousOutcomes, TokenUsage usage) {
         SearchPlan plan = new SearchPlan();
 
         if (iteration == 0) {
@@ -313,10 +339,34 @@ public class TravelAgent {
                 plan = buildDefaultPlan(request);
                 plan.setPlanDescription("LLM 计划解析失败，使用默认策略");
             }
-        } else {
-            buildGapFillPlan(request, collectedData, plan);
+            return plan;
         }
+
+        if (isAutonomousMode()) {
+            plan = buildGapFillPlanByLlm(request, collectedData, previousPlan, previousOutcomes, usage);
+            if (!plan.getToolCalls().isEmpty()) {
+                return plan;
+            }
+            // 模型没给出可执行的补充计划（判空 / 调用失败 / 解析失败）→ 回落规则补轮。
+            // 这是护栏而非单纯降级：解析失败与"模型认为够了"在文本层无法可靠区分，
+            // 回落规则可避免数据塌陷，且规则只补"仍为空"的数据源，不会重复采集。
+            SearchPlan fallback = new SearchPlan();
+            buildGapFillPlan(request, collectedData, fallback);
+            if (!fallback.getToolCalls().isEmpty()) {
+                fallback.setPlanDescription(fallback.getPlanDescription() + "（LLM 补轮未产出可用计划，回落规则）");
+            } else {
+                fallback.setPlanDescription("无数据缺口，直接生成");
+            }
+            return fallback;
+        }
+
+        buildGapFillPlan(request, collectedData, plan);
         return plan;
+    }
+
+    /** 是否处于自主决策模式（每轮 LLM 决策 + 失败回灌自纠） */
+    private boolean isAutonomousMode() {
+        return MODE_AUTONOMOUS.equalsIgnoreCase(llmConfig.getAgentMode());
     }
 
     /**
@@ -492,6 +542,187 @@ public class TravelAgent {
             plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
         }
         plan.setPlanDescription(missing.isEmpty() ? "无数据缺口，直接生成" : "补充缺失数据: " + String.join(", ", missing));
+    }
+
+    /**
+     * autonomous 模式补轮：把"上一轮调了什么、哪些失败"回灌给模型，由模型重新决策下一步。
+     * 与首轮决策的两点差别：
+     * 1) 过滤掉"数据源已满足"的调用，不重复采集已经拿到的东西；
+     * 2) 失败调用会带原因出现在提示词里，模型据此换关键词或换工具（失败自纠）。
+     *
+     * @return 可执行的补充计划；空计划 = 模型未给出可用计划（调用失败/判空），由调用方回落规则补轮
+     */
+    private SearchPlan buildGapFillPlanByLlm(TripRequest request, CollectedData collectedData,
+                                             SearchPlan previousPlan, List<ToolOutcome> previousOutcomes,
+                                             TokenUsage usage) {
+        SearchPlan plan = new SearchPlan();
+        try {
+            String prompt = buildGapFillPrompt(request, collectedData, previousPlan, previousOutcomes);
+            LlmClient.LlmResult result = callLlm(prompt, usage);
+            if (result == null) {
+                return plan;
+            }
+            List<SearchPlan.ToolCall> parsed = parseToolCalls(result.content());
+            if (parsed.isEmpty()) {
+                return plan;
+            }
+
+            String destination = request.getDestination();
+            Set<String> picked = new LinkedHashSet<>();
+            for (SearchPlan.ToolCall tc : parsed) {
+                // 已满足的数据源不再重复采集（模型可能仍把它列进来）
+                if (isSourceSatisfied(request, collectedData, tc.getTool())) {
+                    continue;
+                }
+                switch (tc.getTool()) {
+                    case TOOL_WEB_SEARCH -> {
+                        plan.getToolCalls().add(resolveQuery(tc, destination + " 旅行攻略 贴士"));
+                        picked.add(TOOL_WEB_SEARCH);
+                    }
+                    case TOOL_WEATHER -> {
+                        plan.getToolCalls().add(resolveQuery(tc, destination));
+                        picked.add(TOOL_WEATHER);
+                    }
+                    case TOOL_AMAP_POI -> {
+                        // 模型点名了类别就按其点名补；没点名就补齐仍为空的标准类别桶
+                        Set<String> missingBuckets = missingPoiBuckets(collectedData);
+                        Set<String> cats = new LinkedHashSet<>();
+                        if (containsAmapCategory(tc.getQuery())) {
+                            for (String cat : List.of("景点", "餐厅", "酒店", "购物", "交通")) {
+                                if (tc.getQuery().contains(cat)) {
+                                    cats.add(cat);
+                                }
+                            }
+                        }
+                        if (cats.isEmpty()) {
+                            cats.addAll(missingBuckets);
+                        }
+                        cats.retainAll(missingBuckets);
+                        for (String cat : cats) {
+                            plan.getToolCalls().add(createToolCall(TOOL_AMAP_POI, destination + " " + cat));
+                        }
+                        if (!cats.isEmpty()) {
+                            picked.add(TOOL_AMAP_POI);
+                        }
+                    }
+                    case TOOL_RAG -> {
+                        if (ragService.isKnownCity(destination)) {
+                            plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
+                            picked.add(TOOL_RAG);
+                        }
+                    }
+                    // 未知工具名忽略
+                    default -> { /* 忽略未识别工具 */ }
+                }
+            }
+
+            // 与首轮一致的强制不变量：已知城市 + 还没拿到攻略 → 必须补 RAG（哪怕模型漏选）
+            if (ragService.isKnownCity(destination) && collectedData.getRagData().isEmpty()
+                    && !planContainsTool(plan, TOOL_RAG)) {
+                plan.getToolCalls().add(createToolCall(TOOL_RAG, destination));
+                picked.add(TOOL_RAG);
+            }
+
+            if (!plan.getToolCalls().isEmpty()) {
+                plan.setPlanDescription("LLM 基于缺口重新决策: " + String.join(", ", picked));
+            }
+        } catch (Exception e) {
+            log.warn("LLM 补轮决策失败，将回落规则补轮: {}", e.getMessage());
+        }
+        return plan;
+    }
+
+    /**
+     * 构建补轮决策提示词：已获数据 + 上一轮调用明细 + 失败原因，
+     * 要求模型给出"与上次不同关键词"的补充计划（这是失败自纠的落地方式）。
+     */
+    private String buildGapFillPrompt(TripRequest request, CollectedData collectedData,
+                                      SearchPlan previousPlan, List<ToolOutcome> previousOutcomes) {
+        List<String> previousCalls = (previousPlan == null || previousPlan.getToolCalls().isEmpty())
+                ? List.of("（无）")
+                : previousPlan.getToolCalls().stream()
+                        .map(tc -> tc.getTool() + "(\"" + tc.getQuery() + "\")")
+                        .toList();
+
+        List<String> failures = previousOutcomes.stream()
+                .filter(o -> !o.ok())
+                .map(o -> "- " + o.tool() + "(\"" + o.query() + "\")：" + o.reason())
+                .toList();
+        String failureBlock = failures.isEmpty() ? "（无失败调用）" : String.join("\n", failures);
+
+        return String.format("""
+                %s
+
+                用户需求：
+                - 目的地：%s
+                - 日期：%s 至 %s
+                - 偏好：%s
+
+                上一轮你已经调用了：%s
+
+                当前已获得的数据：
+                - 搜索结果：%d 条
+                - POI：%d 类（%s）
+                - 天气：%s
+                - 本地攻略：%s
+
+                以下调用失败或没拿到数据，请换一个更可能成功的关键词，或改用其它工具：
+                %s
+
+                请给出本轮需要补充执行的工具调用，要求：
+                1. 不要重复调用已经成功拿到数据的工具；
+                2. 同一个工具的 query 必须与上次不同（换更宽泛或更具体的关键词）；
+                3. 确实没有可补充时返回 {"tools": []}。
+                只返回如下 JSON，不要包含其他说明文字：
+                {"tools": [{"tool": "web_search", "query": "..."}]}
+                """,
+                buildToolCatalog(),
+                request.getDestination(),
+                request.getStartDate(),
+                request.getEndDate(),
+                request.getPreferences() != null ? request.getPreferences() : "无特别偏好",
+                String.join("、", previousCalls),
+                collectedData.getSearchResults().size(),
+                collectedData.getPoiResults().size(),
+                collectedData.getPoiResults().isEmpty() ? "无" : String.join("/", collectedData.getPoiResults().keySet()),
+                collectedData.getWeatherData().isEmpty() ? "无" : "已获取",
+                collectedData.getRagData().isEmpty() ? "无" : "已获取",
+                failureBlock
+        );
+    }
+
+    /** 当前仍为空的 POI 标准类别桶（景点/餐厅/酒店） */
+    private Set<String> missingPoiBuckets(CollectedData collectedData) {
+        Set<String> missing = new LinkedHashSet<>(POI_BUCKETS);
+        missing.removeAll(collectedData.getPoiResults().keySet());
+        return missing;
+    }
+
+    /** 某数据源是否已满足（已满足 → 补轮不再重复采集该源） */
+    private boolean isSourceSatisfied(TripRequest request, CollectedData collectedData, String tool) {
+        return switch (tool) {
+            case TOOL_WEB_SEARCH -> !collectedData.getSearchResults().isEmpty();
+            case TOOL_WEATHER -> !collectedData.getWeatherData().isEmpty();
+            case TOOL_AMAP_POI -> missingPoiBuckets(collectedData).isEmpty();
+            // 库外城市本就没有本地攻略，不算"缺口"，避免每轮都去补 RAG 空转
+            case TOOL_RAG -> !collectedData.getRagData().isEmpty() || !ragService.isKnownCity(request.getDestination());
+            default -> true;
+        };
+    }
+
+    /** 计划中是否已包含某工具 */
+    private boolean planContainsTool(SearchPlan plan, String tool) {
+        return plan.getToolCalls().stream().anyMatch(tc -> tool.equals(tc.getTool()));
+    }
+
+    /** 失败调用日志：便于观测"失败回灌"是否真的带来了下一轮补充 */
+    private void logFailedOutcomes(List<ToolOutcome> outcomes) {
+        List<String> failed = outcomes.stream().filter(o -> !o.ok())
+                .map(o -> o.tool() + "(\"" + o.query() + "\")=" + o.reason())
+                .toList();
+        if (!failed.isEmpty()) {
+            log.info("本轮失败/空结果的调用 {} 项：{}", failed.size(), String.join(" | ", failed));
+        }
     }
 
     /**
@@ -739,20 +970,29 @@ public class TravelAgent {
 
     /**
      * ACT: 并行执行工具调用（先全部提交，再统一等待）
+     *
+     * @return 每次调用的成败结果（顺序与计划一致；超时未完成的标为失败），
+     *         autonomous 模式据此把失败原因回灌给模型自纠
      */
-    private void executeTools(SearchPlan plan, TripRequest request,
-                              CollectedData collectedData, List<String> errors) {
+    private List<ToolOutcome> executeTools(SearchPlan plan, TripRequest request,
+                                           CollectedData collectedData, List<String> errors) {
         List<CompletableFuture<Void>> futures = new ArrayList<>();
+        // key = tool|query：执行完成后回填，供超时场景逐项判定"哪次调用没回来"
+        Map<String, ToolOutcome> outcomeMap = new ConcurrentHashMap<>();
 
         for (SearchPlan.ToolCall toolCall : plan.getToolCalls()) {
             futures.add(CompletableFuture.runAsync(() -> {
+                ToolOutcome outcome;
                 try {
-                    executeTool(toolCall, request, collectedData);
+                    outcome = executeTool(toolCall, request, collectedData);
                 } catch (Exception e) {
                     log.error("工具执行失败: {}", toolCall.getTool(), e);
                     errors.add(String.format("工具 %s 执行失败: %s", toolCall.getTool(), e.getMessage()));
                     collectedData.getGaps().add(toolCall.getTool());
+                    outcome = new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false,
+                            "执行异常：" + e.getMessage());
                 }
+                outcomeMap.put(outcomeKey(toolCall), outcome);
             }, toolExecutor));
         }
 
@@ -765,20 +1005,35 @@ public class TravelAgent {
         } catch (Exception e) {
             log.warn("部分工具执行超时（{}s），基于已有数据继续", TOOL_EXECUTION_TIMEOUT_SECONDS);
         }
+
+        List<ToolOutcome> outcomes = new ArrayList<>();
+        for (SearchPlan.ToolCall toolCall : plan.getToolCalls()) {
+            ToolOutcome outcome = outcomeMap.get(outcomeKey(toolCall));
+            outcomes.add(outcome != null ? outcome
+                    : new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false,
+                            String.format("超时未完成（>%ds）", TOOL_EXECUTION_TIMEOUT_SECONDS)));
+        }
+        return outcomes;
+    }
+
+    private String outcomeKey(SearchPlan.ToolCall toolCall) {
+        return toolCall.getTool() + "|" + toolCall.getQuery();
     }
 
     /**
-     * 执行单个工具
+     * 执行单个工具，返回本次调用是否真的拿到了数据（失败原因供回灌自纠使用）
      */
-    private void executeTool(SearchPlan.ToolCall toolCall, TripRequest request,
-                             CollectedData collectedData) {
+    private ToolOutcome executeTool(SearchPlan.ToolCall toolCall, TripRequest request,
+                                    CollectedData collectedData) {
 
-        switch (toolCall.getTool()) {
+        return switch (toolCall.getTool()) {
             case TOOL_WEB_SEARCH -> {
                 String searchResult = bingSearchClient.searchAsText(toolCall.getQuery());
                 if (searchResult != null && !searchResult.isEmpty()) {
                     collectedData.getSearchResults().put(toolCall.getQuery(), searchResult);
+                    yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), true, "已获取搜索结果");
                 }
+                yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false, "搜索返回空");
             }
             case TOOL_WEATHER -> {
                 long days = ChronoUnit.DAYS.between(request.getStartDate(), request.getEndDate()) + 1;
@@ -788,7 +1043,9 @@ public class TravelAgent {
                         request.getDestination(), request.getStartDate(), endDate);
                 if (weather != null && weather.getDays() != null && !weather.getDays().isEmpty()) {
                     collectedData.getWeatherData().put("forecast", weather);
+                    yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), true, "已获取天气预报");
                 }
+                yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false, "无天气预报数据");
             }
             case TOOL_AMAP_POI -> {
                 String[] parts = toolCall.getQuery().split(" ", 2);
@@ -819,17 +1076,26 @@ public class TravelAgent {
                     } else {
                         collectedData.getPoiResults().put(category, pois);
                     }
+                    yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), true,
+                            "返回 " + pois.size() + " 个 POI");
                 }
+                yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false, "高德未返回 POI");
             }
             case TOOL_RAG -> {
                 List<String> ragChunks = ragService.search(request.getDestination(),
                         buildRagQuery(request), 5, collectedData.getTokenUsage(), extractTags(request));
                 if (!ragChunks.isEmpty()) {
                     collectedData.getRagData().put("guide", String.join("\n\n", ragChunks));
+                    yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), true,
+                            "命中 " + ragChunks.size() + " 个攻略片段");
                 }
+                yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false, "本地攻略未命中");
             }
-            default -> log.warn("未知工具: {}", toolCall.getTool());
-        }
+            default -> {
+                log.warn("未知工具: {}", toolCall.getTool());
+                yield new ToolOutcome(toolCall.getTool(), toolCall.getQuery(), false, "未知工具");
+            }
+        };
     }
 
     /**

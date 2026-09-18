@@ -81,6 +81,11 @@ llm:
   # 否则 HTTP 读超时会更早把生成调用掐断并触发无意义重试
   timeout-seconds: 180
   max-iterations: 3
+  # Agent 决策模式：
+  #   legacy（默认）= 首轮 LLM 决策 + 后续轮按数据缺口用规则补轮（改造前行为，可复现、成本可控）
+  #   autonomous    = 每轮都由 LLM 看已获数据决定下一步，并把失败调用（超时/空结果）回灌给模型自纠
+  # 默认 legacy 以保证既有行为与测试基线不变；切 autonomous 需配套跑 probe_generation_smoke.py
+  agent-mode: ${LLM_AGENT_MODE:legacy}
 
 # Amap Configuration
 amap:

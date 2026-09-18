@@ -178,6 +178,8 @@ llm:
 | 改动 2 原生 tool calling | 模型输出非法 JSON 导致静默兜底、白烧 token | think 阶段 token 数、think 阶段耗时、`buildDefaultPlan()` 触发次数 | 同一批请求跑两遍对比 |
 | 改动 3 失败回灌 | 工具超时/空结果时数据直接缺失，行程质量塌陷 | 工具失败后仍获得有效数据的比例、单次生成失败率 | 注入一个必失败的 query 做对照 |
 
+> ⚠️ **"成本更低"这条不要笼统宣传**。批次 1 实测显示：在有缺口的场景里，autonomous 的 think token 是 legacy 的 **3.3 倍**（详见第十节）。它买到的是"更聪明地绕开失败"，不是"更便宜"。
+
 采集方式：现有 trace（`AgentTraceStep`）已记录每轮 `toolCalls` 与 observation，
 `TokenUsage` 已按 planner/rewrite/embedding 分项累计，**无需新增埋点即可统计**。
 
@@ -231,3 +233,49 @@ C. autonomous + 复用 —— B 的基础上，二次生成复用存档计划（
 3. **失败自纠**——"某个数据源没返回或者超时了，模型下一轮能看到失败原因，自己换个关键词再试，而不是直接放弃或者重复打同一个请求。"
 
 **注意**：不要再说"模型自主选择调用哪些工具"——改造前这句话不成立，改造后也只在多轮决策与自纠这个意义上成立。
+
+---
+
+## 十、批次 1 实测结果（2026-09-18，已实施完成）
+
+### 实施内容
+
+| 项 | 落地 |
+|---|---|
+| 开关 | `LLMConfig.agentMode` + `application.yml: llm.agent-mode: ${LLM_AGENT_MODE:legacy}`，**默认 legacy** |
+| 改动 1 每轮 LLM 决策 | `TravelAgent.think()` 在 `iteration>0` 且 autonomous 时走 `buildGapFillPlanByLlm()`；legacy 仍走 `buildGapFillPlan()` 规则 |
+| 改动 3 失败回灌 | 工具调用返回 `ToolOutcome(tool, query, ok, reason)`；`buildGapFillPrompt()` 把"上一轮调用明细 + 失败原因"拼进提示词，并要求换关键词 |
+| 不重复采集 | `isSourceSatisfied()` 过滤已满足的数据源；`missingPoiBuckets()` 按标准桶精确补缺口 |
+| 护栏 | LLM 补轮不可用 → 回落规则补轮；终止判定仍由 `reflect()` 规则裁决 |
+| 未做（批次 2） | 原生 tool calling（`LlmClient.chatWithTools`）——需先验证 qwen3-max 的 `tools` 支持 |
+
+### 验证
+
+- `mvn.cmd -o clean test`：**616 用例全绿**（610 原有 + P0 修复 2 + 本次新增 4），BUILD SUCCESS。
+- 新增单测 `TravelAgentAutonomousModeTest`（4 例）：失败原因确实进提示词、已满足数据源被过滤、LLM 不可用回落规则、legacy 补轮不咨询 LLM。
+- 新增对比探针 `backend/probe_react_autonomy.py`：8080(legacy) vs 8081(autonomous)，同一请求（北京，日期故意超出天气预报窗口以制造确定性缺口）。
+
+### 实测对比
+
+| 指标 | legacy | autonomous |
+|---|---|---|
+| `plan_search` 轮数 | 3 | 3 |
+| 第 2 轮 | 规则：`web_search("北京 旅行攻略 贴士")` + `weather_forecast("北京")` —— **原样重试失败接口** | LLM：`web_search("北京 10月中旬 天气预报 2026")` —— **改走搜索兜天气** |
+| 第 3 轮 | 规则：`weather_forecast("北京")`（第三次撞同一面墙） | LLM：`weather_forecast("北京")` |
+| think token | prompt 475 / completion 69 | prompt 1580 / completion 117 |
+| 总耗时 | 97.4s | 97.6s |
+| 结果 | success，2 天行程 | success，3 天行程 |
+
+### 结论（诚实版）
+
+1. **真实买到的收益是"失败自纠"**：legacy 会拿同一个 query 撞同一面墙三次；autonomous 第 2 轮就换了一条路（用搜索兜天气信息）。这是可演示、可复现的差异。
+2. **代价是 think token 上升**（本次 3.3 倍）：有缺口的场景里每轮补轮都多一次模型往返。总耗时几乎不变（被约 90s 的行程生成淹没）。
+3. **"覆盖更广 / 成本更低 / 成功率更高"三条里，"成本更低"目前不成立**，不要这么说；另两条需要在更多场景采样后才能给结论（当前样本 n=1）。
+4. **默认仍为 legacy**，线上行为零变化；切 autonomous 只需 `LLM_AGENT_MODE=autonomous`。
+5. **行程天数 2 vs 3 不可作为质量对比**——两者是同一次 LLM 生成的不同采样，样本量不足以归因。
+
+### 下一步（待确认）
+
+- **批次 2**：原生 tool calling。风险点是 `LlmClient` 目前不支持 `tools` 参数，且既有测试用 `when(llmClient.chat(anyString()))` 打桩 → 新增 `chatWithTools` 时**必须同样加开关**，否则既有用例的桩会失效返回 null。动手前先跑探针确认 qwen3-max 支持 `function calling`。
+- **可选调优（若嫌 token 贵）**：把 autonomous 的补轮限制为"仅第一次补轮由 LLM 决策，其后回落规则"，用 `max-iterations=3` 的既有上限兜住。需要先明确是否接受"少一次自纠机会"。
+

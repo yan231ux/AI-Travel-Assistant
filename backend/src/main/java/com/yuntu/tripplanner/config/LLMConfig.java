@@ -38,6 +38,15 @@ public class LLMConfig {
     private Integer maxIterations = 3;
 
     /**
+     * Agent 决策模式：
+     * - legacy（默认）：首轮 LLM 决策 + 后续轮规则按缺口补轮（改造前行为，保持可复现与成本可控）
+     * - autonomous：每轮都由 LLM 看已获数据决定下一步，并把失败调用回灌让模型自纠
+     *
+     * 默认 legacy：既有 612 个用例与线上行为完全不变；切 autonomous 后新链路单独用例覆盖。
+     */
+    private String agentMode = "legacy";
+
+    /**
      * 文本向量化模型（RAG 用）
      */
     private String embeddingModel = "text-embedding-v3";
