@@ -1289,4 +1289,137 @@ class ItineraryValidatorTest {
         long n = it.getTips() == null ? 0 : it.getTips().stream().filter(t -> t.startsWith("住宿：")).count();
         assertEquals(1, n, "系统住宿事实行不能每校验一次就追加一条");
     }
+
+    /* ================= 生成后结构对齐 / 档次落地 / 摘要口径 / 预算诚实说明 =================
+     * 对应 GENERATION_QUALITY_PLAN.md 第一批修复 A/B/C/D，逐一锁死回归。
+     * ========================================================================= */
+
+    /** 构造带出行日期跨度的请求（syncStructure 依赖日期算期望天数） */
+    private TripRequest datedRequest(String dest, String start, String end) {
+        TripRequest r = request(dest);
+        r.setStartDate(java.time.LocalDate.parse(start));
+        r.setEndDate(java.time.LocalDate.parse(end));
+        return r;
+    }
+
+    /** A：请求 5 天，模型只输出 3 天 → 天数补齐到 5，day_index 连续，trip_days=5 */
+    @Test
+    void syncStructure_padsMissingDaysToMatchDateSpan() {
+        TripRequest req = datedRequest("三亚", "2026-09-18", "2026-09-22"); // 5 天
+        req.setBudget(8000.0);
+
+        DayPlan d1 = day(1);
+        d1.setDate("2026-09-18");
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setHotel(hotel("三亚湾海景假日酒店", "舒适型", 320.0));
+        DayPlan d2 = day(2);
+        d2.setDate("2026-09-19");
+        d2.getSpots().add(spot("鹿回头风景区", "鹿岭路"));
+        d2.setHotel(hotel("三亚湾海景假日酒店", "舒适型", 320.0));
+        DayPlan d3 = day(3);
+        d3.setDate("2026-09-20");
+        d3.getSpots().add(spot("大东海旅游区", "吉阳区"));
+        d3.setHotel(hotel("三亚湾海景假日酒店", "舒适型", 0.0)); // 末晚退房不计费
+
+        Itinerary it = new Itinerary();
+        it.setDestination("三亚");
+        it.setDays(new ArrayList<>(List.of(d1, d2, d3)));
+        it.setSourceNotes(new ArrayList<>());
+
+        Map<String, Object> poi = Map.of("景点", List.of(
+                Map.of("name", "蜈支洲岛", "address", "海棠区"),
+                Map.of("name", "天涯海角", "address", "天涯区"),
+                Map.of("name", "南山文化旅游区", "address", "崖州区")));
+        validator.validateAndRepair(it, req, collectedWithPoi(poi, null));
+
+        assertEquals(5, it.getDays().size(), "请求 5 天必须补齐到 5 天");
+        assertEquals(5, it.getTripDays(), "trip_days 必须与真实天数一致，不能再「页面 5 天正文 3 天」");
+        for (int i = 0; i < 5; i++) {
+            assertEquals(i + 1, it.getDays().get(i).getDayIndex(), "day_index 必须 1..5 连续");
+        }
+        // 补齐的两天应从候选池拿到真实景点（完整日 ≥2 下限）
+        assertTrue(it.getDays().get(3).getSpots().size() >= 2, "补齐的完整日应有 ≥2 景点");
+    }
+
+    /** A：请求天数少于模型输出 → 截断多余天数 */
+    @Test
+    void syncStructure_truncatesExtraDays() {
+        TripRequest req = datedRequest("三亚", "2026-09-18", "2026-09-19"); // 2 天
+        DayPlan d1 = day(1);
+        d1.setDate("2026-09-18");
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        DayPlan d2 = day(2);
+        d2.setDate("2026-09-19");
+        d2.getSpots().add(spot("鹿回头风景区", "鹿岭路"));
+        DayPlan d3 = day(3);
+        d3.setDate("2026-09-20");
+        d3.getSpots().add(spot("大东海旅游区", "吉阳区"));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        it.setDays(new ArrayList<>(List.of(d1, d2, d3)));
+
+        validator.validateAndRepair(it, req, collectedWithPoi(Map.of(), null));
+
+        assertEquals(2, it.getDays().size(), "请求 2 天应截断多余的 1 天");
+        assertEquals(2, it.getTripDays());
+    }
+
+    /** B：用户选高档型，LLM 拿经济型公寓交差 → 换候选池里的真实酒店并配高档价 */
+    @Test
+    void upgradeHotelTier_replacesEconomyApartmentWithRealHotel() {
+        TripRequest req = request("三亚");
+        req.setHotelLevel("高档型");
+        req.setBudget(8000.0);
+
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setHotel(hotel("三亚湾海忆时光海景公寓", "经济型", 200.0));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        Map<String, Object> poi = Map.of("酒店", List.of(
+                Map.of("name", "三亚湾海景度假酒店", "address", "三亚湾路"),
+                Map.of("name", "三亚某青年旅舍", "address", "市区")));
+        validator.validateAndRepair(it, req, collectedWithPoi(poi, null));
+
+        assertEquals("三亚湾海景度假酒店", d1.getHotel().getName(),
+                "高档型不能拿经济公寓交差，应换成候选池里的真实酒店");
+        assertEquals("高档型", d1.getHotel().getLevel(), "档次应落到用户所选的高档型");
+        assertTrue(d1.getHotel().getEstimatedCost() >= 400, "高档酒店价应在高档区间（≥400）");
+        assertFalse(d1.getHotel().getName().contains("公寓"), "不应再是公寓");
+    }
+
+    /** C：摘要写了「5 天·精选高档酒店」，正文实为 3 天经济型 → 清除过期断言并校正天数 */
+    @Test
+    void cleanStaleSummaryClaims_scrubsStaleLodgingAndDayCount() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setHotel(hotel("三亚湾海景假日酒店", "经济型", 200.0));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        it.setSummary("5天三亚深度游，精选高档酒店，畅游椰风海韵与热带风情。");
+
+        validator.validateAndRepair(it, request("三亚"), collectedWithPoi(Map.of(), null));
+
+        assertFalse(it.getSummary().contains("高档酒店"),
+                "摘要里与正文矛盾的住宿档次断言必须清除");
+        assertFalse(it.getSummary().contains("5天"),
+                "摘要里的天数必须校正为真实天数（1 天）");
+    }
+
+    /** D：预算只用 16% → 加「预算没花出去」的诚实说明，而不是静默 */
+    @Test
+    void checkBudgetUnderuse_addsHonestNote() {
+        TripRequest req = request("三亚");
+        req.setBudget(8000.0);
+
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("椰梦长廊", "天涯区"));
+        d1.setHotel(hotel("三亚湾海景假日酒店", "经济型", 200.0));
+
+        Itinerary it = itineraryOf(d1, "三亚");
+        validator.validateAndRepair(it, req, collectedWithPoi(Map.of(), null));
+
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("占您预算")),
+                "预算严重没用满时必须诚实说明，不能一声不吭让用户以为价格在搞笑");
+    }
 }

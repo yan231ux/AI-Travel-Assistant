@@ -98,6 +98,22 @@ public class ItineraryValidator {
     private static final double BUDGET_LOW_RATIO = 0.3;
     private static final double BUDGET_HIGH_RATIO = 1.5;
 
+    /** 预算使用率低于此值 → 诚实说明"预算没用出去"的原因（防用户以为系统算错钱） */
+    private static final double BUDGET_UNDERUSE_RATIO = 0.6;
+
+    /** 每日景点数下限：完整游玩日 ≥2、返程日（最后一天）≥1。
+     *  仅当候选池还有未使用的真实景点时才补（确定性、零 token），
+     *  避免"5 天只有 4 个景点"的空心行程。 */
+    private static final int MIN_SPOTS_FULL_DAY = 2;
+    private static final int MIN_SPOTS_LAST_DAY = 1;
+
+    /** 住宿档次 → 每晚参考价（与 {@link #hotelLevelForPrice} 的价位口径自洽）。
+     *  高德 POI 不提供房价，仅在"用户要高档型/豪华型、而 LLM 选了经济型公寓"、
+     *  且候选池里确实存在非经济型酒店时，按用户所选档次给出估价——
+     *  保证同一页面里"档次"与"价格"不互相打架。 */
+    private static final Map<String, Double> TIER_PER_NIGHT = Map.of(
+            "舒适型", 380.0, "高档型", 520.0, "豪华型", 760.0);
+
     /** 酒店位置合理性阈值(km)：酒店到"所有"景点距离均超过此值 → 视为跨片区，警示 */
     private static final double HOTEL_FAR_KM = 30.0;
 
@@ -118,6 +134,11 @@ public class ItineraryValidator {
         if (itinerary == null || itinerary.getDays() == null || itinerary.getDays().isEmpty()) {
             return;
         }
+        // 0.0 行程骨架对齐（天数 = 出行日期跨度 / 每日景点数下限 / trip_days 对齐）。
+        //     幂等：正常流程已在生成器"补图片坐标之前"调用过一次（补入的景点才能拿到图片与坐标），
+        //     这里再兜一次，保证任何单独调用校验层的路径同样满足结构约束。
+        syncStructure(itinerary, request, collectedData);
+
         List<String> poiSpotNames = collectPoiNames(collectedData, "景点");
         List<String> poiMealNames = collectPoiNames(collectedData, "餐厅");
         String ragText = collectedData.getRagData() == null
@@ -341,6 +362,11 @@ public class ItineraryValidator {
         // 6. 酒店晚数自检：行程天数 vs 有价格的酒店天数，明显少算晚数时给出警示
         checkHotelNights(itinerary);
 
+        // 6.05 住宿档次落地：用户选高档型/豪华型、LLM 却拿经济型公寓交差时，先在候选酒店池里
+        //      换成与档次相符的真实酒店（价格按所选档次估价，档次由价格反推，保证口径自洽）。
+        //      放在 6.1 之前——能换就不该降级；池里确实没有，才由 6.1 按实际降级并如实告知。
+        upgradeHotelTier(itinerary, request, collectedData);
+
         // 6.1 酒店档次与类型一致性：高档型不能住青旅（通用校验）
         validateHotelLevelMatch(itinerary);
 
@@ -348,6 +374,15 @@ public class ItineraryValidator {
         //     4.5/5/6.1 改动酒店数据之后变成过期值（实测同一页面出现「780 元/晚、占 39%」
         //     与「¥200/晚、10%」两套数字）。凡是金额/档次断言一律清掉，改由系统按最终数据补一条。
         cleanStaleLodgingClaims(itinerary, request);
+
+        // 6.25 摘要口径收口：summary 同样是 LLM 直写、前端原样渲染（Result.vue），
+        //      4.5/6.1 改过住宿档次、结构对齐改过天数后，摘要里的"5 天·精选高档酒店"就成了过期口径
+        //      （实测：摘要写 5 天高档，正文 3 天 ¥200/晚经济型）→ 删过期住宿断言 + 校正天数/晚数。
+        cleanStaleSummaryClaims(itinerary);
+
+        // 6.3 预算"没花出去"的诚实说明（与第 5 步的超支提示对称）。
+        //      放在 6.05 之后，用最终酒店价判断，避免"刚把酒店换成高档型、却仍按旧价说预算没用满"。
+        checkBudgetUnderuse(itinerary, request);
 
         // 7. 景点描述交叉检测：描述中出现其他地点名 → 警示（防 LLM 张冠李戴）
         checkDescriptionMismatch(itinerary, poiSpotNames, poiAddressMap);
@@ -370,6 +405,400 @@ public class ItineraryValidator {
         // 12. 酒店位置合理性：酒店经纬度与景点集群差距过大（跨区/跨县）→ 警示，
         //     避免"住海边却玩城区"这类行程内地理不自洽（惠州实测：酒店选在惠东巽寮湾，景点全在惠城区/博罗）
         checkHotelLocation(itinerary);
+    }
+
+    // ==================== 生成后结构对齐：天数 / 每日景点密度 / 住宿档次 / 摘要口径 ====================
+
+    /**
+     * 行程骨架对齐（确定性修复、零 token）。
+     *
+     * <p>实测问题：用户请求 5 天（09-18~09-22）、2 人、¥8000、高档型，模型只输出 <b>3 天 4 个景点</b>，
+     * 而 {@code trip_days} 仍按日期跨度记成 5 → 页面写"5 天"、正文只有 3 天，预算也因此只用到 16%。
+     * 根因是"天数/密度只是提示词里的一句要求，生成后没人核对"。
+     *
+     * <p>三步修复：
+     * <ol>
+     *   <li><b>天数与出行日期跨度对齐</b>：多了截断，少了用候选池补齐
+     *       （住宿沿前一晚续住、末晚退房不计费，与既有"最后一天 hotel 价格为 0"口径一致）；</li>
+     *   <li><b>每日景点数下限</b>（完整游玩日 ≥2、返程日 ≥1）：候选池有未使用的真实景点才补，不硬凑；</li>
+     *   <li><b>重排 day_index / date 并把 trip_days 写成真实天数</b>——根治"页面 5 天 / 正文 3 天"打架。</li>
+     * </ol>
+     *
+     * <p>⚠️ 必须在 {@code MapEnrichmentService} 补图片/坐标<b>之前</b>调用，否则补入的景点拿不到图片与坐标。
+     * <p>日期缺失（如单测直接构造请求）时不做任何改动。
+     */
+    public void syncStructure(Itinerary itinerary, TripRequest request, CollectedData collectedData) {
+        if (itinerary == null || request == null || itinerary.getDays() == null
+                || itinerary.getDays().isEmpty()) {
+            return;
+        }
+        int expected = expectedDays(request);
+        if (expected <= 0) {
+            return;
+        }
+        List<DayPlan> days = new ArrayList<>(itinerary.getDays());
+        Set<String> used = new HashSet<>();
+        for (DayPlan d : days) {
+            collectSpotNames(d, used);
+        }
+        List<String> spotPool = collectedData == null
+                ? new ArrayList<>() : collectPoiNames(collectedData, "景点");
+        // 历史去过的景点不作为补位来源（第 1.7 步会把它们再换一次，这里提前排除，避免补完又被换）
+        if (collectedData != null && !spotPool.isEmpty()) {
+            Set<String> visited = visitedSpotNames(collectedData);
+            if (visited != null && !visited.isEmpty()) {
+                spotPool.removeIf(n -> n == null || matchesAny(visited, n));
+            }
+        }
+        Map<String, String> poiAddressMap = collectedData == null
+                ? Map.of() : collectPoiAddressMap(collectedData);
+
+        // ① 天数多于请求 → 截断（保留前 N 天）
+        if (days.size() > expected) {
+            log.warn("结构对齐：行程 {} 天多于请求 {} 天，截断多余天数", days.size(), expected);
+            days = new ArrayList<>(days.subList(0, expected));
+        }
+
+        // ② 天数少于请求 → 用候选池补齐（候选不够也把天数补齐，保证日期与请求一致）
+        int modelledDays = days.size();
+        for (int i = days.size(); i < expected; i++) {
+            DayPlan nd = new DayPlan();
+            nd.setDayIndex(i + 1);
+            nd.setDate(dayDate(days, request, i));
+            nd.setTheme("自由活动与深度体验");
+            nd.setSpots(new ArrayList<>());
+            nd.setMeals(new ArrayList<>());
+            nd.setTransport(new ArrayList<>());
+            nd.setNotes(new ArrayList<>());
+            DayPlan prev = days.isEmpty() ? null : days.get(days.size() - 1);
+            if (prev != null && prev.getHotel() != null) {
+                nd.setHotel(copyHotel(prev.getHotel(), i == expected - 1));
+            }
+            fillDaySpots(nd, spotPool, used, poiAddressMap, MIN_SPOTS_FULL_DAY);
+            List<String> names = spotNamesOf(nd);
+            nd.getNotes().add(names.isEmpty()
+                    ? "🔧 已按您的出行日期补齐本日（候选池中暂无更多未占用景点，可自由安排）"
+                    : "🔧 已按您的出行日期补齐本日：" + String.join("、", names));
+            days.add(nd);
+        }
+        int addedDays = days.size() - modelledDays;
+        if (addedDays > 0) {
+            log.warn("结构对齐：请求 {} 天、模型只输出 {} 天，已按候选池补齐 {} 天",
+                    expected, modelledDays, addedDays);
+            addSourceNote(itinerary, String.format(
+                    "🔧 原计划只排了 %d 天，系统已按您的出行日期（%d 天）补齐为 %d 天",
+                    modelledDays, expected, days.size()));
+        }
+
+        // ③ 每日景点数下限（完整游玩日 ≥2、返程日 ≥1）
+        int topped = 0;
+        for (int i = 0; i < days.size(); i++) {
+            DayPlan d = days.get(i);
+            int floor = (i == days.size() - 1) ? MIN_SPOTS_LAST_DAY : MIN_SPOTS_FULL_DAY;
+            int before = d.getSpots() == null ? 0 : d.getSpots().size();
+            if (before >= floor) {
+                continue;
+            }
+            fillDaySpots(d, spotPool, used, poiAddressMap, floor);
+            int after = d.getSpots() == null ? 0 : d.getSpots().size();
+            if (after > before) {
+                topped++;
+                if (d.getNotes() == null) {
+                    d.setNotes(new ArrayList<>());
+                }
+                d.getNotes().add("🔧 已补充真实景点：" + String.join("、", addedSpotNames(d, before))
+                        + "（原安排偏少，已按候选池充实当天内容）");
+            }
+        }
+        if (topped > 0) {
+            log.info("结构对齐：{} 天因景点数少于下限，已用候选池补充", topped);
+        }
+
+        // ④ 序号 / 日期重排 + trip_days 与真实天数对齐
+        for (int i = 0; i < days.size(); i++) {
+            DayPlan d = days.get(i);
+            d.setDayIndex(i + 1);
+            if (d.getDate() == null || d.getDate().isBlank()) {
+                d.setDate(dayDate(days, request, i));
+            }
+        }
+        itinerary.setDays(days);
+        itinerary.setTripDays(days.size());
+
+        if (spotPool.isEmpty() && days.size() < expected) {
+            addSourceNote(itinerary, String.format(
+                    "⚠️ 候选景点不足以补满 %d 天，当前安排 %d 天，请核实出行日期或更换目的地",
+                    expected, days.size()));
+        }
+    }
+
+    /** 请求的出行天数（首尾日期差 + 1，钳制在 1..31）；日期缺失返回 0（不做天数对齐） */
+    private int expectedDays(TripRequest request) {
+        if (request == null || request.getStartDate() == null || request.getEndDate() == null) {
+            return 0;
+        }
+        long span = java.time.temporal.ChronoUnit.DAYS
+                .between(request.getStartDate(), request.getEndDate()) + 1;
+        return (int) Math.min(Math.max(span, 1), 31);
+    }
+
+    /** 第 i 天（0 基）的日期：优先沿用前一天 +1，异常时用出行开始日期推算 */
+    private String dayDate(List<DayPlan> days, TripRequest request, int i) {
+        if (days != null && !days.isEmpty()) {
+            String last = days.get(days.size() - 1).getDate();
+            if (last != null && !last.isBlank()) {
+                try {
+                    return java.time.LocalDate.parse(last).plusDays(1).toString();
+                } catch (Exception ignored) {
+                    // 日期格式异常 → 回退用开始日期推算
+                }
+            }
+        }
+        return request != null && request.getStartDate() != null
+                ? request.getStartDate().plusDays(i).toString() : null;
+    }
+
+    /** 复制住宿（同一家酒店续住）；lastNight=true 表示末晚退房、不计住宿费 */
+    private HotelItem copyHotel(HotelItem src, boolean lastNight) {
+        HotelItem h = new HotelItem();
+        h.setName(src.getName());
+        h.setLevel(src.getLevel());
+        h.setAddress(src.getAddress());
+        h.setLocation(src.getLocation());
+        h.setLatitude(src.getLatitude());
+        h.setLongitude(src.getLongitude());
+        h.setEstimatedCost(lastNight ? 0.0 : src.getEstimatedCost());
+        return h;
+    }
+
+    private void collectSpotNames(DayPlan day, Set<String> used) {
+        if (day == null || day.getSpots() == null) {
+            return;
+        }
+        for (SpotItem s : day.getSpots()) {
+            if (s != null && s.getName() != null) {
+                used.add(normalize(s.getName()));
+            }
+        }
+    }
+
+    private List<String> spotNamesOf(DayPlan day) {
+        List<String> names = new ArrayList<>();
+        if (day == null || day.getSpots() == null) {
+            return names;
+        }
+        for (SpotItem s : day.getSpots()) {
+            if (s != null && s.getName() != null) {
+                names.add(s.getName());
+            }
+        }
+        return names;
+    }
+
+    private List<String> addedSpotNames(DayPlan day, int fromIndex) {
+        List<String> names = new ArrayList<>();
+        if (day == null || day.getSpots() == null) {
+            return names;
+        }
+        for (int i = fromIndex; i < day.getSpots().size(); i++) {
+            SpotItem s = day.getSpots().get(i);
+            if (s != null && s.getName() != null) {
+                names.add(s.getName());
+            }
+        }
+        return names;
+    }
+
+    /** 从候选池把某天景点补到 target 个（只用未占用项；池空即停，不凑数） */
+    private void fillDaySpots(DayPlan day, List<String> spotPool, Set<String> used,
+                              Map<String, String> poiAddressMap, int target) {
+        if (day == null) {
+            return;
+        }
+        List<SpotItem> spots = day.getSpots() == null
+                ? new ArrayList<>() : new ArrayList<>(day.getSpots());
+        day.setSpots(spots);
+        while (spots.size() < target) {
+            String pick = popFree(spotPool, used);
+            if (pick == null) {
+                return;
+            }
+            SpotItem s = new SpotItem();
+            s.setName(pick);
+            s.setSource("高德POI");
+            String addr = poiAddressMap == null ? null : bestPoiAddress(poiAddressMap, pick);
+            if (addr != null) {
+                s.setAddress(addr);
+            }
+            spots.add(s);
+            used.add(normalize(pick));
+        }
+    }
+
+    /**
+     * 住宿档次落地（生成后）：用户选的是高档型/豪华型，而 LLM 拿经济型公寓/青旅来交差时，
+     * <b>先在候选酒店池里换一家与档次相符的真实酒店</b>；池里确实没有才走 6.1 的"按实际降级 + 诚实告警"。
+     *
+     * <p>实测：三亚 5 天 ¥8000 明确选了"高档型"，结果住「三亚湾海忆时光海景公寓」——
+     * 同一页面同时写着"精选高档酒店"与"¥200/晚 经济型"。高德 POI 不含房价，
+     * 因此换店后按用户所选档次的参考价估价，并用 {@link #hotelLevelForPrice} 反推档次，
+     * 保证<b>价格与档次永远自洽</b>（不会再出现"高档型 ¥200/晚"这种自相矛盾）。
+     */
+    private void upgradeHotelTier(Itinerary itinerary, TripRequest request, CollectedData collectedData) {
+        if (itinerary == null || itinerary.getDays() == null || request == null) {
+            return;
+        }
+        String tier = request.getHotelLevel();
+        if (tier == null || tier.isBlank() || "经济型".equals(tier)) {
+            return;
+        }
+        String currentName = null;
+        Set<String> usedHotels = new HashSet<>();
+        for (DayPlan d : itinerary.getDays()) {
+            if (d.getHotel() != null && d.getHotel().getName() != null) {
+                usedHotels.add(normalize(d.getHotel().getName()));
+                if (currentName == null) {
+                    currentName = d.getHotel().getName();
+                }
+            }
+        }
+        if (currentName == null
+                || ECONOMY_LODGING_KEYWORDS.stream().noneMatch(currentName::contains)) {
+            return;
+        }
+        List<String> pool = collectPoiNames(collectedData, "酒店");
+        if (pool.isEmpty()) {
+            return;
+        }
+        String replacement = null;
+        for (String c : pool) {
+            if (c == null || c.isBlank() || samePlace(c, currentName)
+                    || ECONOMY_LODGING_KEYWORDS.stream().anyMatch(c::contains)
+                    || matchesAny(usedHotels, c)) {
+                continue;
+            }
+            replacement = c;
+            break;
+        }
+        if (replacement == null) {
+            // 候选池里没有与档次相符的酒店 → 交给 6.1 如实降级并说明
+            return;
+        }
+        double price = Math.min(perNightCap(request, itinerary.getDays().size()),
+                TIER_PER_NIGHT.getOrDefault(tier, 400.0));
+        String level = hotelLevelForPrice(price);
+        Map<String, String> poiAddressMap = collectPoiAddressMap(collectedData);
+        for (DayPlan d : itinerary.getDays()) {
+            HotelItem h = d.getHotel();
+            if (h == null || h.getName() == null || !samePlace(h.getName(), currentName)) {
+                continue;
+            }
+            h.setName(replacement);
+            String addr = bestPoiAddress(poiAddressMap, replacement);
+            if (addr != null) {
+                h.setLocation(addr);
+                h.setAddress(addr);
+            }
+            h.setLevel(level);
+            if (h.getEstimatedCost() != null && h.getEstimatedCost() > 0) {
+                h.setEstimatedCost(round2(price));
+            }
+        }
+        addSourceNote(itinerary, String.format(
+                "🔧 您选择「%s」，但原方案安排的是经济型住宿「%s」，系统已改为候选池中的「%s」（约 %.0f 元/晚）",
+                tier, currentName, replacement, price));
+        log.warn("住宿档次落地：{}（原经济店型）-> {}（{}，约 {}/晚）", currentName, replacement, level, price);
+    }
+
+    /** 每晚住宿价上限（与生成提示词同一口径：总住宿 ≤ 总预算 45%） */
+    private double perNightCap(TripRequest request, int days) {
+        double budget = request.getBudget() != null && request.getBudget() > 0
+                ? request.getBudget() : 5000;
+        long nights = Math.max(1, days - 1);
+        return budget * 0.45 / nights;
+    }
+
+    /**
+     * 摘要口径收口：{@code summary} 由 LLM 直接撰写、前端原样渲染（Result.vue），
+     * 而 6.1 / 4.5 会改住宿档次、{@link #syncStructure} 会改天数——摘要里的旧口径没人重算，
+     * 于是出现"5 天·精选高档酒店"配"3 天·经济型 ¥200/晚"。这里做确定性清理：
+     * 删掉含过期住宿断言的句子，把天数/晚数表述校正为真实值；清空后给一条系统口径的兜底摘要。
+     */
+    private void cleanStaleSummaryClaims(Itinerary itinerary) {
+        if (itinerary == null || itinerary.getSummary() == null || itinerary.getSummary().isBlank()) {
+            return;
+        }
+        int realDays = itinerary.getDays() == null ? 0 : itinerary.getDays().size();
+        String original = itinerary.getSummary();
+        StringBuilder kept = new StringBuilder();
+        int removed = 0;
+        for (String s : original.split("(?<=[。！？；!?;])|\\r?\\n")) {
+            if (s == null || s.isBlank()) {
+                continue;
+            }
+            if (isStaleLodgingClaim(s)) {
+                removed++;
+                continue;
+            }
+            kept.append(s.trim());
+        }
+        String cleaned = kept.toString().trim();
+        if (realDays > 0) {
+            cleaned = cleaned.replaceAll("\\d+\\s*天", realDays + "天")
+                    .replaceAll("\\d+\\s*晚", Math.max(0, realDays - 1) + "晚");
+        }
+        if (cleaned.isBlank()) {
+            cleaned = fallbackSummary(itinerary, realDays);
+        }
+        if (!cleaned.equals(original)) {
+            log.info("摘要口径收口：清除 {} 条过期住宿断言并校正天数表述", removed);
+            itinerary.setSummary(cleaned);
+        }
+    }
+
+    /** 兜底摘要：全由代码拼装，不含任何金额/档次断言 */
+    private String fallbackSummary(Itinerary itinerary, int realDays) {
+        String dest = itinerary.getDestination() == null ? "" : itinerary.getDestination();
+        List<String> themes = new ArrayList<>();
+        int spots = 0;
+        if (itinerary.getDays() != null) {
+            for (DayPlan d : itinerary.getDays()) {
+                if (d.getTheme() != null && !d.getTheme().isBlank()) {
+                    themes.add(d.getTheme());
+                }
+                spots += d.getSpots() == null ? 0 : d.getSpots().size();
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(dest).append(realDays).append(" 天行程，共安排 ").append(spots).append(" 个景点");
+        if (!themes.isEmpty()) {
+            sb.append("：").append(String.join(" → ", themes));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 预算"没花出去"的诚实说明（与 {@link #checkBudgetMismatch} 对称）。
+     *
+     * <p>实测用户选了"¥8000 / 5 天 / 高档型"，最终只估算 ¥1276（16%）——系统对此一言不发，
+     * 用户只会以为"价格在搞笑"。这里说明原因并给出可选动作，而不是把价格硬凑上去。
+     */
+    private void checkBudgetUnderuse(Itinerary itinerary, TripRequest request) {
+        if (itinerary == null || request == null
+                || request.getBudget() == null || request.getBudget() <= 0) {
+            return;
+        }
+        double budget = request.getBudget();
+        double total = recomputeTotal(itinerary);
+        if (total <= 0 || total >= budget * BUDGET_UNDERUSE_RATIO) {
+            return;
+        }
+        addSourceNote(itinerary, String.format(
+                "💡 本行程估算约 ¥%.0f，占您预算 ¥%.0f 的 %.0f%%。"
+                        + "原因是候选池中符合「%s」消费水平的项目有限、且多数景点免费；"
+                        + "如需用足预算，可提高住宿档次、增加付费体验或延长行程",
+                total, budget, total / budget * 100,
+                request.getHotelLevel() == null ? "所选档次" : request.getHotelLevel()));
     }
 
     /**
@@ -1796,15 +2225,31 @@ public class ItineraryValidator {
         log.info("预算硬收敛：总 {} -> {} 元，住宿按 {} 倍压缩", total, newTotal, round2(factor));
     }
 
-    /** 按每晚价反推酒店档次标注（与生成提示词中的价位口径一致：经济 150-250 / 舒适 300-500 / 豪华 600+） */
+    /**
+     * 按每晚价反推酒店档次标注。
+     *
+     * <p>⚠️ 价位口径唯一真源是 {@link #TIER_PER_NIGHT}（舒适 380 / 高档 520 / 豪华 760）——
+     * 这里用相邻档次的<b>中点</b>判定归属，保证「价格→档次」与「档次→价格」两向自洽，
+     * 不再各自维护一套 600/400/200 的魔法数字（曾出现「舒适型」一处 380、一处 300-500、一处 200-400
+     * 三套区间漂移，改一张表就崩）。
+     *
+     * <p>边界推导：经济上限 ~200（低于舒适 380 与高档 520 的中点前取经济）；
+     * 舒适/高档中点 = (380+520)/2 = 450；高档/豪华中点 = (520+760)/2 = 640。
+     */
     static String hotelLevelForPrice(double perNight) {
-        if (perNight >= 600) {
+        // 舒适/高档中点、高档/豪华中点，由 TIER_PER_NIGHT 推导，杜绝魔法数字漂移
+        double comfort = TIER_PER_NIGHT.getOrDefault("舒适型", 380.0);
+        double upscale = TIER_PER_NIGHT.getOrDefault("高档型", 520.0);
+        double luxury = TIER_PER_NIGHT.getOrDefault("豪华型", 760.0);
+        double comfortUpscaleMid = (comfort + upscale) / 2.0;   // 450
+        double upscaleLuxuryMid = (upscale + luxury) / 2.0;     // 640
+        if (perNight >= upscaleLuxuryMid) {
             return "豪华型";
         }
-        if (perNight >= 400) {
+        if (perNight >= comfortUpscaleMid) {
             return "高档型";
         }
-        if (perNight >= 200) {
+        if (perNight >= comfort / 2.0) {  // 经济/舒适之间约 190，向上取舒适
             return "舒适型";
         }
         return "经济型";

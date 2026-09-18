@@ -112,6 +112,11 @@ public class ItineraryGenerator {
         addUserMemoryNote(itinerary, collectedData);
         addPersonalizationNote(itinerary, collectedData);
 
+        // 5.5 行程骨架对齐（天数 = 出行日期跨度 / 每日景点数下限 / trip_days 与真实天数对齐）。
+        //     实测模型会无视提示词里的「共 N 天」只输出 3 天 → 页面写 5 天、正文 3 天、预算只用 16%。
+        //     ⚠️ 必须放在高德补全之前：程序补齐的景点只有在此之后才能拿到图片与坐标。
+        itineraryValidator.syncStructure(itinerary, request, collectedData);
+
         // 6. 补充高德地图信息（图片、坐标、地址）；成功时 source_notes 由 MapEnrichmentService 内部统一追加
         try {
             mapEnrichmentService.enrich(itinerary);
@@ -337,7 +342,7 @@ public class ItineraryGenerator {
                 3. 餐厅必须选择当地特色餐厅（火锅、本帮菜、小吃等），禁止推荐连锁快餐或连锁品牌（如肯德基、麦当劳、汉堡王、星巴克、必胜客等）
                 4. 时间安排要合理，考虑景点间的距离；餐饮（meals）必须给出 start_time 并插在景点之间：早餐 07:00-08:30、午餐 11:30-13:00、晚餐 17:30-19:00，先结束前一景点的游览再去吃饭，同一时刻只能有一项活动，不得把全部餐饮排在景点之后
                 5. 预算分配要符合用户总预算，餐饮人均、交通费用要贴合实际，不得明显偏低或虚高
-                6. 每天安排2-4个主要景点
+                6. 天数必须精确：必须输出恰好 %d 天（day_index 从 1 连续到 %d，date 与「出行日期」逐日对应，既不得少排也不得多排）；每天安排 2-4 个主要景点，禁止只排 1 个景点就结束当天
                 7. transport 中的 from_place / to_place 必须使用【POI数据】中的真实地点名称或明确地标（如"洪崖洞""解放碑"），禁止使用"出发点""市区""酒店附近"等模糊表述；mode 必须明确（步行/地铁/公交/打车/驾车）
                 8. 天气应对：若某天天气预报含 雷暴、暴雨、大雨、中雨、暴雪、大风、台风 等字眼，当天只能安排室内景点（博物馆、美术馆、科技馆、商场、书店等），禁止安排户外景点（海滩、山景、公园、江畔、骑行道等）；只有小毛毛雨、小雨、多云等轻微天气时可按正常安排并提示带伞
                 9. 返回纯JSON，不要包含```json和```标记
@@ -368,6 +373,8 @@ public class ItineraryGenerator {
                 request.getDietaryPreferences() != null ? request.getDietaryPreferences() : "无特别要求",
                 request.getSpecialNotes() != null ? request.getSpecialNotes() : "无",
                 dataSummary,
+                days,
+                days,
                 hotelCapPerNight,
                 nights
         );
