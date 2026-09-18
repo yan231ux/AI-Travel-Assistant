@@ -1,6 +1,7 @@
 package com.yuntu.tripplanner.security;
 
 import com.yuntu.tripplanner.config.JwtProperties;
+import com.yuntu.tripplanner.service.CommunityUserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.AfterEach;
@@ -23,7 +24,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * JWT 拦截器单测：OPTIONS 预检必须放行（否则 CORS 预检 401，浏览器 fetch 报 Failed to fetch）、
- * 有效 token 放行、无/坏 token 返回 401。
+ * 有效 token 放行、无/坏 token 返回 401，以及账号被暂停（P0）时旧 token 必须即时失效。
  */
 @ExtendWith(MockitoExtension.class)
 class JwtAuthInterceptorTest {
@@ -34,6 +35,9 @@ class JwtAuthInterceptorTest {
     @Mock
     private HttpServletResponse response;
 
+    @Mock
+    private CommunityUserService communityUserService;
+
     private JwtAuthInterceptor interceptor;
     private String validToken;
 
@@ -42,7 +46,7 @@ class JwtAuthInterceptorTest {
         JwtProperties props = new JwtProperties();
         props.setSecret("test-secret-key-for-jwt-util-test-32-bytes!!");
         JwtUtil jwtUtil = new JwtUtil(props);
-        interceptor = new JwtAuthInterceptor(jwtUtil, props);
+        interceptor = new JwtAuthInterceptor(jwtUtil, props, communityUserService);
         validToken = jwtUtil.generateToken(42L, "alice");
     }
 
@@ -71,11 +75,41 @@ class JwtAuthInterceptorTest {
     void validBearerTokenSetsUserContext() throws Exception {
         when(request.getMethod()).thenReturn("POST");
         when(request.getHeader("Authorization")).thenReturn("Bearer " + validToken);
+        when(communityUserService.rejectionReasonFor("42")).thenReturn(null);
 
         boolean allowed = interceptor.preHandle(request, response, new Object());
 
         assertTrue(allowed);
         assertEquals("42", UserContext.getUserId(), "拦截器应把 token 里的 uid 写入 UserContext");
+    }
+
+    /** P0 修复：账号被暂停后，未过期的旧 token 也必须立刻失效 */
+    @Test
+    void suspendedAccountTokenReturns401() throws Exception {
+        stubWriter();
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getHeader("Authorization")).thenReturn("Bearer " + validToken);
+        when(communityUserService.rejectionReasonFor("42")).thenReturn("账号已被暂停，请联系管理员处理");
+
+        boolean allowed = interceptor.preHandle(request, response, new Object());
+
+        assertTrue(!allowed, "被暂停账号的旧 token 应拒绝");
+        verify(response).setStatus(401);
+        assertNull(UserContext.getUserId(), "拒绝时不得写入 UserContext");
+    }
+
+    /** 账号已不存在（如被清理）→ 登录态失效 */
+    @Test
+    void missingAccountTokenReturns401() throws Exception {
+        stubWriter();
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getHeader("Authorization")).thenReturn("Bearer " + validToken);
+        when(communityUserService.rejectionReasonFor("42")).thenReturn("登录已失效，请重新登录");
+
+        boolean allowed = interceptor.preHandle(request, response, new Object());
+
+        assertTrue(!allowed, "账号不存在时旧 token 应拒绝");
+        verify(response).setStatus(401);
     }
 
     @Test

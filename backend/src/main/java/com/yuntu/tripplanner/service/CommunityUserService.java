@@ -223,6 +223,31 @@ public class CommunityUserService {
     }
 
     /**
+     * 鉴权拦截器专用：登录态有效性 + 账号状态一并校验（P0 修复）。
+     *
+     * <p>此前 SUSPENDED 只在「登录」「发帖」「评论」三处校验，被停用账号凭未过期的旧 token
+     * （有效期 7 天）仍可调用关注、收藏、改画像、存/生成行程、上传、导出等绝大多数写接口 ——
+     * 「停用即拒绝」仅存在于登录入口，token 层面形同虚设。现把校验前移到拦截器，
+     * 每个通过鉴权的请求都校验一次，做到「停用即失效」。
+     *
+     * @return {@code null} 表示通过；否则返回 401 文案
+     */
+    public String rejectionReasonFor(String userId) {
+        User u = findById(userId);
+        if (u == null) {
+            // 账号已不存在（如被清理）→ 登录态失效
+            return "登录已失效，请重新登录";
+        }
+        String status = (u.getAccountStatus() == null || u.getAccountStatus().isBlank())
+                ? User.STATUS_ACTIVE
+                : u.getAccountStatus();
+        if (!User.STATUS_ACTIVE.equals(status)) {
+            return "账号已被暂停，请联系管理员处理";
+        }
+        return null;
+    }
+
+    /**
      * 发帖前校验（PostService 创建/提交共用）：暂停账号一律拒绝；限制发帖只拦「发布新内容」。
      * 抛 IllegalArgumentException → 全局 400（message 直达前端）。
      */
