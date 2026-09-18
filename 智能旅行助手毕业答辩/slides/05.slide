@@ -1,0 +1,54 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>总体技术架构</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>02 系统功能</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '26px 60px', flexDirection: 'column', gap: 12 }}>
+    <Box style={{ flexDirection: 'row', gap: 14, flex: 1 }}>
+      <Box style={{ width: 130, background: '#0E3F8C', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>表现层</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 12, padding: '0 20px' }}>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>Vue3</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>Ant Design Vue</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>ECharts 可视化</Text></Box>
+      </Box>
+    </Box>
+    <Box style={{ flexDirection: 'row', gap: 14, flex: 1 }}>
+      <Box style={{ width: 130, background: '#0E3F8C', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>接入层</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 12, padding: '0 20px' }}>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>REST API</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>SSE 流式推送</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>JWT 拦截器</Text></Box>
+      </Box>
+    </Box>
+    <Box style={{ flexDirection: 'row', gap: 14, flex: 1 }}>
+      <Box style={{ width: 130, background: '#0E3F8C', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>应用层</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 12, padding: '0 20px' }}>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>TravelAgent（ReAct）</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>业务 Service</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>外部 Client</Text></Box>
+      </Box>
+    </Box>
+    <Box style={{ flexDirection: 'row', gap: 14, flex: 1 }}>
+      <Box style={{ width: 130, background: '#0E3F8C', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>智能层</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 12, padding: '0 20px' }}>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>DashScope 大模型</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>RAG 混合检索</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>向量 + BM25 + RRF</Text></Box>
+      </Box>
+    </Box>
+    <Box style={{ flexDirection: 'row', gap: 14, flex: 1 }}>
+      <Box style={{ width: 130, background: '#0E3F8C', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>数据层</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 12, padding: '0 20px' }}>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>MySQL 8</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>Redis 缓存</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>向量库</Text></Box>
+        <Box style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px 18px' }}><Text style={{ fontSize: 18, color: '#1A2230' }}>Docker Compose</Text></Box>
+      </Box>
+    </Box>
+    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>分层解耦：Controller / Agent / Service / Client / Model / Repository 六大后端包 + Vue3 前端，前后端分离，SSE 流式打通「生成 → 推送 → 落库」全链路。</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>05 / 23</Text>
+  </Box>
+</Slide>

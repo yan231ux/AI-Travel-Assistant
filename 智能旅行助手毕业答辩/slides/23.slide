@@ -1,0 +1,14 @@
+<Slide style={{ width: 1280, height: 720, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}>
+  <Box style={{ position: 'absolute', top: 0, left: 0, width: 1280, height: 10, background: '#1E4FA8' }} />
+  <Box style={{ position: 'absolute', bottom: 0, left: 0, width: 1280, height: 10, background: '#1E4FA8' }} />
+  <Box style={{ alignItems: 'center', gap: 22 }}>
+    <Text style={{ fontSize: 72, fontWeight: 'bold', color: '#FFFFFF', letterSpacing: 6 }}>感谢聆听</Text>
+    <Text style={{ fontSize: 26, color: '#B5D4F4' }}>敬请各位老师批评指正</Text>
+    <Text style={{ fontSize: 20, color: '#E8EFF8', marginTop: 20, letterSpacing: 2 }}>Q &amp; A</Text>
+  </Box>
+  <Box style={{ position: 'absolute', bottom: 56, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', gap: 48 }}>
+    <Text style={{ fontSize: 17, color: '#B5D4F4' }}>答辩人：曾彦</Text>
+    <Text style={{ fontSize: 17, color: '#B5D4F4' }}>学号：231110143</Text>
+    <Text style={{ fontSize: 17, color: '#B5D4F4' }}>智能旅行助手</Text>
+  </Box>
+</Slide>

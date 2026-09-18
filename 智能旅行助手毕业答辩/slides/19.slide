@@ -1,0 +1,30 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>数据看板 · 六图洞察</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>05 平台治理</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 780, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/12_charts.png" style={{ width: 780, height: 438, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>景点规划排行 · 城市热度 · 审核漏斗 · 风险构成</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 16, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>六图多维洞察</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>排行 / 热度 / 漏斗 / 风险，一屏掌握运营全局。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>失败显式降级</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>图表异常显式 degraded + errors，绝不伪造 0。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>可信统计口径</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>事件源 travel_event，半衰期衰减，小样本不足 3 条时隐藏。</Text></Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>19 / 23</Text>
+  </Box>
+</Slide>

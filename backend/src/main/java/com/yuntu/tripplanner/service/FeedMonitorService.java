@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,14 +52,16 @@ public class FeedMonitorService {
     public MonitorReport report(int days) {
         int window = Math.max(1, Math.min(days <= 0 ? 7 : days, 90));
         LocalDateTime cutoff = LocalDateTime.now().minusDays(window);
-        List<SpotFeedLog> spotLogs = spotLogsSince(cutoff);
-        List<PostFeedLog> postLogs = postLogsSince(cutoff);
-        List<UserBehavior> behaviors = behaviorsSince(cutoff);
+        // 记录读取失败的数据源：监控读数"全 0"和"真的没有数据"必须可区分（P0-1 同模式）
+        List<String> failures = new ArrayList<>();
+        List<SpotFeedLog> spotLogs = spotLogsSince(cutoff, failures);
+        List<PostFeedLog> postLogs = postLogsSince(cutoff, failures);
+        List<UserBehavior> behaviors = behaviorsSince(cutoff, failures);
 
         Map<String, FeedMetrics> feeds = new LinkedHashMap<>();
         feeds.put(FEED_SPOT, metricsOfSpot(spotLogs, behaviors));
         feeds.put(FEED_POST, metricsOfPost(postLogs, behaviors));
-        return new MonitorReport(window, feeds);
+        return new MonitorReport(window, feeds, failures);
     }
 
     /* ================= 单条流的指标 ================= */
@@ -78,6 +81,7 @@ public class FeedMonitorService {
             agg.scoreSum += row.getFinalScore() == null ? 0 : row.getFinalScore();
             agg.byVariant.merge(variantKey(row.getAbVariant()), 1L, Long::sum);
             agg.byQuality.merge(qualityKey(row.getDataQuality()), 1L, Long::sum);
+            agg.byCity.merge(cityKey(row.getCity()), 1L, Long::sum);
             if (row.getUserId() != null) {
                 if (row.getSpotId() != null) {
                     spotKeys.add(row.getUserId() + "|" + row.getSpotId());
@@ -149,7 +153,7 @@ public class FeedMonitorService {
 
     /* ================= 数据读取 ================= */
 
-    private List<SpotFeedLog> spotLogsSince(LocalDateTime cutoff) {
+    private List<SpotFeedLog> spotLogsSince(LocalDateTime cutoff, List<String> failures) {
         try {
             return spotFeedLogRepository.selectList(new LambdaQueryWrapper<SpotFeedLog>()
                     .ge(SpotFeedLog::getCreatedAt, cutoff)
@@ -157,11 +161,12 @@ public class FeedMonitorService {
                     .last("LIMIT 10000"));
         } catch (Exception e) {
             log.warn("spot_feed_log 读取失败（监控降级为空）: {}", e.getMessage());
+            failures.add("spot_feed_log");
             return List.of();
         }
     }
 
-    private List<PostFeedLog> postLogsSince(LocalDateTime cutoff) {
+    private List<PostFeedLog> postLogsSince(LocalDateTime cutoff, List<String> failures) {
         try {
             return postFeedLogRepository.selectList(new LambdaQueryWrapper<PostFeedLog>()
                     .ge(PostFeedLog::getCreatedAt, cutoff)
@@ -169,11 +174,12 @@ public class FeedMonitorService {
                     .last("LIMIT 10000"));
         } catch (Exception e) {
             log.warn("post_feed_log 读取失败（监控降级为空）: {}", e.getMessage());
+            failures.add("post_feed_log");
             return List.of();
         }
     }
 
-    private List<UserBehavior> behaviorsSince(LocalDateTime cutoff) {
+    private List<UserBehavior> behaviorsSince(LocalDateTime cutoff, List<String> failures) {
         try {
             return userBehaviorRepository.selectList(new LambdaQueryWrapper<UserBehavior>()
                     .ge(UserBehavior::getCreatedAt, cutoff)
@@ -182,14 +188,15 @@ public class FeedMonitorService {
                     .last("LIMIT 20000"));
         } catch (Exception e) {
             log.warn("user_behavior 读取失败（反馈漏斗降级为 0）: {}", e.getMessage());
+            failures.add("user_behavior");
             return List.of();
         }
     }
 
     /* ================= 展示载体 ================= */
 
-    /** 时间窗内两条推荐流的监控报告 */
-    public record MonitorReport(int days, Map<String, FeedMetrics> feeds) {
+    /** 时间窗内两条推荐流的监控报告；failures 非空表示部分数据源读取失败，读数不可信 */
+    public record MonitorReport(int days, Map<String, FeedMetrics> feeds, List<String> failures) {
     }
 
     /** 单条流的监控读数 */
@@ -204,6 +211,11 @@ public class FeedMonitorService {
         public Map<String, Long> byVariant = new LinkedHashMap<>();
         /** 内容质量构成（SPOT：GUIDE_MATCHED/POI_ONLY/VERIFIED 占比口径） */
         public Map<String, Long> byQuality = new LinkedHashMap<>();
+        /**
+         * 各城市推荐量（设计方案 §6「推荐流概览」）：按曝光行的 city 聚合，值=曝光行数。
+         * 帖子流无城市维度，保持空表（不编造城市分布）。
+         */
+        public Map<String, Long> byCity = new LinkedHashMap<>();
         /** 反馈漏斗：save/dislike（=与曝光相交的用户行为计数）与相对曝光率 */
         public Map<String, Long> feedbacks = new LinkedHashMap<>();
         public double saveRate;
@@ -218,6 +230,7 @@ public class FeedMonitorService {
             m.put("avg_score", Math.round(avgScore * 1000) / 1000.0);
             m.put("by_variant", byVariant);
             m.put("by_quality", byQuality);
+            m.put("by_city", byCity);
             m.put("feedbacks", feedbacks);
             m.put("save_rate", Math.round(saveRate * 1000) / 10.0);
             m.put("dislike_rate", Math.round(dislikeRate * 1000) / 10.0);
@@ -233,6 +246,7 @@ public class FeedMonitorService {
         Map<String, Long> userSet = new LinkedHashMap<>();
         Map<String, Long> byVariant = new LinkedHashMap<>();
         Map<String, Long> byQuality = new LinkedHashMap<>();
+        Map<String, Long> byCity = new LinkedHashMap<>();
         Map<String, Long> feedbacks = new LinkedHashMap<>();
 
         FeedMetrics toMetrics(double avgScore) {
@@ -244,6 +258,7 @@ public class FeedMonitorService {
             m.hitRate = exposures == 0 ? 0 : (double) hits / exposures;
             m.byVariant = byVariant;
             m.byQuality = byQuality;
+            m.byCity = byCity;
             m.feedbacks = feedbacks;
             long save = feedbacks.getOrDefault("save", 0L);
             long dislike = feedbacks.getOrDefault("dislike", 0L);
@@ -259,5 +274,10 @@ public class FeedMonitorService {
 
     private static String qualityKey(String quality) {
         return quality == null || quality.isBlank() ? "UNKNOWN" : quality;
+    }
+
+    /** 城市分组键：曝光行 city 为空归入 UNKNOWN（不能因为缺城市就把曝光算丢） */
+    private static String cityKey(String city) {
+        return city == null || city.isBlank() ? "UNKNOWN" : city;
     }
 }

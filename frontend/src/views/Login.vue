@@ -4,8 +4,8 @@ import { reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import BrandMark from "../components/BrandMark.vue";
-import { login, register } from "../services/api";
-import { setAuthed } from "../stores/session";
+import { login, register, adminLogin } from "../services/api";
+import { setAuthed, isAdminSideRole } from "../stores/session";
 import type { User } from "../types";
 
 /** 仅允许站内路径的登录后回跳（防开放重定向） */
@@ -18,7 +18,7 @@ function safeRedirect(raw: unknown): string | null {
 const route = useRoute();
 const router = useRouter();
 
-type Mode = "login" | "register";
+type Mode = "login" | "register" | "admin";
 const mode = ref<Mode>("login");
 const submitting = ref(false);
 
@@ -48,9 +48,14 @@ function switchMode(next: Mode) {
 function applyAuth(token: string, user: User, okMessage: string) {
   setAuthed({ token, user });
   message.success(okMessage);
-  // 回跳登录前想去的页面（站内白名单过滤），否则去首页 Dashboard
+  // 回跳登录前想去的页面（站内白名单过滤）；
+  // 管理员一律进 /admin 运营后台，普通用户进首页 Dashboard（设计方案 §3.1）
   const redirect = safeRedirect(route.query.redirect);
-  void router.replace(redirect ? { path: redirect } : { name: "dashboard" });
+  if (redirect) {
+    void router.replace({ path: redirect });
+    return;
+  }
+  void router.replace({ name: isAdminSideRole(user.role) ? "admin-dashboard" : "dashboard" });
 }
 
 async function handleSubmit() {
@@ -69,6 +74,14 @@ async function handleSubmit() {
       });
       if (!resp.success) return message.error(resp.message || "注册失败");
       applyAuth(resp.token, resp.user, `注册成功，欢迎 ${resp.user.nickname || resp.user.username}！`);
+    } else if (mode.value === "admin") {
+      // 管理员登录：独立入口，非管理端账号会被后端 403 拦截
+      const resp = await adminLogin({
+        username: form.username.trim(),
+        password: form.password,
+      });
+      if (!resp.success) return message.error(resp.message || "管理员登录失败");
+      applyAuth(resp.token, resp.user, "管理员登录成功");
     } else {
       const resp = await login({
         username: form.username.trim(),
@@ -81,6 +94,7 @@ async function handleSubmit() {
     const status = (error as { response?: { status?: number } })?.response?.status;
     if (status === 409) return message.error("用户名已存在，请直接登录或换一个用户名");
     if (status === 401) return message.error("用户名或密码错误");
+    if (status === 403 && mode.value === "admin") return message.error("该账号不是管理员，请使用普通登录");
     console.error(error);
     message.error(mode.value === "register" ? "注册失败，请稍后重试" : "登录失败，请稍后重试");
   } finally {
@@ -88,7 +102,7 @@ async function handleSubmit() {
   }
 }
 
-/* 登录/注册 左侧品牌叙事文案（方案 §5.2：随模式切换） */
+/* 登录/注册/管理员 左侧品牌叙事文案（方案 §5.2：随模式切换） */
 const BRAND_COPY = {
   login: {
     headline: "你的下一段旅程，\n从这里开始",
@@ -97,6 +111,10 @@ const BRAND_COPY = {
   register: {
     headline: "创建你的旅行空间",
     points: ["完善偏好后，推荐会更懂你", "行程、收藏与灵感都会整理在这里", "分享攻略，成为他人的目的地灵感"],
+  },
+  admin: {
+    headline: "内容运营，\n从这里接管",
+    points: ["内容审核：帖子与评论的通过、拒绝、下线", "数据看板：热度、转化与审核漏斗一目了然", "治理留痕：每一次操作都记入审计日志"],
   },
 } as const;
 </script>
@@ -143,13 +161,28 @@ const BRAND_COPY = {
           >
             注册
           </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="mode === 'admin'"
+            :class="['login-tab', { 'login-tab--active': mode === 'admin' }]"
+            @click="switchMode('admin')"
+          >
+            管理员登录
+          </button>
         </div>
 
         <h2 class="login-panel__title">
-          {{ mode === "login" ? "欢迎回来" : "加入我们" }}
+          {{ mode === "login" ? "欢迎回来" : mode === "register" ? "加入我们" : "运营后台登录" }}
         </h2>
         <p class="login-panel__sub">
-          {{ mode === "login" ? "登录后继续你的专属旅行" : "注册即自动登录，马上开始第一次规划" }}
+          {{
+            mode === "login"
+              ? "登录后继续你的专属旅行"
+              : mode === "register"
+                ? "注册即自动登录，马上开始第一次规划"
+                : "仅限运营人员，登录后直接进入内容运营后台"
+          }}
         </p>
 
         <a-form layout="vertical" :rules="rules" :model="form" @finish="handleSubmit">
@@ -189,15 +222,22 @@ const BRAND_COPY = {
             :loading="submitting"
             @click="handleSubmit"
           >
-            {{ mode === "login" ? "登 录" : "注册并登录" }}
+            {{ mode === "login" ? "登 录" : mode === "register" ? "注册并登录" : "管理员登录" }}
           </a-button>
         </a-form>
 
         <p class="login-panel__foot">
-          {{ mode === "login" ? "还没有账号？" : "已有账号？" }}
-          <a class="login-panel__link" @click="switchMode(mode === 'login' ? 'register' : 'login')">
-            {{ mode === "login" ? "立即注册" : "去登录" }}
-          </a>
+          <template v-if="mode === 'admin'">
+            <a class="login-panel__link" @click="switchMode('login')">返回用户登录</a>
+          </template>
+          <template v-else>
+            {{ mode === "login" ? "还没有账号？" : "已有账号？" }}
+            <a class="login-panel__link" @click="switchMode(mode === 'login' ? 'register' : 'login')">
+              {{ mode === "login" ? "立即注册" : "去登录" }}
+            </a>
+            <span class="login-panel__divider">·</span>
+            <a class="login-panel__link login-panel__link--dim" @click="switchMode('admin')">管理员登录</a>
+          </template>
         </p>
 
         <p class="login-panel__privacy">登录即代表你同意仅将本系统用于课程设计演示，请勿提交真实敏感信息。</p>
@@ -369,6 +409,16 @@ const BRAND_COPY = {
 .login-panel__link {
   font-weight: 600;
   cursor: pointer;
+}
+
+.login-panel__divider {
+  margin: 0 8px;
+  color: var(--text-muted);
+}
+
+.login-panel__link--dim {
+  font-weight: 500;
+  color: var(--text-secondary);
 }
 
 .login-panel__privacy {

@@ -6,6 +6,7 @@ import com.yuntu.tripplanner.client.LlmClient;
 import com.yuntu.tripplanner.model.DayPlan;
 import com.yuntu.tripplanner.model.HotelItem;
 import com.yuntu.tripplanner.model.Itinerary;
+import com.yuntu.tripplanner.model.MealItem;
 import com.yuntu.tripplanner.model.SpotItem;
 import com.yuntu.tripplanner.model.TransportItem;
 import com.yuntu.tripplanner.model.TripRequest;
@@ -168,6 +169,122 @@ class ItineraryValidatorTest {
         validator.validateAndRepair(it, request("惠州"), collectedWithPoi(Map.of(), null));
 
         assertEquals("28 分钟", t.getDuration(), "时长应统一为纯分钟格式");
+    }
+
+    @Test
+    void overspendBudget_collapsesHotelLocally() {
+        // Q3：总花费超预算 20% → 本地压缩住宿（等比）+ 降档次标注，把总预算压回预算内，不调 LLM
+        TripRequest req = request("惠州");
+        req.setBudget(600.0);
+
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("惠州西湖", "惠城区环城西路"));
+        HotelItem hotel = new HotelItem();
+        hotel.setName("惠州某大酒店");
+        hotel.setLevel("豪华型");
+        hotel.setEstimatedCost(800.0);
+        d1.setHotel(hotel);
+        TransportItem t = new TransportItem();
+        t.setMode("打车");
+        t.setEstimatedCost(50.0);
+        d1.getTransport().add(t);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1));
+
+        validator.validateAndRepair(it, req, collectedWithPoi(Map.of(), null));
+
+        // 非住宿支出 50，预算 600 → 住宿可用 550；800×0.6875=550，档位标注按每晚价落到高档型
+        assertTrue(it.getEstimatedBudget() != null && it.getEstimatedBudget() <= 600 * 1.2 + 0.01,
+                "收敛后总预算不得超过预算的 120%");
+        assertEquals(550.0, hotel.getEstimatedCost(), 0.01, "住宿应等比压缩到预算水位");
+        assertEquals("高档型", hotel.getLevel(), "档次标注应随每晚价下调");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("住宿压缩") || n.contains("超预算")),
+                "需在来源说明中诚实告知压缩动作");
+    }
+
+    @Test
+    void withinBudget_hotelUntouched() {
+        // Q3：未超支 → 住宿与预算完全不动
+        TripRequest req = request("惠州");
+        req.setBudget(2000.0);
+
+        DayPlan d1 = day(1);
+        HotelItem hotel = new HotelItem();
+        hotel.setName("惠州某酒店");
+        hotel.setLevel("豪华型");
+        hotel.setEstimatedCost(800.0);
+        d1.setHotel(hotel);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1));
+
+        validator.validateAndRepair(it, req, collectedWithPoi(Map.of(), null));
+
+        assertEquals(800.0, hotel.getEstimatedCost(), 0.01, "未超支时住宿不得被压缩");
+        assertEquals("豪华型", hotel.getLevel(), "未超支时档次不得被降");
+    }
+
+    @Test
+    void hotelLevelForPrice_brackets() {
+        assertEquals("豪华型", ItineraryValidator.hotelLevelForPrice(700));
+        assertEquals("高档型", ItineraryValidator.hotelLevelForPrice(450));
+        assertEquals("舒适型", ItineraryValidator.hotelLevelForPrice(250));
+        assertEquals("经济型", ItineraryValidator.hotelLevelForPrice(120));
+    }
+
+    @Test
+    void transportWithoutCost_backfilledByDistance() {
+        // Q2：高德路线补全会置空金额（过路费≠车费），LLM 金额也常缺失 →
+        // 校验层按 出行方式×距离 补算并在来源标注，保证预算合计不漏算跨区大段交通费
+        DayPlan d1 = day(1);
+        TransportItem taxi = new TransportItem();
+        taxi.setMode("出租车");
+        taxi.setFromPlace("惠州西湖");
+        taxi.setToPlace("罗浮山");
+        taxi.setDistanceKm(50.0);
+        d1.getTransport().add(taxi);
+        TransportItem metro = new TransportItem();
+        metro.setMode("地铁");
+        metro.setDistanceKm(20.0);
+        d1.getTransport().add(metro);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("惠州");
+        it.setDays(List.of(d1));
+
+        validator.validateAndRepair(it, request("惠州"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(13.0 + 2.3 * 47, taxi.getEstimatedCost(), 0.01,
+                "50km 出租车按计价补算（起步 13 含 3km + 2.3 元/km）");
+        assertTrue(taxi.getSource() != null && taxi.getSource().contains("补算"),
+                "补算段来源必须标注");
+        assertEquals(9.0, metro.getEstimatedCost(), 0.01, "地铁 20km 按 3 + 0.3×20 = 9 元计价");
+    }
+
+    @Test
+    void transportWithoutCostAndDistance_backfilledByMinutes() {
+        // Q2：无距离也缺金额 → 按时长×典型速度折算距离再计价；步行段金额为 0
+        DayPlan d1 = day(1);
+        TransportItem rail = new TransportItem();
+        rail.setMode("高铁");
+        rail.setEstimatedMinutes(120); // 250km/h × 2h ≈ 500km → 0.45 元/km × 500 = 225
+        d1.getTransport().add(rail);
+        TransportItem walk = new TransportItem();
+        walk.setMode("步行");
+        walk.setEstimatedMinutes(30); // 5km/h × 0.5h = 2.5km → 步行 0 元
+        d1.getTransport().add(walk);
+
+        Itinerary it = new Itinerary();
+        it.setDestination("杭州");
+        it.setDays(List.of(d1));
+
+        validator.validateAndRepair(it, request("杭州"), collectedWithPoi(Map.of(), null));
+
+        assertEquals(225.0, rail.getEstimatedCost(), 0.01, "高铁 2h≈500km 按 0.45 元/km 补算");
+        assertEquals(0.0, walk.getEstimatedCost(), 0.0001, "步行段金额为 0（非缺失）");
     }
 
     @Test
@@ -459,6 +576,131 @@ class ItineraryValidatorTest {
 
         assertFalse(it.getSourceNotes().stream().anyMatch(n -> n.contains("距行程主要景点")),
                 "酒店就在景点附近不应误报跨片区");
+    }
+
+    /* ================= Q1：每日就餐空间合理性（餐厅须贴近当天活动区域） ================= */
+
+    /** 造一条 POI 记录（带经纬度） */
+    private Map<String, Object> poiWithCoord(String name, double lat, double lng) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("name", name);
+        m.put("latitude", lat);
+        m.put("longitude", lng);
+        m.put("address", name + "附近");
+        return m;
+    }
+
+    /** 造一条 POI 记录（只有名称，无经纬度 → 不参与空间判定） */
+    private Map<String, Object> poiNoCoord(String name) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("name", name);
+        return m;
+    }
+
+    /** 临潼当日行程：上午兵马俑 + 下午华清宫（两景点相距很近，中心在临潼） */
+    private DayPlan lintongDay() {
+        DayPlan d1 = day(1);
+        SpotItem bingmayong = spot("秦始皇兵马俑博物馆", "临潼区秦陵北路");
+        bingmayong.setLatitude(34.3853);
+        bingmayong.setLongitude(109.2785);
+        SpotItem huaqing = spot("华清宫", "临潼区华清路38号");
+        huaqing.setLatitude(34.3626);
+        huaqing.setLongitude(109.2139);
+        d1.getSpots().addAll(List.of(bingmayong, huaqing));
+        d1.setMeals(new ArrayList<>());
+        return d1;
+    }
+
+    private MealItem meal(String name) {
+        MealItem m = new MealItem();
+        m.setName(name);
+        m.setMealType("午餐");
+        m.setEstimatedCost(80.0);
+        return m;
+    }
+
+    private Itinerary itineraryOf(DayPlan day) {
+        Itinerary it = new Itinerary();
+        it.setDestination("西安");
+        it.setDays(List.of(day));
+        it.setSourceNotes(new ArrayList<>());
+        return it;
+    }
+
+    @Test
+    void crossDistrictMeal_replacedByNearbyCandidate() {
+        // 西安实测：上午临潼兵马俑、中午回市区吃火锅、下午再回临潼华清宫 —— 物理上来不及。
+        // 候选池里有临潼本地面馆 → 确定性替换为就近餐厅。
+        DayPlan d1 = lintongDay();
+        d1.getMeals().add(meal("大秦御鼎火锅(博乐里购物广场店)"));
+        Itinerary it = itineraryOf(d1);
+
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiWithCoord("大秦御鼎火锅(博乐里购物广场店)", 34.22, 108.95), // 市区，距临潼 ~32km
+                poiWithCoord("临潼老碗面(华清池店)", 34.37, 109.23)));        // 临潼景区旁 ~1km
+
+        validator.validateAndRepair(it, request("西安"), collectedWithPoi(restaurants, null));
+
+        assertEquals("临潼老碗面(华清池店)", d1.getMeals().get(0).getName(),
+                "跨区餐厅应被替换为当天活动区域内的候选");
+        assertTrue(d1.getMeals().get(0).getSource().contains("已按当天活动区域就近调整"),
+                "替换来源需可追溯");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("跨区就餐不现实")),
+                "应在来源说明中解释为何调整");
+    }
+
+    @Test
+    void crossDistrictMeal_withoutNearbyCandidate_warnsHonestly() {
+        // 候选池没有景区附近餐厅（高德按关键词召回可能覆盖不到）→ 不做无效替换，改为如实警示
+        DayPlan d1 = lintongDay();
+        d1.getMeals().add(meal("大秦御鼎火锅(博乐里购物广场店)"));
+        Itinerary it = itineraryOf(d1);
+
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiWithCoord("大秦御鼎火锅(博乐里购物广场店)", 34.22, 108.95)));
+
+        validator.validateAndRepair(it, request("西安"), collectedWithPoi(restaurants, null));
+
+        assertEquals("大秦御鼎火锅(博乐里购物广场店)", d1.getMeals().get(0).getName(),
+                "无就近候选时不得乱换");
+        assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("可能来不及就近用餐")),
+                "应如实警示跨区就餐，而不是静默放行");
+    }
+
+    @Test
+    void mealNearDaySpots_notTouched() {
+        // 午餐就在景区旁 → 不替换、不警示（避免把正常行程改坏）
+        DayPlan d1 = lintongDay();
+        d1.getMeals().add(meal("临潼老碗面(华清池店)"));
+        Itinerary it = itineraryOf(d1);
+
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiWithCoord("临潼老碗面(华清池店)", 34.37, 109.23),
+                poiWithCoord("大秦御鼎火锅(博乐里购物广场店)", 34.22, 108.95)));
+
+        validator.validateAndRepair(it, request("西安"), collectedWithPoi(restaurants, null));
+
+        assertEquals("临潼老碗面(华清池店)", d1.getMeals().get(0).getName());
+        assertFalse(it.getSourceNotes().stream().anyMatch(n -> n.contains("就餐") || n.contains("就近用餐")),
+                "就近用餐不应产生任何调整/警示");
+    }
+
+    @Test
+    void mealWithoutCoordinates_notJudged_noFalsePositive() {
+        // 餐厅在候选中但缺经纬度 → 数据不足，不做空间判定（宁可不动，也不误报）
+        DayPlan d1 = lintongDay();
+        d1.getMeals().add(meal("某本地餐馆"));
+        Itinerary it = itineraryOf(d1);
+
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiNoCoord("某本地餐馆"),
+                poiWithCoord("临潼老碗面(华清池店)", 34.37, 109.23)));
+
+        validator.validateAndRepair(it, request("西安"), collectedWithPoi(restaurants, null));
+
+        assertEquals("某本地餐馆", d1.getMeals().get(0).getName());
+        assertFalse(it.getSourceNotes().stream().anyMatch(n -> n.contains("就近用餐")),
+                "缺坐标不应误报跨区");
     }
 
     @Test

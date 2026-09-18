@@ -61,11 +61,22 @@ public class PostInteractionService {
         }
         TravelPost post = requirePublished(postId);
         String act = normalizeAction(action);
+        // 自己的帖子不能「不感兴趣」：这是对自己内容的表态，语义上不合理（与举报自己/评论自己类似）。
+        // 前端隐藏按钮只负责体验，服务端这里做最终校验 —— 不依赖前端。
+        if (PostInteraction.ACTION_DISLIKE.equals(act)
+                && post.getUserId() != null && post.getUserId().equals(userId)) {
+            throw new ForbiddenException("不能对自己的帖子表示不感兴趣");
+        }
         boolean nowActive;
         if (active) {
             nowActive = add(userId, post, act);
         } else {
-            nowActive = !remove(userId, postId, act);
+            boolean removed = remove(userId, postId, act);
+            nowActive = !removed;
+            // 取消收藏 → 画像回退（与帖子收藏 +0.15 对称的撤销；见 revokePersonalizationBehavior）
+            if (removed && PostInteraction.ACTION_FAVORITE.equals(act)) {
+                revokePersonalizationBehavior(userId, post);
+            }
         }
         boolean like = act.equals(PostInteraction.ACTION_LIKE) ? nowActive
                 : interactionRepository.selectCount(new LambdaQueryWrapper<PostInteraction>()
@@ -132,7 +143,8 @@ public class PostInteractionService {
 
     /**
      * 帖子互动 → 画像行为（阶段三任务 1/2/6：帖子行为进入统一行为模型并更新画像）。
-     * 仅首次生效（add 成功路径）调用；取消不反噬权重（与景点收藏语义一致）。
+     * 仅首次生效（add 成功路径）调用；取消收藏走 {@link #revokePersonalizationBehavior}
+     * （回退幅度小于增加），点赞/不感兴趣取消不回退。
      *
      * <p>审查报告 P1-4 强一致：不吞异常。interact() 全程在同一事务内，画像/行为写入失败
      * 时异常直接上抛 → 互动行与计数一并回滚（对齐 SpotService.favorite 的"收藏与画像同事务"），
@@ -158,6 +170,22 @@ public class PostInteractionService {
         req.setItemId(String.valueOf(post.getId()));
         req.setItemName(post.getTitle());
         req.setActionType(behaviorAction);
+        userProfileService.recordBehavior(userId, req);
+    }
+
+    /**
+     * 取消收藏 → 画像回退（与「帖子收藏 +0.15」对称的撤销，UNSAVE -0.10，回退幅度小于增加）。
+     * 只在确实删掉互动行时调用，幂等空删不扣分。
+     *
+     * <p>边界：点赞（+0.05）与取消点赞<b>不</b>回退 —— 点赞是弱信号且取消点赞是高频轻操作，
+     * 回退收益低却会反复扰动画像；只有「收藏」这类强正反馈（0.15）才值得支持撤销。
+     */
+    private void revokePersonalizationBehavior(String userId, TravelPost post) {
+        BehaviorRequest req = new BehaviorRequest();
+        req.setItemType(UserBehavior.ITEM_TYPE_POST);
+        req.setItemId(String.valueOf(post.getId()));
+        req.setItemName(post.getTitle());
+        req.setActionType(UserBehavior.ACTION_UNSAVE);
         userProfileService.recordBehavior(userId, req);
     }
 

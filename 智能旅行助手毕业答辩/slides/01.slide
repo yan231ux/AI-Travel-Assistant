@@ -1,0 +1,15 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
+  <Box style={{ position: 'absolute', top: 0, left: 0, width: 1280, height: 10, background: '#0E3F8C' }} />
+  <Box style={{ position: 'absolute', bottom: 0, left: 0, width: 1280, height: 10, background: '#0E3F8C' }} />
+  <Box style={{ alignItems: 'center', gap: 18 }}>
+    <Text style={{ fontSize: 20, color: '#8B97A8', letterSpacing: 3 }}>嘉应学院 · 计算机科学与技术 · 2026 届本科毕业设计答辩</Text>
+    <Text style={{ fontSize: 80, fontWeight: 'bold', color: '#0E3F8C', letterSpacing: 6, marginTop: 8 }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 30, color: '#1E4FA8', marginTop: 4 }}>基于大模型的个性化 AI 旅行规划系统</Text>
+    <Text style={{ fontSize: 18, color: '#4A5568', marginTop: 16, letterSpacing: 1 }}>AI 行程规划 · 个性化推荐 · 旅行社区 · 平台化治理</Text>
+  </Box>
+  <Box style={{ position: 'absolute', bottom: 56, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', gap: 64 }}>
+    <Text style={{ fontSize: 18, color: '#4A5568' }}>答辩人：曾彦</Text>
+    <Text style={{ fontSize: 18, color: '#4A5568' }}>学号：231110143</Text>
+    <Text style={{ fontSize: 18, color: '#4A5568' }}>指导教师：（待填）</Text>
+  </Box>
+</Slide>

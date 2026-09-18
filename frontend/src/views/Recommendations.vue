@@ -75,9 +75,18 @@ async function fetchPage(first: boolean) {
     total.value = feed.total ?? 0;
     personalized.value = !!feed.personalized;
     items.value = first ? feed.items : [...items.value, ...feed.items];
-  } catch {
-    error.value = "推荐加载失败，请稍后重试。";
-    if (!first) items.value = items.value; // 保持已有内容
+  } catch (err: unknown) {
+    // 非法城市由后端白名单返回 400 + 可读文案（含形近纠错建议）：直接透出，
+    // 并清空列表 —— 绝不能把上一个城市的景点留在页面上冒充"该城市的结果"。
+    const resp = (err as { response?: { status?: number; data?: { message?: string } } })?.response;
+    if (resp?.status === 400) {
+      error.value = resp.data?.message || "城市名不合法，请检查后重试。";
+      items.value = [];
+      total.value = 0;
+    } else {
+      error.value = "推荐加载失败，请稍后重试。";
+      if (!first) items.value = items.value; // 保持已有内容
+    }
   } finally {
     loading.value = false;
     loadingMore.value = false;

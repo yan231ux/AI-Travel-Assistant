@@ -687,8 +687,9 @@ async function openPdfExport() {
   exportingPdf.value = true;
   try {
     // 先同步当前行程（含天气提示过滤后的 tips），再以 blob 方式下载（axios 自动带 token）
-    await saveTrip(it, agentTrace.value);
-    await exportPdf(it.trip_id);
+    const saved = await saveTrip(it, agentTrace.value);
+    adoptServerTripId(saved?.trip_id);
+    await exportPdf(saved?.trip_id || it.trip_id);
   } catch {
     message.error("导出 PDF 失败。");
   } finally {
@@ -700,8 +701,9 @@ async function openMarkdownExport() {
   const it = buildVisibleItinerary(); if (!it) return;
   exportingMarkdown.value = true;
   try {
-    await saveTrip(it, agentTrace.value);
-    await exportMarkdown(it.trip_id);
+    const saved = await saveTrip(it, agentTrace.value);
+    adoptServerTripId(saved?.trip_id);
+    await exportMarkdown(saved?.trip_id || it.trip_id);
   } catch {
     message.error("导出 Markdown 失败。");
   } finally {
@@ -709,10 +711,24 @@ async function openMarkdownExport() {
   }
 }
 
+/**
+ * 采用服务端返回的 trip_id。
+ * 服务端对 trip_id 有最终分配权（id 被占用时会改派唯一 id），若不回写，
+ * 页面仍持旧 id，下一次保存/导出会再生成一条新记录。
+ */
+function adoptServerTripId(serverTripId?: string | null) {
+  if (!serverTripId || !itinerary.value || itinerary.value.trip_id === serverTripId) return;
+  itinerary.value.trip_id = serverTripId;
+}
+
 async function handleSave() {
   const it = buildVisibleItinerary(); if (!it) return;
   saving.value = true;
-  try { await saveTrip(it, agentTrace.value); message.success("行程已保存。"); }
+  try {
+    const saved = await saveTrip(it, agentTrace.value);
+    adoptServerTripId(saved?.trip_id);
+    message.success("行程已保存。");
+  }
   catch { message.error("保存行程失败。"); }
   finally { saving.value = false; }
 }

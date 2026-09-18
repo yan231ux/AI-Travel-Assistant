@@ -1,6 +1,7 @@
 package com.yuntu.tripplanner.controller;
 
 import com.yuntu.tripplanner.common.SpotNotFoundException;
+import com.yuntu.tripplanner.model.PreferenceAdjustment;
 import com.yuntu.tripplanner.model.SpotDetail;
 import com.yuntu.tripplanner.security.UserContext;
 import com.yuntu.tripplanner.service.SpotService;
@@ -9,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -87,15 +89,20 @@ public class SpotController {
         }
     }
 
-    /** 取消收藏（幂等：未收藏也不报错；不反噬画像权重）。景点不存在 → 404 */
+    /**
+     * 取消收藏（幂等：未收藏也不报错）。景点不存在 → 404。
+     * 画像可撤销：确实删掉收藏行时按 UNSAVE 回退部分权重（幅度小于收藏时的增加），
+     * 回退结果随 adjustments 下发，前端可提示"画像已更新"。
+     */
     @DeleteMapping("/{spotId}/favorite")
     public ResponseEntity<Map<String, Object>> unfavorite(@PathVariable String spotId) {
         Map<String, Object> body = new LinkedHashMap<>();
         try {
             String userId = UserContext.getUserId();
-            spotService.unfavorite(userId, spotId);
+            List<PreferenceAdjustment> adjustments = spotService.unfavorite(userId, spotId);
             body.put("success", true);
             body.put("message", "已取消收藏");
+            body.put("adjustments", adjustments);
             return ResponseEntity.ok(body);
         } catch (SpotNotFoundException e) {
             body.put("success", false);

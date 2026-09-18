@@ -68,18 +68,32 @@ public class UserProfileService {
     /** 行为反馈来源行（FEEDBACK）的置信度 */
     private static final double CONFIDENCE_FEEDBACK = 0.60;
     /** 行为 → 画像权重增量（PERSONALIZATION_PLAN 5.3）：点击 +0.05 / 收藏 +0.15 / 不感兴趣 -0.30 / 替换 -0.20；
-     *  阶段三起帖子点赞视为弱正反馈 +0.05（帖子互动与景点共用同一增量表，统一行为模型） */
+     *  阶段三起帖子点赞视为弱正反馈 +0.05（帖子互动与景点共用同一增量表，统一行为模型）；
+     *  取消收藏 -0.10 为「撤销」增量，幅度严格小于收藏的 +0.15（见 {@link #REVOKE_ACTIONS}）。 */
     private static final Map<String, Double> ACTION_DELTA = Map.of(
             UserBehavior.ACTION_CLICK, 0.05,
             UserBehavior.ACTION_SAVE, 0.15,
             UserBehavior.ACTION_LIKE, 0.05,
+            UserBehavior.ACTION_UNSAVE, -0.10,
             UserBehavior.ACTION_DISLIKE, -0.30,
             UserBehavior.ACTION_REPLACE, -0.20);
+    /**
+     * 撤销类行为（PERSONALIZATION_PLAN §5.4 画像可撤销）：回退此前的正向贡献。
+     *
+     * <p>与「负反馈」的区别很重要——负反馈是<b>新的态度</b>（用户表达"不喜欢这类"），
+     * 撤销只是<b>收回刚才那一下的加成</b>（用户说"我刚才点错了/改主意了"）。因此撤销：
+     * <ol>
+     *   <li>不受「负反馈粒度」门禁约束（{@link #isGeneralizableNegative}）——它天然只指向被撤销的那一次操作；</li>
+     *   <li>行不存在时不新建——无正向贡献 = 无分可退，凭空建出 0.5+delta 会制造假的"回避信号"；</li>
+     *   <li>受 {@link #POSITIVE_WEIGHT_MIN} 下限保护——只收回加成，绝不把权重压进"近期不感兴趣"区间。</li>
+     * </ol>
+     */
+    private static final Set<String> REVOKE_ACTIONS = Set.of(UserBehavior.ACTION_UNSAVE);
     /** 允许落库的行为全集（无增量规则的行为如 VIEW/RATE/REGENERATE/SHARE 仅留痕，不产生标签噪声） */
     private static final Set<String> VALID_ACTIONS = Set.of(
             UserBehavior.ACTION_VIEW, UserBehavior.ACTION_CLICK, UserBehavior.ACTION_SAVE,
             UserBehavior.ACTION_LIKE, UserBehavior.ACTION_SHARE,
-            UserBehavior.ACTION_DISLIKE, UserBehavior.ACTION_REPLACE,
+            UserBehavior.ACTION_UNSAVE, UserBehavior.ACTION_DISLIKE, UserBehavior.ACTION_REPLACE,
             UserBehavior.ACTION_REGENERATE, UserBehavior.ACTION_RATE);
     /** 低于该权重的非问卷偏好行不当作正偏好输出，转为"近期不感兴趣"回避信号 */
     static final double POSITIVE_WEIGHT_MIN = 0.45;
@@ -172,6 +186,10 @@ public class UserProfileService {
     /**
      * 提交偏好问卷：替换该用户全部「问卷来源」明细，并按问卷覆盖主档对应域。
      * 同标签若已有历史推断记录 → 一并覆盖为问卷记录（用户主动选择优先于推断）。
+     *
+     * <p>撤销语义：字段提交即代表「该域的最新真相」——列表传空数组、单值传空串都视为
+     * <b>用户主动清空该域</b>（明细与主档同步清掉）；字段缺失(null)表示本次不涉及该域。
+     * 这样用户「取消勾选之前选的偏好」能真正生效，而不是明细删了、主档仍留着旧值。
      */
     @Transactional
     public UserProfile applyQuestionnaire(String userId, QuestionnaireRequest q) {
@@ -200,33 +218,37 @@ public class UserProfileService {
         }
 
         // 3) 主档覆盖（问卷为该域最新真相）
+        //    撤销语义（PERSONALIZATION_PLAN §5.4「可撤销但回退幅度小于增加」）：
+        //    本轮用户可清掉自己之前勾选的偏好，明细第 1/2 步已整体替换，主档这里必须同步 ——
+        //    否则「明细已删、主档仍是旧值」，生成时照旧注入用户已经撤销掉的偏好（两处真相不一致）。
+        //    契约：字段缺失(null)=本次不涉及该域；空数组/空串=用户主动清空该域。
         UserProfile profile = loadOrInitProfile(userId);
         if (profile == null) {
             return null;
         }
         boolean changed = false;
-        if (q.getTravelStyles() != null && !q.getTravelStyles().isEmpty()) {
-            profile.setTravelStyles(join(q.getTravelStyles()));
+        if (q.getTravelStyles() != null) {
+            profile.setTravelStyles(q.getTravelStyles().isEmpty() ? null : join(q.getTravelStyles()));
             changed = true;
         }
-        if (isNotBlank(q.getPace())) {
-            profile.setPacePreference(q.getPace().trim());
+        if (q.getPace() != null) {
+            profile.setPacePreference(trimToNull(q.getPace()));
             changed = true;
         }
-        if (isNotBlank(q.getHotelLevel())) {
-            profile.setHotelPreference(q.getHotelLevel().trim());
+        if (q.getHotelLevel() != null) {
+            profile.setHotelPreference(trimToNull(q.getHotelLevel()));
             changed = true;
         }
-        if (q.getFoodPreferences() != null && !q.getFoodPreferences().isEmpty()) {
-            profile.setFoodPreferences(join(q.getFoodPreferences()));
+        if (q.getFoodPreferences() != null) {
+            profile.setFoodPreferences(q.getFoodPreferences().isEmpty() ? null : join(q.getFoodPreferences()));
             changed = true;
         }
-        if (q.getDietaryRestrictions() != null && !q.getDietaryRestrictions().isEmpty()) {
-            profile.setDietaryRestrictions(join(q.getDietaryRestrictions()));
+        if (q.getDietaryRestrictions() != null) {
+            profile.setDietaryRestrictions(q.getDietaryRestrictions().isEmpty() ? null : join(q.getDietaryRestrictions()));
             changed = true;
         }
-        if (q.getBehaviorNotes() != null && !q.getBehaviorNotes().isEmpty()) {
-            profile.setBehaviorNotes(join(q.getBehaviorNotes()));
+        if (q.getBehaviorNotes() != null) {
+            profile.setBehaviorNotes(q.getBehaviorNotes().isEmpty() ? null : join(q.getBehaviorNotes()));
             changed = true;
         }
         profile.setFilledFromQuestionnaire(1);
@@ -245,9 +267,11 @@ public class UserProfileService {
      *
      * <p>留痕：景点/餐厅/行程级行为写入 user_behavior（阶段四满意度均值、负反馈率的统计口径）。
      * 画像增量：行为对象 → 偏好标签采用确定性映射 {@link SpotTagMapper}（零 LLM），命中标签
-     * 按规则加减权重（SAVE +0.15 / CLICK +0.05 / DISLIKE -0.30 / REPLACE -0.20），clamp [0,1]；
-     * 标签行不存在时按 0.5+delta 起步建 FEEDBACK 行（负反馈行低权重 → 后续生成注入"近期不感兴趣"
-     * 回避信号）；问卷显式偏好行受负反馈保护（用户可自行在画像页修改，避免一次误点抹掉主动选择）。
+     * 按规则加减权重（SAVE +0.15 / UNSAVE -0.10 / CLICK +0.05 / DISLIKE -0.30 / REPLACE -0.20），
+     * clamp [0,1]；标签行不存在时按 0.5+delta 起步建 FEEDBACK 行（负反馈行低权重 → 后续生成注入
+     * "近期不感兴趣"回避信号）；问卷显式偏好行受负反馈保护（用户可自行在画像页修改，避免一次
+     * 误点抹掉主动选择）。U{@link #REVOKE_ACTIONS 撤销类行为}（取消收藏）另有三条专属规则：
+     * 不受负反馈粒度门禁约束、不新建权重行、不下探到 {@link #POSITIVE_WEIGHT_MIN} 以下。
      * RATE/VIEW 等无增量规则的行为仅留痕，不产生标签噪声。
      *
      * @return 本次实际影响的偏好调整列表（前端可据此提示画像变化）
@@ -292,15 +316,17 @@ public class UserProfileService {
             log.info("用户行为留痕（无权重规则）：{} {} {} {}", userId, action, itemType, req.getItemName());
             return List.of();
         }
+        boolean revoke = REVOKE_ACTIONS.contains(action);
         // 负反馈粒度（PLAN §2.2 问题三）：只有明确"不喜欢这类地点(TYPE)/这类标签(TAG)"才降低标签权重；
-        // 具体地点(ITEM)、距离、拥挤、价格、节奏等原因只留痕，不把一次误点泛化到整类标签
-        if (delta < 0 && !isGeneralizableNegative(req)) {
+        // 具体地点(ITEM)、距离、拥挤、价格、节奏等原因只留痕，不把一次误点泛化到整类标签。
+        // 撤销类行为例外：它只收回自己刚才那一下的加成，不存在"泛化到整类"的问题。
+        if (delta < 0 && !revoke && !isGeneralizableNegative(req)) {
             log.info("负反馈已留痕（具体地点/上下文原因，不改画像权重）：{} {} 原因={}", userId,
                     req.getItemName(), req.getReason());
             return List.of();
         }
         List<TagKey> keys = resolveTags(req);
-        if (delta < 0 && BehaviorRequest.REASON_TAG.equals(req.getReason())) {
+        if (delta < 0 && !revoke && BehaviorRequest.REASON_TAG.equals(req.getReason())) {
             keys = filterKeysByRequestedTags(keys, req.getTags());
             if (keys.isEmpty()) {
                 log.info("REASON_TAG 未命中画像标签，仅留痕：{} tags={}", userId, req.getTags());
@@ -318,6 +344,12 @@ public class UserProfileService {
             adj.setCategory(key.category);
             adj.setTag(key.tag);
             if (pref == null) {
+                if (revoke) {
+                    // 撤销：无正向贡献行 = 无分可退。不新建 —— 否则会凭空造出 0.5-0.10=0.40
+                    // 的"近期不感兴趣"信号（用户只是取消收藏，并没有表达不喜欢）
+                    log.debug("撤销行为无对应权重行，跳过：{} {}@{}", userId, key.tag, key.category);
+                    continue;
+                }
                 // 新标签行：0.5 + delta 起步（SAVE → 0.65 正偏好；DISLIKE → 0.20 回避信号）
                 double createdWeight = clamp(0.5 + delta);
                 UserPreference created = new UserPreference();
@@ -332,18 +364,30 @@ public class UserProfileService {
                 adj.setWeight(createdWeight);
                 adj.setCreated(true);
             } else if (delta < 0 && UserPreference.SOURCE_QUESTIONNAIRE.equals(pref.getSource())) {
-                // 问卷显式偏好受负反馈保护：不抹除主动选择（留痕仍已入库）
+                // 问卷显式偏好受负反馈保护：不抹除主动选择（留痕仍已入库）。撤销同样适用 ——
+                // 主动在问卷里勾选的偏好，不该被「收藏后又取消」这种间接操作抹掉
                 adj.setDelta(0);
                 adj.setWeight(pref.getWeight() == null ? 0 : pref.getWeight());
                 adj.setProtectedRow(true);
             } else {
                 double before = pref.getWeight() == null ? 0.5 : pref.getWeight();
                 double after = clamp(before + delta);
-                pref.setWeight(after);
-                pref.setLastObservedAt(LocalDateTime.now());
-                userPreferenceRepository.updateById(pref);
-                adj.setDelta(after - before);
-                adj.setWeight(after);
+                if (revoke) {
+                    // 撤销只收回加成、不制造负偏好：不下探到 POSITIVE_WEIGHT_MIN 以下；
+                    // 已经更低的权重行（真的不喜欢过）原样保留，避免撤销反过来"洗白"回避信号
+                    after = Math.max(after, Math.min(before, POSITIVE_WEIGHT_MIN));
+                }
+                if (Math.abs(after - before) < 1e-9) {
+                    // 权重实际没变（已在下限/已低于回避线）→ 不写库，也不计成"画像变化"
+                    adj.setDelta(0);
+                    adj.setWeight(after);
+                } else {
+                    pref.setWeight(after);
+                    pref.setLastObservedAt(LocalDateTime.now());
+                    userPreferenceRepository.updateById(pref);
+                    adj.setDelta(after - before);
+                    adj.setWeight(after);
+                }
             }
             adjustments.add(adj);
         }

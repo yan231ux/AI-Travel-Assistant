@@ -1,0 +1,29 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>RAG 混合检索 · 数据可信度</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>03 核心技术</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '28px 40px', flexDirection: 'row', gap: 32 }}>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 12, justifyContent: 'center' }}>
+      <Box style={{ background: '#0E3F8C', borderRadius: 8, padding: '12px', alignItems: 'center' }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>用户查询（城市 / 主题）</Text></Box>
+      <Text style={{ fontSize: 20, color: '#3D7BD9', textAlign: 'center' }}>↓ 三路并行检索</Text>
+      <Box style={{ flexDirection: 'row', gap: 10 }}>
+        <Box style={{ flex: 1, background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px', alignItems: 'center' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1A2230' }}>向量检索</Text><Text style={{ fontSize: 12, color: '#4A5568', marginTop: 2 }}>语义相似</Text></Box>
+        <Box style={{ flex: 1, background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px', alignItems: 'center' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1A2230' }}>BM25</Text><Text style={{ fontSize: 12, color: '#4A5568', marginTop: 2 }}>关键词匹配</Text></Box>
+        <Box style={{ flex: 1, background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 8, padding: '10px', alignItems: 'center' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1A2230' }}>关键词</Text><Text style={{ fontSize: 12, color: '#4A5568', marginTop: 2 }}>精确过滤</Text></Box>
+      </Box>
+      <Text style={{ fontSize: 20, color: '#3D7BD9', textAlign: 'center' }}>↓ RRF 融合排序 → 注入生成</Text>
+      <Box style={{ background: '#E8EFF8', border: '1px solid #3D7BD9', borderRadius: 8, padding: '12px', alignItems: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>攻略库 10 城 · Markdown 可维护</Text></Box>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/06_result_data.png" style={{ width: '100%', height: 300, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '14px 20px' }}>
+        <Text style={{ fontSize: 16, color: '#FFFFFF', lineHeight: 1.6 }}>检索结果附「数据来源说明 + 数据可信度 4/5」，每一处推荐都有据可查——抑制幻觉、可信可控。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>10 / 23</Text>
+  </Box>
+</Slide>

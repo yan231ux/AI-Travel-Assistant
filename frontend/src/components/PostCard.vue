@@ -14,7 +14,7 @@ import {
   unlikePost,
 } from "../services/api";
 import type { PostItem, PostStatus } from "../types";
-import { POST_STATUS_META, coverColor, postStatusLabel, postTypeLabel } from "../constants/postMeta";
+import { POST_STATUS_META, coverColor, isInteractiveStatus, postStatusLabel, postTypeLabel } from "../constants/postMeta";
 
 function postStatusCls(status?: string | null): string {
   return (status && POST_STATUS_META[status as PostStatus]?.cls) || "";
@@ -40,10 +40,17 @@ const router = useRouter();
 
 const liked = ref(!!props.post.liked);
 const favorited = ref(!!props.post.favorited);
-const disliked = ref(false);
+// 2026-09-18：从列表数据回填「不感兴趣」——此前恒为 false，刷新页面状态即丢，用户以为"点了没反应"
+const disliked = ref(!!props.post.disliked);
 const likeCount = ref(props.post.like_count || 0);
 const favoriteCount = ref(props.post.favorite_count || 0);
 const busy = ref(false);
+
+// 列表重新拉取后同步互动状态：父页面收到 emit('changed') 会重新请求列表，
+// 组件实例按 id 复用 → 仅靠 ref 初始值会停在旧状态，必须跟随 props 更新。
+watch(() => props.post.liked, (v) => { liked.value = !!v; });
+watch(() => props.post.favorited, (v) => { favorited.value = !!v; });
+watch(() => props.post.disliked, (v) => { disliked.value = !!v; });
 
 const showStatus = computed(() => !props.compact && props.post.status !== "PUBLISHED");
 
@@ -57,8 +64,10 @@ watch(
   }
 );
 
-/** 是否展示"不感兴趣"（仅已发布内容可互动，避免对草稿/待审误操作报错） */
-const canFeedback = computed(() => props.post.status === "PUBLISHED");
+/** 是否展示"不感兴趣"（仅已发布内容可互动，且非本人帖子——自己不能对自己帖子表态；判定与详情页同源） */
+const canFeedback = computed(
+  () => isInteractiveStatus(props.post.status) && !props.post.mine
+);
 
 function open() {
   // 阶段三：从推荐流点进详情 → 上报 CLICK（帖子推荐点击率分子；失败静默不影响跳转）
@@ -125,6 +134,8 @@ async function toggleDislike() {
     emit("changed");
     if (target) {
       message.success("已减少这类内容的推荐");
+    } else {
+      message.success("已撤销，恢复这类内容的推荐");
     }
   } catch {
     message.error("操作失败，请稍后重试。");

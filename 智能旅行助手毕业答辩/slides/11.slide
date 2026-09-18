@@ -1,0 +1,33 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>个性化画像闭环</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>03 核心技术</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 600, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/07_profile.png" style={{ width: 600, height: 340, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>我的偏好 · 收藏景点后推断出「旅行风格：历史文化」</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 14, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>行为信号采集</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>收藏景点即反馈，无需用户手动填画像。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>画像推断</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>跨城收藏也能触发，自动归并出「历史文化」标签。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>确定性排序</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>权重可量化（收藏 +0.15 / 回避 −0.30），设回避底线，可解释。</Text></Box>
+      </Box>
+      <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '14px 20px' }}>
+        <Text style={{ fontSize: 16, color: '#FFFFFF', lineHeight: 1.6 }}>画像随行为实时刷新（版本号 +1 失效缓存），推荐跟着用户走，越用越懂你。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>11 / 23</Text>
+  </Box>
+</Slide>

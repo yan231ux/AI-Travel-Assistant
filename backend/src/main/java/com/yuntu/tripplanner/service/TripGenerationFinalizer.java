@@ -8,6 +8,7 @@ import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.MealItem;
 import com.yuntu.tripplanner.model.PersonalizationSummary;
 import com.yuntu.tripplanner.model.SpotItem;
+import com.yuntu.tripplanner.model.TravelEvent;
 import com.yuntu.tripplanner.model.TripRequest;
 import com.yuntu.tripplanner.repository.CandidateEvidenceRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -41,13 +42,16 @@ public class TripGenerationFinalizer {
     private final RecommendationService recommendationService;
     private final CandidateEvidenceRepository candidateEvidenceRepository;
     private final UserProfileService userProfileService;
+    private final TravelEventService travelEventService;
 
     public TripGenerationFinalizer(RecommendationService recommendationService,
                                    CandidateEvidenceRepository candidateEvidenceRepository,
-                                   UserProfileService userProfileService) {
+                                   UserProfileService userProfileService,
+                                   TravelEventService travelEventService) {
         this.recommendationService = recommendationService;
         this.candidateEvidenceRepository = candidateEvidenceRepository;
         this.userProfileService = userProfileService;
+        this.travelEventService = travelEventService;
     }
 
     /**
@@ -88,6 +92,14 @@ public class TripGenerationFinalizer {
             attachFilteredCandidates(itinerary, evidence);
         } catch (Exception e) {
             log.warn("过滤候选说明构建失败（不影响生成）: {}", e.getMessage());
+        }
+
+        // 5) 行程事件埋点（阶段二数据地基）：TRIP_GENERATED + SPOT_GENERATED（规划采用）；
+        //    事件表去重幂等，重复调用不重复记
+        try {
+            travelEventService.recordTripGenerated(userId, itinerary, TravelEvent.SOURCE_AGENT);
+        } catch (Exception e) {
+            log.warn("行程事件埋点失败（不影响生成）: {}", e.getMessage());
         }
     }
 

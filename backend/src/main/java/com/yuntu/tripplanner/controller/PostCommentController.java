@@ -18,7 +18,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 帖子评论控制器（阶段二 §9.6）：列表 / 发布 / 删除（作者或管理员）。
+ * 帖子评论控制器（阶段二 §9.6）：列表 / 发布 / 删除。
+ *
+ * <p>删除权限为三方：评论作者本人 / 帖子作者（楼主治理自己帖子下的评论）/ 管理员，
+ * 判定与审计留痕都在 Service 内完成，Controller 只做 HTTP 映射。
  */
 @Slf4j
 @RestController
@@ -60,7 +63,7 @@ public class PostCommentController {
         return ResponseEntity.ok(body);
     }
 
-    /** 删除评论（作者本人或管理员） */
+    /** 删除评论（评论作者本人 / 帖子作者 / 管理员） */
     @DeleteMapping("/comments/{commentId}")
     public ResponseEntity<Map<String, Object>> delete(@PathVariable Long commentId) {
         commentService.delete(UserContext.getUserId(), commentId);

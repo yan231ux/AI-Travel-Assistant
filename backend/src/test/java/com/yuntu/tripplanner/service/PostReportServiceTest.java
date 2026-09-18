@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.service;
 
+import com.yuntu.tripplanner.common.AdminPermission;
 import com.yuntu.tripplanner.exception.ForbiddenException;
 import com.yuntu.tripplanner.exception.PostNotFoundException;
 import com.yuntu.tripplanner.model.ContentReport;
@@ -96,9 +97,32 @@ class PostReportServiceTest {
     }
 
     @Test
+    void create_onOwnPost_rejected() {
+        // 作者不该举报自己：对自己内容有编辑/删除手段，举报是给其他用户的工具
+        when(postRepository.selectById(1L)).thenReturn(publishedPost()); // 作者 = u2
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.create("u2", "POST", 1L, "广告", null));
+        verify(reportRepository, never()).insert(any());
+    }
+
+    @Test
+    void create_onNonPublishedPost_rejected() {
+        // 未公开内容（草稿/审核中/已下架）不对访客暴露，举报无意义且可被用来刷他人违规次数
+        TravelPost pending = publishedPost();
+        pending.setStatus(TravelPost.STATUS_PENDING_REVIEW);
+        pending.setPublishedAt(null);
+        when(postRepository.selectById(1L)).thenReturn(pending);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.create("u1", "POST", 1L, "广告", null));
+        verify(reportRepository, never()).insert(any());
+    }
+
+    @Test
     void pending_nonAdmin_forbidden() {
         doThrow(new ForbiddenException("该操作需要管理员权限"))
-                .when(communityUserService).requireAdmin(any());
+                .when(communityUserService).requirePermission(any(), eq(AdminPermission.CONTENT_REVIEW));
         assertThrows(ForbiddenException.class, () -> service.pending("u1", 1, 20));
     }
 
@@ -112,7 +136,7 @@ class PostReportServiceTest {
         when(reportRepository.selectById(1L)).thenReturn(report);
         when(postRepository.selectById(1L)).thenReturn(publishedPost());
 
-        service.handle("admin", 1L, "RESOLVE");
+        service.handle("admin", 1L, "RESOLVE", null);
 
         ArgumentCaptor<ContentReport> captor = ArgumentCaptor.forClass(ContentReport.class);
         verify(reportRepository).updateById(captor.capture());
@@ -132,7 +156,7 @@ class PostReportServiceTest {
         report.setStatus(ContentReport.STATUS_PENDING);
         when(reportRepository.selectById(2L)).thenReturn(report);
 
-        service.handle("admin", 2L, "DISMISS");
+        service.handle("admin", 2L, "DISMISS", null);
 
         ArgumentCaptor<ContentReport> captor = ArgumentCaptor.forClass(ContentReport.class);
         verify(reportRepository).updateById(captor.capture());
@@ -145,7 +169,7 @@ class PostReportServiceTest {
     @Test
     void history_requiresAdmin_andReturnsHandledRows() {
         doThrow(new ForbiddenException("该操作需要管理员权限"))
-                .when(communityUserService).requireAdmin(anyString());
+                .when(communityUserService).requirePermission(anyString(), eq(AdminPermission.CONTENT_REVIEW));
 
         assertThrows(ForbiddenException.class, () -> service.history("u1", 1, 20));
     }

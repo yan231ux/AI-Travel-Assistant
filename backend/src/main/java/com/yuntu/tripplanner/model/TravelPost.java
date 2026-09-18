@@ -95,6 +95,13 @@ public class TravelPost {
     @TableField("low_quality")
     private Integer lowQuality;
 
+    /**
+     * 待审核的编辑版本ID（审查报告 P1-1：公开版本 / 编辑版本分离）。
+     * 非空 = 作者对已发布内容提交了修改稿，本行仍是线上公开版本，修改稿在 travel_post_revision。
+     */
+    @TableField("pending_revision_id")
+    private Long pendingRevisionId;
+
     @TableField("published_at")
     private LocalDateTime publishedAt;
 

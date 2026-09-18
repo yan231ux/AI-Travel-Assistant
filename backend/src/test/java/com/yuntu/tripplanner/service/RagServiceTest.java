@@ -90,4 +90,38 @@ class RagServiceTest {
         assertTrue(card.containsKey("intro") && !card.get("intro").isBlank(),
                 "卡片应含可回写的简介");
     }
+
+    @Test
+    void matchesOfficialCardByPopularNameInParens() {
+        // Q4 实测复现：卡片标题「秦始皇帝陵博物院（兵马俑）」，LLM 写的是俗名"兵马俑博物馆"。
+        // 修复前：完整标题与俗名互不包含 → 不命中 → 门票/地址只能标"LLM建议（需核实）"。
+        // 修复后：括号别名"兵马俑"参与匹配，"兵马俑" ⊂ "兵马俑博物馆" → 命中并回写真实票价。
+        Map<String, String> card = ragService.findSpotCard("西安", "兵马俑博物馆");
+        assertNotNull(card, "官方名（俗名）卡片必须能被俗名命中");
+        assertEquals("120", stripNonDigits(card.get("ticket")),
+                "命中的是兵马俑卡片，门票须回写真实价 120 元");
+    }
+
+    @Test
+    void officialNameStillMatchesItsOwnCard() {
+        // 反向也要通：用官方名"秦始皇帝陵博物院"同样能命中（完整标题包含它）
+        assertNotNull(ragService.findSpotCard("西安", "秦始皇帝陵博物院"),
+                "官方名必须命中自己的卡片");
+        // 俗名"兵马俑"（比官方名短）也命中
+        assertNotNull(ragService.findSpotCard("西安", "兵马俑"), "短俗名必须命中");
+    }
+
+    @Test
+    void unrelatedNameDoesNotMatchViaShortAlias() {
+        // 防回归：别名放宽不能引入误命中——"钟楼"与兵马俑卡片毫无包含关系，不得返回兵马俑卡片
+        Map<String, String> card = ragService.findSpotCard("西安", "钟楼");
+        if (card != null) {
+            assertFalse(String.valueOf(card.get("location")).contains("临潼区秦陵北路"),
+                    "钟楼不得误命中兵马俑（临潼）卡片");
+        }
+    }
+
+    private static String stripNonDigits(String s) {
+        return s == null ? "" : s.replaceAll("\\D", "");
+    }
 }

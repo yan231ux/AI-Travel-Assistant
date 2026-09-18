@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.controller;
 
+import com.yuntu.tripplanner.common.AdminPermission;
 import com.yuntu.tripplanner.model.AbExperiment;
 import com.yuntu.tripplanner.model.AuditLog;
 import com.yuntu.tripplanner.security.UserContext;
@@ -7,6 +8,7 @@ import com.yuntu.tripplanner.service.AbExperimentService;
 import com.yuntu.tripplanner.service.AuditService;
 import com.yuntu.tripplanner.service.CommunityUserService;
 import com.yuntu.tripplanner.service.FeedMonitorService;
+import com.yuntu.tripplanner.service.RecommendationQualityService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,8 +27,8 @@ import java.util.Map;
 /**
  * 推荐运营控制器（阶段四任务 6/7/10：推荐 A/B 实验 + 推荐流监控 + 全链路审计查询，管理后台）。
  *
- * <p>全部接口服务端校验 ADMIN 角色（CommunityUserService.requireAdmin → 非管理员 403），
- * 不依赖前端隐藏按钮；实验创建/关闭与监控读数只读/写平台侧表，不触碰用户业务数据。
+ * <p>全部接口服务端按域校验权限（实验/监控 → RECOMMEND_OPS，审计查询 → AUDIT_VIEW；
+ * 非管理端角色 403），不依赖前端隐藏按钮；实验创建/关闭与监控读数只读/写平台侧表，不触碰用户业务数据。
  * 普通用户侧实验变体由推荐流服务在请求内 resolveVariant 决定，本控制器只做管理面；
  * 实验开/关等运营动作写全链路审计（任务 10，CAT_OPS），审计查询也在本控制器。
  */
@@ -37,15 +39,18 @@ public class FeedOpsController {
 
     private final AbExperimentService abExperimentService;
     private final FeedMonitorService feedMonitorService;
+    private final RecommendationQualityService recommendationQualityService;
     private final CommunityUserService communityUserService;
     private final AuditService auditService;
 
     public FeedOpsController(AbExperimentService abExperimentService,
                              FeedMonitorService feedMonitorService,
+                             RecommendationQualityService recommendationQualityService,
                              CommunityUserService communityUserService,
                              AuditService auditService) {
         this.abExperimentService = abExperimentService;
         this.feedMonitorService = feedMonitorService;
+        this.recommendationQualityService = recommendationQualityService;
         this.communityUserService = communityUserService;
         this.auditService = auditService;
     }
@@ -53,7 +58,7 @@ public class FeedOpsController {
     /** 实验列表（管理员）：含每变体参与人数 */
     @GetMapping("/experiments")
     public ResponseEntity<Map<String, Object>> experiments() {
-        communityUserService.requireAdmin(UserContext.getUserId());
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.RECOMMEND_OPS);
         List<Map<String, Object>> items = new ArrayList<>();
         for (AbExperimentService.ExperimentWithStat s : abExperimentService.listAll()) {
             items.add(expMap(s));
@@ -68,7 +73,7 @@ public class FeedOpsController {
     @PostMapping("/experiments")
     public ResponseEntity<Map<String, Object>> createExperiment(
             @RequestBody(required = false) Map<String, String> body) {
-        communityUserService.requireAdmin(UserContext.getUserId());
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.RECOMMEND_OPS);
         String name = body == null ? null : body.get("name");
         String feedType = body == null ? null : body.get("feedType");
         String strategy = body == null ? null : body.get("strategy");
@@ -92,7 +97,7 @@ public class FeedOpsController {
     /** 关闭实验（管理员）：CLOSED 后推荐流回到基线，分桶与曝光不再按变体生效 */
     @PostMapping("/experiments/{name}/close")
     public ResponseEntity<Map<String, Object>> closeExperiment(@PathVariable String name) {
-        communityUserService.requireAdmin(UserContext.getUserId());
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.RECOMMEND_OPS);
         AbExperiment exp = abExperimentService.close(name);
         auditService.record(UserContext.getUserId(), AuditLog.CAT_OPS, "experiment_closed",
                 "experiment", exp.getExpName(), null);
@@ -106,7 +111,7 @@ public class FeedOpsController {
     @GetMapping("/feed-monitor")
     public ResponseEntity<Map<String, Object>> feedMonitor(
             @RequestParam(defaultValue = "7") int days) {
-        communityUserService.requireAdmin(UserContext.getUserId());
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.RECOMMEND_OPS);
         FeedMonitorService.MonitorReport report = feedMonitorService.report(days);
         Map<String, Object> feeds = new LinkedHashMap<>();
         report.feeds().forEach((k, v) -> feeds.put(k, v.toMap()));
@@ -114,6 +119,26 @@ public class FeedOpsController {
         body.put("success", true);
         body.put("days", report.days());
         body.put("feeds", feeds);
+        // 数据源读取失败必须显式透出：否则管理员会把"查询故障"误读成"监控读数真的全 0"
+        body.put("degraded", !report.failures().isEmpty());
+        body.put("errors", report.failures());
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 城市推荐质量（管理员，设计方案 §6）：按城市拆开看"有没有货 / 货好不好 / 用户买不买账"。
+     *
+     * <p>返回体的 {@code notes} 写明每个指标口径，{@code degraded/errors} 表明哪一路数据源读失败；
+     * 未采集的指标（推荐失败率）也在 notes 里显式说明，不留静默缺口。
+     */
+    @GetMapping("/recommendations/city-quality")
+    public ResponseEntity<Map<String, Object>> cityQuality(
+            @RequestParam(defaultValue = "30") int days,
+            @RequestParam(defaultValue = "50") int limit) {
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.RECOMMEND_OPS);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", true);
+        body.putAll(recommendationQualityService.cityQuality(days, limit));
         return ResponseEntity.ok(body);
     }
 
@@ -127,7 +152,7 @@ public class FeedOpsController {
             @RequestParam(defaultValue = "7") int days,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
-        communityUserService.requireAdmin(UserContext.getUserId());
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.AUDIT_VIEW);
         AuditService.AuditPage result = auditService.page(actor, category, days, page, pageSize);
         List<String> actorIds = new ArrayList<>();
         for (var row : result.items()) {

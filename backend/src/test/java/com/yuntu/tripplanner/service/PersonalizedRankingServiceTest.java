@@ -1,6 +1,7 @@
 package com.yuntu.tripplanner.service;
 
 import com.yuntu.tripplanner.agent.CollectedData;
+import com.yuntu.tripplanner.model.CandidateEvidence;
 import com.yuntu.tripplanner.model.DayPlan;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.SpotItem;
@@ -50,6 +51,14 @@ class PersonalizedRankingServiceTest {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("type", type);
+        return m;
+    }
+
+    /** 构造带经纬度的候选 POI（Q1 距离惩罚测试用） */
+    private Map<String, Object> poiAt(String name, String type, double lat, double lng) {
+        Map<String, Object> m = poi(name, type);
+        m.put("latitude", lat);
+        m.put("longitude", lng);
         return m;
     }
 
@@ -210,6 +219,53 @@ class PersonalizedRankingServiceTest {
         assertEquals("老北京火锅(前门店)", ranked.get(0).get("name"), "命中火锅口味的餐厅置顶");
         assertTrue(cd.getPersonalizedNotes().stream().anyMatch(n -> n.contains("火锅")),
                 "餐厅桶需产出口味匹配说明");
+    }
+
+    @Test
+    void restaurantFarFromSpotAnchor_getsDistancePenaltyAndSinks() {
+        // Q1 回归：餐厅候选距"景点群中位中心"很远 → 距离惩罚 → 排序沉底。
+        // 两家餐厅口味均无匹配、基础分相同：近的一家不受罚，远的一家（约 70km）应被罚到沉底。
+        when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
+                stylePref("历史文化", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
+        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+
+        CollectedData cd = new CollectedData();
+        // 景点群集中市中心（锚点 = 它们的中位中心）
+        cd.getPoiResults().put("景点", List.of(
+                poiAt("甲博物馆", "科教文化;博物馆", 39.900, 116.400),
+                poiAt("乙公园", "风景名胜;公园", 39.902, 116.402)));
+        cd.getPoiResults().put("餐厅", List.of(
+                poiAt("远郊饭店", "餐饮服务;中餐厅", 40.350, 117.000),
+                poiAt("市中心小吃店", "餐饮服务;中餐厅", 39.901, 116.401)));
+
+        assertTrue(service.rankAndFilter("user-1", null, cd));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> ranked = (List<Map<String, Object>>) cd.getPoiResults().get("餐厅");
+        assertEquals("市中心小吃店", ranked.get(0).get("name"), "距景点群近的餐厅应排前");
+        assertEquals("远郊饭店", ranked.get(1).get("name"), "远郊餐厅被距离惩罚沉底");
+
+        // 证据可解释：远餐厅 penalty>0 且 finalScore 更低；近餐厅 penalty==0
+        List<CandidateEvidence> evs = cd.getCandidateEvidence();
+        assertTrue(evs != null && evs.size() >= 4, "景点+餐厅候选都应有证据");
+        CandidateEvidence far = evs.stream().filter(e -> "远郊饭店".equals(e.getItemName())).findFirst().orElseThrow();
+        CandidateEvidence near = evs.stream().filter(e -> "市中心小吃店".equals(e.getItemName())).findFirst().orElseThrow();
+        assertTrue(far.getDistancePenalty() > 0.9, "约 70km 的餐厅惩罚应接近封顶");
+        assertEquals(0.0, near.getDistancePenalty(), 1e-9, "1.4km 的餐厅不应受罚");
+        assertTrue(far.getFinalScore() < near.getFinalScore(), "远餐厅最终分应低于近餐厅");
+    }
+
+    @Test
+    void distancePenalty_boundaries() {
+        double[] anchor = {39.9, 116.4};
+        assertEquals(0.0, PersonalizedRankingService.distancePenalty(39.901, 116.401, anchor), 1e-9,
+                "5km 免罚半径内不罚");
+        assertEquals(1.0, PersonalizedRankingService.distancePenalty(40.350, 117.000, anchor), 1e-9,
+                "45km 以上惩罚封顶（沉底）");
+        assertEquals(0.0, PersonalizedRankingService.distancePenalty(null, 116.4, anchor),
+                "缺坐标不误伤（不罚无坐标候选）");
+        assertEquals(0.0, PersonalizedRankingService.distancePenalty(39.9, 116.4, null),
+                "无锚点不罚");
     }
 
     @Test

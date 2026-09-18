@@ -1,0 +1,30 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>工程验证 · 单元测试</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>06 工程验证</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 780, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/23_unit_tests.png" style={{ width: 780, height: 438, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>VSCode 集成终端执行 mvn.cmd test：596 项通过 / 0 失败 / 0 错误</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 16, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>596 项测试全绿</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>覆盖 service、controller、agent、repository 多层，Failures=0 / Errors=0。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>前端构建零错误</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>vue-tsc + vite build 通过 EXIT=0，类型检查与产物构建均正常。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>工程化沉淀</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>GitHub v1.x 语义版本标签存档，TROUBLESHOOTING.md 记录真实踩坑与解法。</Text></Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>21 / 23</Text>
+  </Box>
+</Slide>

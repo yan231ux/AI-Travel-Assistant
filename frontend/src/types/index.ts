@@ -205,8 +205,16 @@ export interface User {
   id: string;
   username: string;
   nickname?: string | null;
-  /** USER / ADMIN（阶段二社区；登录响应与 /auth/me 提供，旧会话可能缺省） */
+  /**
+   * 角色码（阶段二社区 / 阶段五角色细化）：
+   * USER / CONTENT_REVIEWER / CITY_EDITOR / RECOMMENDATION_OPERATOR / SUPER_ADMIN（历史值 ADMIN）。
+   * 登录响应与 /auth/me 提供，旧会话可能缺省。
+   */
   role?: string | null;
+  /** 角色中文名（如"内容审核员"），登录响应与 /auth/me 下发，仅供展示 */
+  role_label?: string | null;
+  /** 权限点集合（服务端下发，前端据此过滤菜单/按钮；服务端仍会二次校验） */
+  permissions?: string[] | null;
 }
 
 export interface AuthResponse {
@@ -275,7 +283,10 @@ export interface ProfileResponse {
   preferences: ProfilePreference[];
 }
 
-/** 偏好问卷提交参数（所有字段可选，未提交的域保持现状） */
+/**
+ * 偏好问卷提交参数。
+ * 契约：字段缺失 = 本次不涉及该域（保持现状）；空数组 / 空串 = 用户主动清空该域（撤销生效）。
+ */
 export interface QuestionnaireRequest {
   travelStyles?: string[];
   pace?: string | null;
@@ -406,6 +417,45 @@ export interface RecommendationFeed {
   total?: number | null;
 }
 
+/**
+ * 首页「大家最近在规划」热门景点项（GET /home/trending-spots）。
+ *
+ * 这是**社会热度**而非个性化推荐（设计方案 §6.1）：因此这里**没有**匹配度/画像字段，
+ * 前端不得把它包装成"适合你"；个性化如果要有，也只能另起一行做叠加标注。
+ */
+export interface TrendingSpotItem {
+  /** 系统景点 ID（详情/收藏路由用） */
+  spot_id: string;
+  /** 事件里的 item_id（可能是 spot_id 也可能是 poi_id，仅调试用） */
+  item_id: string;
+  name: string;
+  city: string;
+  image_url?: string | null;
+  data_quality?: string | null;
+  /** 窗口内规划过该景点的人数；小样本保护命中时为 null（必须配合 sample_hidden 判断） */
+  planning_users?: number | null;
+  /** 窗口内该景点被生成进行程的总次数 */
+  planning_count: number;
+  saved_trip_count: number;
+  favorite_count: number;
+  /** true = 人数不足阈值，前端展示"近期有人规划"而不是具体数字 */
+  sample_hidden: boolean;
+  /** 趋势方向：UP 升温 / DOWN 降温 / FLAT 持平 */
+  trend: string;
+  /** 热度分（城市内归一化 + 按天半衰；跨城市已可比） */
+  hot_score: number;
+}
+
+/** 首页热门景点响应体（GET /home/trending-spots 直出，无 success/data 包裹） */
+export interface TrendingSpotFeed {
+  items: TrendingSpotItem[];
+  window_days: number;
+  generated_at: string;
+  /** 查询失败显式降级（延续看板口径：绝不伪装成"近期没有热门"） */
+  degraded: boolean;
+  errors: string[];
+}
+
 /** 景点详情（GET /spots/{id} data；含可信度/是否去过/收藏态/同城相关） */
 export interface SpotDetail {
   spot_id: string;
@@ -504,8 +554,15 @@ export interface PostItem {
   created_at?: string | null;
   liked?: boolean | null;
   favorited?: boolean | null;
+  /** 当前用户是否点过「不感兴趣」（后端于列表/详情回填；2026-09-18 前只由互动接口返回，刷新即丢） */
+  disliked?: boolean | null;
   reject_reason?: string | null;
   mine?: boolean | null;
+  /* ---------- P1-1 编辑版本化：公开版本 / 编辑版本分离 ---------- */
+  /** 是否存在待审修改版本（已发布帖被编辑 → 修改稿独立待审，线上版本不变） */
+  has_pending_revision?: boolean | null;
+  /** 待审修改版本号（1=首版，2=第 2 版…） */
+  pending_revision_no?: number | null;
   /* ---------- 阶段三：个性化推荐流返回（"为你推荐"排序时由后端填充） ---------- */
   /** 推荐理由（"匹配你的偏好：历史文化"） */
   recommend_reason?: string | null;
@@ -527,6 +584,28 @@ export interface PostDetail extends PostItem {
   budget?: number | null;
   pace?: string | null;
   spots?: PostSpotRef[] | null;
+  /** 待审修改版本内容快照（作者/审核员可见；无待审版本为 null） */
+  pending_revision?: PendingRevision | null;
+}
+
+/** 待审修改版本内容快照（P1-1 版本化，"线上版本 vs 待审版本"对比用） */
+export interface PendingRevision {
+  id: number;
+  revision_no: number;
+  status: string;
+  title: string;
+  summary?: string | null;
+  content: string;
+  cover_image?: string | null;
+  city?: string | null;
+  travel_days?: number | null;
+  budget?: number | null;
+  pace?: string | null;
+  post_type?: string | null;
+  spots?: PostSpotRef[] | null;
+  reject_reason?: string | null;
+  edited_at?: string | null;
+  editor?: string | null;
 }
 
 /** 帖子分页响应体 */
@@ -536,17 +615,24 @@ export interface PostPage {
   page: number;
 }
 
-/** 创建/编辑帖子入参（axios JSON 直发 camelCase，后端 @JsonProperty 对齐 snake_case） */
+/**
+ * 创建/编辑帖子入参。
+ *
+ * <p>字段名必须是 <b>snake_case</b>：后端 PostCreateRequest/PostUpdateRequest 用
+ * `@JsonProperty("cover_image")` 声明契约、并不做命名策略转换（axios 也在请求拦截器里
+ * 只加 Authorization，不改 key）。此处曾写成 camelCase（coverImage/travelDays/postType），
+ * 导致这三个字段被 Spring Boot 当未知属性静默丢弃 —— 封面不显示、天数与类型丢失。
+ */
 export interface PostPayload {
   title: string;
   summary?: string;
   content: string;
-  coverImage?: string;
+  cover_image?: string;
   city?: string;
-  travelDays?: number;
+  travel_days?: number;
   budget?: number;
   pace?: string;
-  postType?: PostType;
+  post_type?: PostType;
   spots?: PostSpotRef[];
 }
 
@@ -560,6 +646,11 @@ export interface CommentItem {
   author?: PostAuthor | null;
   created_at?: string | null;
   mine?: boolean | null;
+  /**
+   * 当前访问者是否有权删除（评论作者 / 楼主 / 管理员；已删评论恒 false）。
+   * 权限规则由后端统一下发，前端不再自己拼 —— 避免「后端能删、前端不显示按钮」的不一致。
+   */
+  can_delete?: boolean | null;
 }
 
 export interface CommentPage {
@@ -591,6 +682,8 @@ export interface ReportItem {
   status?: string | null;
   handled_by?: string | null;
   handled_at?: string | null;
+  /** 处理备注（管理员举报处理时填写） */
+  handle_note?: string | null;
 }
 
 /* ---------- 阶段四：城市专题页 ---------- */

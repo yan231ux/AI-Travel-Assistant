@@ -12,8 +12,8 @@ import java.time.LocalDateTime;
 /**
  * 用户行为记录（对应 user_behavior 表，个性化阶段二）。
  *
- * <p>景点/餐厅/行程级别的行为留痕：VIEW/CLICK/SAVE/DISLIKE/REPLACE/REGENERATE/RATE。
- * 行为既是画像增量更新的信号源（收藏 +0.15 / 不感兴趣 -0.30 / 替换 -0.20），
+ * <p>景点/餐厅/行程级别的行为留痕：VIEW/CLICK/SAVE/UNSAVE/DISLIKE/REPLACE/REGENERATE/RATE。
+ * 行为既是画像增量更新的信号源（收藏 +0.15 / 取消收藏 -0.10 / 不感兴趣 -0.30 / 替换 -0.20），
  * 也是阶段四实验指标（负反馈率、满意度均值）的统计口径。
  */
 @Data
@@ -37,6 +37,11 @@ public class UserBehavior {
     public static final String ACTION_CLICK = "CLICK";
     /** 行为：收藏（正反馈） */
     public static final String ACTION_SAVE = "SAVE";
+    /**
+     * 行为：取消收藏（撤销，回退收藏带来的部分加成；回退幅度严格小于增加，见
+     * {@code UserProfileService.REVOKE_ACTIONS}）。
+     */
+    public static final String ACTION_UNSAVE = "UNSAVE";
     /** 行为：不感兴趣（负反馈） */
     public static final String ACTION_DISLIKE = "DISLIKE";
     /** 行为：替换掉（负反馈，本次不满意） */
@@ -73,7 +78,7 @@ public class UserBehavior {
     @TableField("poi_type")
     private String poiType;
 
-    /** VIEW/CLICK/SAVE/DISLIKE/REPLACE/REGENERATE/RATE */
+    /** VIEW/CLICK/SAVE/UNSAVE/DISLIKE/REPLACE/REGENERATE/RATE/LIKE/SHARE */
     @TableField("action_type")
     private String actionType;
 

@@ -52,12 +52,17 @@ public final class SpotTagMapper {
     /**
      * 景点 → 旅行风格标签（≤2，去重保序）。
      * 优先高德 type 分段落规则；type 为空/不中时用名称关键词兜底。
+     * 末尾再做一次「建筑名胜修正」：高德 type 把"风景名胜"宽泛归到"自然风景"，
+     * 但天安门/天坛/毛主席纪念堂这类纯建筑古迹显然不是自然风景——
+     * 用名称强历史/建筑信号（寺/庙/宫/塔/陵/祠/堂/门/楼/阁/坊/馆/纪/念/文物/遗址/故居/古/老/墓/古镇/古城/老街/巷/碑/钟）做二选一；
+     * 名称若同时含强自然信号（山/海/湖/江/河/岛/湾/林/草/泉/瀑/峡/峰/植物/地质/观/动物/园/原/田/溪/潭/沙/丘/谷）则尊重自然属性，不修正（例：景山/北海/植物园）。
      */
     public static List<String> styleTags(String poiType, String name) {
         Set<String> tags = new LinkedHashSet<>();
         if (poiType != null && !poiType.isBlank()) {
             for (String segment : poiType.split(";")) {
                 matchSegment(tags, segment.trim(), TYPE_RULES);
+                applyHistoryOverride(tags, name);
                 if (tags.size() >= 2) {
                     return List.copyOf(tags);
                 }
@@ -66,7 +71,39 @@ public final class SpotTagMapper {
         if (tags.isEmpty() && name != null && !name.isBlank()) {
             matchSegment(tags, name, NAME_RULES);
         }
+        applyHistoryOverride(tags, name);
         return List.copyOf(tags);
+    }
+
+    /**
+     * 建筑名胜修正：tags 含"自然风景"且名称无强自然信号 + 有强历史/建筑信号 → 改为"历史文化"。
+     * 高德 type 粒度对天安门/天坛这类纯建筑名胜失真，靠名称兜底二选一更准。
+     * 既无强自然也无强历史（普通 POI 名称无特征）→ 不动，保持原 type 推断。
+     */
+    private static void applyHistoryOverride(Set<String> tags, String name) {
+        if (name == null || name.isBlank() || !tags.contains("自然风景")) {
+            return;
+        }
+        if (containsAny(name, "山", "海", "湖", "江", "河", "岛", "湾", "林", "森林", "草",
+                "泉", "瀑", "峡", "峰", "植物", "湿地", "地质", "观", "动物", "原",
+                "田", "溪", "潭", "沙", "丘", "谷", "冰川")) {
+            return; // 强自然属性胜出，不修正（景山/北海/西湖等；"园"不算强自然，避免误伤天坛公园这类祭坛园林）
+        }
+        if (containsAny(name, "寺", "庙", "宫", "塔", "陵", "祠", "堂", "坛", "门", "楼", "阁", "坊",
+                "碑", "钟", "故", "纪", "念", "馆", "文物", "遗址", "故居", "古镇", "古城",
+                "老街", "巷", "古", "老", "墓")) {
+            tags.remove("自然风景");
+            tags.add("历史文化");
+        }
+    }
+
+    private static boolean containsAny(String text, String... keywords) {
+        for (String k : keywords) {
+            if (text.contains(k)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 餐厅名称 → 口味标签（≤2，按名称出现顺序） */

@@ -1,0 +1,18 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>审计日志 · 全链路可解释</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>05 平台治理</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '20px 40px', flexDirection: 'column', gap: 12, alignItems: 'center' }}>
+    <Image src="assets/21_audit.png" style={{ width: 880, height: 494, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+    <Box style={{ flexDirection: 'row', gap: 14, width: 880 }}>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, padding: '10px 14px' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#0E3F8C' }}>全链路留痕</Text><Text style={{ fontSize: 13, color: '#4A5568', marginTop: 2 }}>508 条事件可查</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, padding: '10px 14px' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#0E3F8C' }}>主体与风险可溯</Text><Text style={{ fontSize: 13, color: '#4A5568', marginTop: 2 }}>system:ai + taskId + risk</Text></Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 8, padding: '10px 14px' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#0E3F8C' }}>闭环可复盘</Text><Text style={{ fontSize: 13, color: '#4A5568', marginTop: 2 }}>发布→审核→自动放行</Text></Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>18 / 23</Text>
+  </Box>
+</Slide>

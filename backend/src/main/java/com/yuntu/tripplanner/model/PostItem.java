@@ -60,9 +60,31 @@ public class PostItem {
     @JsonProperty("favorited")
     private Boolean favorited;
 
+    /**
+     * 当前用户是否点过「不感兴趣」（DISLIKE）。
+     * 2026-09-18：此前只有互动接口返回该状态，列表/详情都不下发 → 前端刷新即丢，
+     * 用户以为"点了没反应"。现在由 PostService 在组装列表时按当前登录用户回填。
+     */
+    @JsonProperty("disliked")
+    private Boolean disliked;
+
     /** 审核拒绝原因（仅作者视角可见） */
     @JsonProperty("reject_reason")
     private String rejectReason;
+
+    /* ================= P1-1 编辑版本化：公开版本 / 编辑版本分离 ================= */
+
+    /**
+     * 是否存在「待审修改版本」。
+     * 已发布帖子被编辑后，修改稿独立存放在 travel_post_revision 待审，
+     * 主线（主表）仍是原公开版本 —— 作者与审核员据此显示「修改审核中」。
+     */
+    @JsonProperty("has_pending_revision")
+    private Boolean hasPendingRevision;
+
+    /** 待审修改版本的版本号（1=首版，2=第 2 版…） */
+    @JsonProperty("pending_revision_no")
+    private Integer pendingRevisionNo;
 
     /** 作者是否本人（前端据此显示编辑/删除/提交入口） */
     @JsonProperty("mine")

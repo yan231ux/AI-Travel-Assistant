@@ -271,17 +271,38 @@ public class ItineraryValidator {
             }
         }
 
+        // 2.5 每日就餐空间合理性（Q1）：餐厅须贴近当天活动区域，跨区就餐就近替换或诚实警示。
+        //     必须放在第 2 步之后（依赖 usedMeals / mealPool 的当前状态），放在交通与预算之前
+        //     （替换只改名称不改价格，不影响预算口径）。
+        checkMealLocation(itinerary, collectedData, mealPool, usedMeals);
+
         // 3. Plan B：恶劣天气日 → 替换为室内候选（无候选则备注警示）
         applyPlanB(itinerary, collectedData, poiSpotNames, usedSpots, spotPool, ragText);
 
-        // 4. 交通：未由高德路线补全的项，标注为估算（LLM）；并统一时长格式
+        // 4. 交通：统一「交通段必须带金额」口径 + 未由高德路线补全的项标注为估算（LLM）；并统一时长格式
         for (DayPlan day : itinerary.getDays()) {
             if (day.getTransport() == null) {
                 continue;
             }
             for (TransportItem t : day.getTransport()) {
+                // Q2 金额补算：高德路线 API 只回过路费不回打车费（补全层因此置空金额），
+                // LLM 的金额也常缺失 —— 缺金额时按 出行方式×距离 计价补算（无距离用时长×典型速度折算），
+                // 并在来源中标注，保证末次预算合计不漏算跨区大段交通费。
+                boolean costBackfilled = false;
+                if (t.getEstimatedCost() == null) {
+                    Double km = t.getDistanceKm();
+                    if (km == null || km <= 0) {
+                        km = estimateKmFromMinutes(t.getMode(), t.getEstimatedMinutes());
+                    }
+                    if (km != null && km > 0) {
+                        t.setEstimatedCost(round2(estimateTransportCost(t.getMode(), km)));
+                        costBackfilled = true;
+                    }
+                }
                 if (t.getSource() == null) {
-                    t.setSource("估算（LLM）");
+                    t.setSource(costBackfilled ? "估算（按距离补算）" : "估算（LLM）");
+                } else if (costBackfilled && !t.getSource().contains("补算")) {
+                    t.setSource(t.getSource() + "·金额按距离补算");
                 }
                 // LLM 有时写"11.80 km / 28 分钟"混排，统一提取"X 分钟"（有分钟则取分钟，否则保留原文）
                 if (t.getDuration() != null && t.getDuration().contains("km")) {
@@ -293,6 +314,10 @@ public class ItineraryValidator {
                 }
             }
         }
+
+        // 4.5 预算硬收敛（Q3）：超支 >20% 时先本地降住宿档次重算（确定性、零 token），
+        //     压回预算后再交给 repairBudget 处理残余偏差，避免"LLM 修不动→超支放行"
+        collapseHotelForBudget(itinerary, request);
 
         // 5. 预算合理性：偏差过大 → 回传 LLM 按预算修正一次；修正后若仍不符用户预算则诚实告知
         repairBudget(itinerary, request);
@@ -1477,6 +1502,195 @@ public class ItineraryValidator {
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
+    /* ================= Q1：每日就餐空间合理性（餐厅须贴近当天活动区域） ================= */
+
+    /**
+     * 餐厅到「当天景点坐标中心」的距离阈值（km）。超过视为跨区就餐 ——
+     * 行程物理上做不到（如上午临潼兵马俑、中午回市区吃饭、下午再回临潼华清宫）。
+     */
+    private static final double MEAL_FAR_KM = 25.0;
+
+    /**
+     * 每日就餐空间合理性（Q1）：餐厅候选原先只按口味标签召回，不掌握空间关系，
+     * LLM 挑店时也只看店名，于是产出"跨区吃午饭"这类物理上做不到的行程。
+     *
+     * <p><b>确定性修复</b>（不依赖模型自觉）：
+     * <ol>
+     *   <li>按天算出「当天景点坐标中心」；</li>
+     *   <li>逐个检查当天餐次，超出阈值时优先用候选池里<b>离当天活动区域最近、且未被其它餐次占用</b>
+     *       的真实餐厅替换；</li>
+     *   <li>无可用候选则如实警示（宁可告知，也不静默给出做不到的行程）。</li>
+     * </ol>
+     *
+     * <p>景点或餐厅缺经纬度时不判定（数据不足不误报）。
+     */
+    private void checkMealLocation(Itinerary itinerary, CollectedData collectedData,
+                                   List<String> mealPool, Set<String> usedMeals) {
+        if (itinerary.getDays() == null || collectedData == null) {
+            return;
+        }
+        Map<String, double[]> coordMap = collectPoiCoordMap(collectedData);
+        if (coordMap.isEmpty()) {
+            return;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() == null || day.getSpots().isEmpty() || day.getMeals() == null) {
+                continue;
+            }
+            double[] center = spotCenter(day.getSpots());
+            if (center == null) {
+                continue; // 当天景点无经纬度 → 无从判断
+            }
+            for (MealItem meal : day.getMeals()) {
+                if (meal.getName() == null) {
+                    continue;
+                }
+                double[] pos = lookupCoord(coordMap, meal.getName());
+                if (pos == null) {
+                    continue; // 餐厅不在 POI 池（LLM 自荐）→ 无坐标，不误报
+                }
+                double km = haversineKm(pos[0], pos[1], center[0], center[1]);
+                if (km <= MEAL_FAR_KM) {
+                    continue;
+                }
+                String replacement = nearestFreeMeal(mealPool, usedMeals, coordMap, center);
+                if (replacement != null) {
+                    String old = meal.getName();
+                    usedMeals.remove(normalize(old));
+                    mealPool.removeIf(n -> n != null && normalize(n).equals(normalize(replacement)));
+                    meal.setName(replacement);
+                    meal.setSource("高德POI·已按当天活动区域就近调整");
+                    usedMeals.add(normalize(replacement));
+                    log.info("Q1 就餐就近修正：第 {} 天「{}」(距当天景点中心 {:.0f}km) → 「{}」",
+                            day.getDayIndex(), old, km, replacement);
+                    addSourceNote(itinerary, String.format(
+                            "🔧 已把第 %s 天的「%s」调整为「%s」：原餐厅距当天活动区域约 %.0f 公里（跨区就餐不现实）",
+                            day.getDayIndex(), old, replacement, km));
+                } else {
+                    log.warn("Q1 就餐跨区且无近邻候选：第 {} 天「{}」距当天景点中心 {:.0f}km",
+                            day.getDayIndex(), meal.getName(), km);
+                    addSourceNote(itinerary, String.format(
+                            "⚠️ 系统检测：第 %s 天的「%s」距当天主要景点约 %.0f 公里，可能来不及就近用餐，建议自行调整",
+                            day.getDayIndex(), meal.getName(), km));
+                }
+            }
+        }
+    }
+
+    /** 当天景点坐标中心（所有景点都无经纬度 → null） */
+    private double[] spotCenter(List<SpotItem> spots) {
+        double latSum = 0;
+        double lngSum = 0;
+        int n = 0;
+        for (SpotItem s : spots) {
+            if (s.getLatitude() != null && s.getLongitude() != null) {
+                latSum += s.getLatitude();
+                lngSum += s.getLongitude();
+                n++;
+            }
+        }
+        return n == 0 ? null : new double[]{latSum / n, lngSum / n};
+    }
+
+    /** 从 POI 各分类构建「名称（规范化）→ 坐标」映射，供空间一致性判断 */
+    private Map<String, double[]> collectPoiCoordMap(CollectedData collectedData) {
+        Map<String, double[]> map = new HashMap<>();
+        if (collectedData == null || collectedData.getPoiResults() == null) {
+            return map;
+        }
+        for (Object value : collectedData.getPoiResults().values()) {
+            if (!(value instanceof List<?> list)) {
+                continue;
+            }
+            for (Object o : list) {
+                if (!(o instanceof Map<?, ?> m)) {
+                    continue;
+                }
+                Object n = m.get("name");
+                Double lat = asDouble(m.get("latitude"));
+                Double lng = asDouble(m.get("longitude"));
+                if (n == null || lat == null || lng == null) {
+                    continue;
+                }
+                String key = normalize(n.toString());
+                if (!key.isEmpty()) {
+                    map.putIfAbsent(key, new double[]{lat, lng});
+                }
+            }
+        }
+        return map;
+    }
+
+    /**
+     * 按名称查坐标：先精确匹配，再按名称包含关系取最长匹配
+     * （覆盖"××火锅(博乐里购物广场店)"与"××火锅"这类门店后缀差异）。
+     */
+    private double[] lookupCoord(Map<String, double[]> map, String name) {
+        String key = normalize(name);
+        if (key.isEmpty()) {
+            return null;
+        }
+        double[] exact = map.get(key);
+        if (exact != null) {
+            return exact;
+        }
+        String bestKey = null;
+        for (String k : map.keySet()) {
+            if (k.length() < 2) {
+                continue;
+            }
+            if (k.contains(key) || key.contains(k)) {
+                if (bestKey == null || k.length() > bestKey.length()) {
+                    bestKey = k;
+                }
+            }
+        }
+        return bestKey == null ? null : map.get(bestKey);
+    }
+
+    /** 候选池里离指定中心最近、且未被其它餐次占用、且本身不跨阈值的餐厅（无则 null） */
+    private String nearestFreeMeal(List<String> mealPool, Set<String> usedMeals,
+                                   Map<String, double[]> coordMap, double[] center) {
+        String best = null;
+        double bestKm = Double.MAX_VALUE;
+        for (String candidate : mealPool) {
+            if (candidate == null || candidate.isBlank() || isDuplicate(normalize(candidate), usedMeals)) {
+                continue;
+            }
+            double[] pos = lookupCoord(coordMap, candidate);
+            if (pos == null) {
+                continue;
+            }
+            double km = haversineKm(pos[0], pos[1], center[0], center[1]);
+            if (km <= MEAL_FAR_KM && km < bestKm) {
+                bestKm = km;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private static Double asDouble(Object o) {
+        if (o == null) {
+            return null;
+        }
+        if (o instanceof Number n) {
+            return n.doubleValue();
+        }
+        try {
+            return Double.parseDouble(o.toString().trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private void addSourceNote(Itinerary itinerary, String note) {
+        if (itinerary.getSourceNotes() == null) {
+            itinerary.setSourceNotes(new ArrayList<>());
+        }
+        itinerary.getSourceNotes().add(note);
+    }
+
     /** 提取文本中的 JSON（第一个 { 到最后一个 }） */
     private String extractJson(String text) {
         int start = text.indexOf("{");
@@ -1485,5 +1699,210 @@ public class ItineraryValidator {
             return text.substring(start, end + 1);
         }
         return text;
+    }
+
+    /** 预算硬收敛触发线：总花费超过预算 20% 即本地降档 */
+    private static final double OVERSPEND_RATIO = 1.2;
+    /** 极端超支线（预算的 5 倍）：超出后走 checkBudgetMismatch 的既有强制降级路径，保持口径不变 */
+    private static final double EXTREME_OVERSPEND_RATIO = 5.0;
+    /** 住宿压缩下限：最多压到原住宿费的 30%（再低不现实，宁可诚实标注） */
+    private static final double HOTEL_FLOOR_RATIO = 0.3;
+
+    /**
+     * 预算硬收敛（Q3）：超支 >20% 且住宿是主要可压缩项时，本地（不调 LLM）按预算
+     * 反推住宿可用水位，等比压缩每晚酒店价并下调档次标注，把总预算压回用户预算内。
+     * 住宿压到下限仍超支时不再硬压，改为在来源说明中诚实告知"预算不足以覆盖当前行程"。
+     */
+    private void collapseHotelForBudget(Itinerary itinerary, TripRequest request) {
+        if (request.getBudget() == null || request.getBudget() <= 0
+                || itinerary.getDays() == null || itinerary.getDays().isEmpty()) {
+            return;
+        }
+        double budget = request.getBudget();
+        double total = recomputeTotal(itinerary);
+        if (total <= budget * OVERSPEND_RATIO) {
+            return; // 未超支（或未超 20%），不动
+        }
+        if (total > budget * EXTREME_OVERSPEND_RATIO) {
+            return; // 极端超支交给 checkBudgetMismatch 的既有强制降级路径（200/晚经济型 + 固定话术）
+        }
+
+        double hotelTotal = 0;
+        double other = 0;
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getHotel() != null && day.getHotel().getEstimatedCost() != null) {
+                hotelTotal += day.getHotel().getEstimatedCost();
+            }
+            other += dayCostWithoutHotel(day);
+        }
+        if (hotelTotal <= 0) {
+            addBudgetNote(itinerary, String.format(
+                    "⚠️ 行程估算 %.0f 元已超预算 %.0f 元（住宿无可压缩项），请考虑提高预算或减少行程安排",
+                    total, budget));
+            itinerary.setEstimatedBudget(total);
+            return;
+        }
+
+        // 住宿可用水位 = 预算 - 非住宿支出；不足时压到住宿下限
+        double availForHotel = Math.max(budget - other, hotelTotal * HOTEL_FLOOR_RATIO);
+        double factor = availForHotel / hotelTotal;
+        if (factor >= 0.95) {
+            // 住宿占比较低，压缩住宿解决不了超支 → 诚实告知
+            addBudgetNote(itinerary, String.format(
+                    "⚠️ 行程估算 %.0f 元已超预算 %.0f 元（超支主要来自门票/餐饮/交通），请考虑提高预算或精简行程",
+                    total, budget));
+            itinerary.setEstimatedBudget(total);
+            return;
+        }
+
+        double newPerNight = 0;
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getHotel() == null || day.getHotel().getEstimatedCost() == null) {
+                continue;
+            }
+            double cost = day.getHotel().getEstimatedCost() * factor;
+            day.getHotel().setEstimatedCost(round2(cost));
+            day.getHotel().setLevel(hotelLevelForPrice(cost));
+            newPerNight = cost;
+        }
+        double newTotal = other + hotelTotal * factor;
+        itinerary.setEstimatedBudget(round2(newTotal));
+        addBudgetNote(itinerary, String.format(
+                "⚠️ 原行程估算 %.0f 元超预算 %.0f 元，系统已将住宿压缩至每晚约 %.0f 元（档次调整为 %s）以贴近预算；如需更高住宿标准请提高预算",
+                total, budget, newPerNight,
+                newPerNight > 0 && !itinerary.getDays().isEmpty()
+                        && itinerary.getDays().get(0).getHotel() != null
+                        ? itinerary.getDays().get(0).getHotel().getLevel() : "经济型"));
+        log.info("预算硬收敛：总 {} -> {} 元，住宿按 {} 倍压缩", total, newTotal, round2(factor));
+    }
+
+    /** 按每晚价反推酒店档次标注（与生成提示词中的价位口径一致：经济 150-250 / 舒适 300-500 / 豪华 600+） */
+    static String hotelLevelForPrice(double perNight) {
+        if (perNight >= 600) {
+            return "豪华型";
+        }
+        if (perNight >= 400) {
+            return "高档型";
+        }
+        if (perNight >= 200) {
+            return "舒适型";
+        }
+        return "经济型";
+    }
+
+    /** 单日非住宿支出合计（门票+餐饮+交通，口径与预算合计一致） */
+    private double dayCostWithoutHotel(DayPlan day) {
+        double sum = 0;
+        if (day.getSpots() != null) {
+            for (SpotItem s : day.getSpots()) {
+                if (s.getEstimatedCost() != null) {
+                    sum += s.getEstimatedCost();
+                }
+            }
+        }
+        if (day.getMeals() != null) {
+            for (MealItem m : day.getMeals()) {
+                if (m.getEstimatedCost() != null) {
+                    sum += m.getEstimatedCost();
+                }
+            }
+        }
+        if (day.getTransport() != null) {
+            for (TransportItem t : day.getTransport()) {
+                if (t.getEstimatedCost() != null) {
+                    sum += t.getEstimatedCost();
+                }
+            }
+        }
+        return sum;
+    }
+
+    /** 重算整份行程总花费（与 ItineraryGenerator.calculateBudget 同口径，供收敛判断用） */
+    private double recomputeTotal(Itinerary itinerary) {
+        double total = 0;
+        if (itinerary.getDays() == null) {
+            return 0;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            total += dayCostWithoutHotel(day);
+            if (day.getHotel() != null && day.getHotel().getEstimatedCost() != null) {
+                total += day.getHotel().getEstimatedCost();
+            }
+        }
+        return total;
+    }
+
+    /** 追加预算相关来源说明（source_notes 懒初始化） */
+    private void addBudgetNote(Itinerary itinerary, String note) {
+        if (itinerary.getSourceNotes() == null) {
+            itinerary.setSourceNotes(new ArrayList<>());
+        }
+        itinerary.getSourceNotes().add(note);
+    }
+
+    /**
+     * 交通费估算（Q2，通用全国口径、不针对具体城市）：按出行方式×距离计价。
+     * 出租/网约/未知按出租车计价（保守不低估预算）；步行/免费为 0。
+     */    static double estimateTransportCost(String mode, double km) {
+        String m = mode == null ? "" : mode;
+        if (m.contains("步行") || m.contains("免费")) {
+            return 0.0;
+        }
+        if (m.contains("骑行") || m.contains("单车")) {
+            return 1.5;
+        }
+        if (m.contains("地铁")) {
+            return Math.min(12, 3 + 0.3 * km);
+        }
+        if (m.contains("公交") || m.contains("巴士")) {
+            return Math.min(8, 2 + 0.2 * km);
+        }
+        if (m.contains("高铁")) {
+            return Math.max(20, 0.45 * km);
+        }
+        if (m.contains("动车") || m.contains("火车") || m.contains("城际")) {
+            return Math.max(12, 0.30 * km);
+        }
+        if (m.contains("大巴") || m.contains("长途")) {
+            return Math.max(10, 0.25 * km);
+        }
+        if (m.contains("驾车") || m.contains("自驾")) {
+            return 1.0 * km; // 油费+过路费的粗略均值
+        }
+        // 出租/打车/网约/的士及未识别方式：起步 13 元含 3km，之后 2.3 元/km（保守不低估）
+        return km <= 3 ? 13.0 : 13.0 + 2.3 * (km - 3);
+    }
+
+    /**
+     * 无距离时按时长×典型速度折算公里数（Q2）。缺时长返回 null（不猜）。
+     */
+    static Double estimateKmFromMinutes(String mode, Integer minutes) {
+        if (minutes == null || minutes <= 0) {
+            return null;
+        }
+        String m = mode == null ? "" : mode;
+        double speedKmh;
+        if (m.contains("高铁")) {
+            speedKmh = 250;
+        } else if (m.contains("动车") || m.contains("火车") || m.contains("城际")) {
+            speedKmh = 120;
+        } else if (m.contains("大巴") || m.contains("长途")) {
+            speedKmh = 80;
+        } else if (m.contains("驾车") || m.contains("自驾")) {
+            speedKmh = 60;
+        } else if (m.contains("地铁")) {
+            speedKmh = 35;
+        } else if (m.contains("公交") || m.contains("巴士")) {
+            speedKmh = 20;
+        } else if (m.contains("步行")) {
+            speedKmh = 5;
+        } else {
+            speedKmh = 30; // 出租/打车/未知：城市均速
+        }
+        return minutes / 60.0 * speedKmh;
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
     }
 }

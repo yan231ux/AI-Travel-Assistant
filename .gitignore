@@ -41,3 +41,16 @@ backend/chroma-data*/
 *.docx.bak
 *.docx.tmp
 ~$*.docx
+
+# PPT 交付物同理：源稿/截图/SVG 入库，打包产物（pptx）仅本地交付
+*.pptx
+
+# 工具与运行期产物（本地缓存 / 探针临时输出 / 校验构建目录）
+.cache/
+.slidep/
+__pycache__/
+*.pyc
+_mvn_exit.txt
+_probe_ps.txt
+frontend/dist_verify/
+frontend/dist_old_*/

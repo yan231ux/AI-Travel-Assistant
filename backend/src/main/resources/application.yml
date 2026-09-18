@@ -64,12 +64,22 @@ mybatis-plus:
 
 # LLM Configuration (DashScope/Qwen)
 llm:
-  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  base-url: ${LLM_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
   api-key: ${LLM_API_KEY:}
-  model: qwen-turbo
-  embedding-model: text-embedding-v3
-  # LLM 读超时（秒）：qwen3.7-plus 是 35B 稠密生成慢（曾超时），改用 qwen-turbo 后通常 30s 内返回
-  timeout-seconds: 120
+  # 模型名：环境变量 LLM_MODEL 通过 Spring 宽松绑定映射到本属性（llm.model），
+  # 且环境变量优先级高于本文件——所以 .env 里写 LLM_MODEL=xxx 一直是生效的
+  # （曾误判为"yml 写死所以 env 无效"，用 content_moderation_task.model_name 反查才纠正过来）。
+  # 这里显式写 ${LLM_MODEL:...} 只是为了让"哪来的、默认是什么"一眼可见，不改变既有语义。
+  #
+  # 默认值选 qwen3-max 而非 3.8-max，是因为 3.8 全系（max/flash）都是**推理模型**
+  # （响应带 reasoning_content）：短输出场景（内容审核 6~16s）没问题，但整份行程 JSON
+  # 一次生成输出量太大，实测 >180s 顶到 ItineraryGenerator 的 GENERATION_TIMEOUT_SECONDS
+  # 而失败。qwen-turbo / qwen3-max 是非推理模型，行程生成实测 ~90s 可完成。
+  model: ${LLM_MODEL:qwen3-max}
+  embedding-model: ${LLM_EMBEDDING_MODEL:text-embedding-v3}
+  # LLM 读超时（秒）：需 ≥ ItineraryGenerator.GENERATION_TIMEOUT_SECONDS（180s），
+  # 否则 HTTP 读超时会更早把生成调用掐断并触发无意义重试
+  timeout-seconds: 180
   max-iterations: 3
 
 # Amap Configuration
@@ -101,6 +111,13 @@ jwt:
 
 # Known Cities
 known-cities: 北京,大理,成都,三亚,厦门,西安
+
+# AI 内容审核（设计方案 §4）
+moderation:
+  # 低风险内容是否允许"AI 放行即自动发布"（true=自动上线；false=退回全人工，AI 仅给建议）
+  # 自动放行的准入条件三者缺一不可：规则无 HIGH/MEDIUM 命中 + 模型 decision=PASS + 分数 <0.65，
+  # 且未命中"强制人工"类别（敏感信息 / 争议性话题）。
+  auto-publish-enabled: ${MODERATION_AUTO_PUBLISH_ENABLED:true}
 
 # CORS 允许来源（前端开发服务器，逗号分隔）
 cors:

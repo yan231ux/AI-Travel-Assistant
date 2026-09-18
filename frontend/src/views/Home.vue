@@ -4,18 +4,34 @@ import { useRouter } from "vue-router";
 
 import PostCard from "../components/PostCard.vue";
 import SpotCard from "../components/SpotCard.vue";
+import TrendingSpotList from "../components/TrendingSpotList.vue";
 import { DASHBOARD_CITY_SHORTCUTS } from "../constants/cities";
-import { getPosts, getProfileSummary, getRecommendations, newFeedTrace } from "../services/api";
+import {
+  getHomeTrendingSpots,
+  getPosts,
+  getProfileSummary,
+  getRecommendations,
+  newFeedTrace,
+} from "../services/api";
 import { displayName } from "../stores/session";
-import type { PostItem, ProfileSummary, RecommendationFeed } from "../types";
+import type {
+  PostItem,
+  ProfileSummary,
+  RecommendationFeed,
+  TrendingSpotFeed,
+} from "../types";
 
 /**
  * 首页 Dashboard（UI 视觉升级方案 §6.2/6.3：首屏主任务 + 信息分层）。
  *
  * 职责：让个性化能力被用户看见 ——
  * 首屏 Hero（问候 + 画像胶囊 + 主任务"开始规划"）、四个入口、
- * 按城市预览的"为你推荐"、社区攻略预览。
+ * 按城市预览的"为你推荐"、社会热度"大家最近在规划"、社区攻略预览。
  * 推荐卡收藏/不感兴趣后自动刷新对应流，演示"反馈 → 画像版本变化 → 排序变化"闭环。
+ *
+ * ⚠️ 分区纪律（数据运营方案 §6.1）：首页必须区分四种内容来源 —— 热门规划、个性化推荐、
+ * 城市精选、攻略收录。本页把"大家最近在规划"（全站社会热度）与"为你推荐"（画像驱动）
+ * 放在两个独立区块，且热门块只展示热度，**不显示匹配度**，避免把全站热门伪装成"适合你"。
  */
 const router = useRouter();
 
@@ -124,6 +140,25 @@ async function loadPosts() {
   }
 }
 
+/* ---------- 大家最近在规划（全站社会热度，§6.1 与"为你推荐"分区） ---------- */
+const trending = ref<TrendingSpotFeed | null>(null);
+const trendingLoading = ref(true);
+const trendingError = ref("");
+
+// 固定全站口径（不传 city）：本模块表达的是"大家都在关注什么"，
+// 若跟随城市切换就与上面的"为你推荐"城市流语义重叠、又容易看成个性化，故不做城市筛选。
+async function loadTrending() {
+  trendingLoading.value = true;
+  trendingError.value = "";
+  try {
+    trending.value = await getHomeTrendingSpots(null, 7, 6);
+  } catch {
+    trendingError.value = "热度数据加载失败，请稍后重试。";
+  } finally {
+    trendingLoading.value = false;
+  }
+}
+
 function go(name: string, query?: Record<string, string>) {
   void router.push(query ? { name, query } : { name });
 }
@@ -140,6 +175,7 @@ onMounted(() => {
     void loadFeed();
   });
   void loadPosts();
+  void loadTrending();
 });
 
 /* ---------- 骨架占位 ---------- */
@@ -267,6 +303,48 @@ function skeletons(n: number) {
       </div>
       <div v-else class="rec-empty">
         该城市暂时没有可推荐的景点，<button type="button" class="rec-empty__link" @click="loadFeed">再试一次</button>
+      </div>
+    </div>
+
+    <!-- ===== 大家最近在规划（§6.1：全站社会热度，独立分区；只给热度不给匹配度） ===== -->
+    <div class="rec-block">
+      <div class="rec-block__head">
+        <div class="rec-block__titles">
+          <h3 class="rec-block__title">大家最近在规划</h3>
+          <span class="rec-block__badge">社会热度</span>
+        </div>
+        <button type="button" class="rec-block__more" @click="go('recommendations')">
+          去发现更多 ›
+        </button>
+      </div>
+      <p class="rec-block__note">
+        全站近 {{ trending?.window_days ?? 7 }} 天的规划热度 —— 只看大家都在关注什么，与你的偏好无关。
+      </p>
+
+      <div v-if="trendingLoading" class="trend-skel">
+        <div v-for="i in skeletons(4)" :key="i" class="skel skel--row" />
+      </div>
+      <div v-else-if="trendingError" class="rec-empty">
+        {{ trendingError }}
+        <button type="button" class="rec-empty__link" @click="loadTrending">再试一次</button>
+      </div>
+      <div v-else-if="trending && trending.degraded" class="rec-empty">
+        热度数据暂时不可用（统计查询异常），不影响上方的个性化推荐。
+        <button type="button" class="rec-empty__link" @click="loadTrending">再试一次</button>
+      </div>
+      <template v-else-if="trending && trending.items.length">
+        <TrendingSpotList
+          :items="trending.items"
+          :window-days="trending.window_days"
+          @changed="onFeedChanged"
+        />
+        <p class="trend-foot">
+          热度 = 规划人数 40% + 保存行程 25% + 收藏 15% + 详情点击 10% − 不感兴趣 10%，并按天衰减。
+        </p>
+      </template>
+      <div v-else class="rec-empty">
+        最近还没有足够的规划数据 —— 你先去规划一次，这里就有内容了。
+        <button type="button" class="rec-empty__link" @click="go('plan')">去规划 ›</button>
       </div>
     </div>
 
@@ -541,6 +619,48 @@ function skeletons(n: number) {
 }
 .rec-block__more:hover {
   color: var(--brand-deep);
+}
+
+/* 「大家最近在规划」：标题 + 来源徽标，与"为你推荐"做视觉区分（§6.1） */
+.rec-block__titles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rec-block__badge {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(230, 184, 92, 0.16);
+  color: #9a7420;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.rec-block__note {
+  margin: -4px 2px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.trend-skel {
+  display: grid;
+  gap: 8px;
+}
+
+.skel--row {
+  height: 82px;
+}
+
+.trend-foot {
+  margin: 10px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
 }
 
 .rec-block__cities {

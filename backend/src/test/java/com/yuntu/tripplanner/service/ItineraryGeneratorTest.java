@@ -170,4 +170,27 @@ class ItineraryGeneratorTest {
 
         assertThrows(TripGenerationException.class, () -> generator.generate(tripRequest(), new CollectedData()));
     }
+
+    @Test
+    void overridesLlmTripIdWithUniqueServerId() {
+        // 提示词里的 trip_{目的地}_{日期} 是"示例格式"，LLM 照抄会得到可重复的 id → 必须被服务端覆盖
+        when(llmClient.chat(anyString())).thenReturn(new LlmClient.LlmResult(validItineraryJson(), 10, 5));
+
+        Itinerary itinerary = generator.generate(tripRequest(), new CollectedData());
+
+        assertNotEquals("trip_成都_2026-05-01", itinerary.getTripId(), "LLM 给的确定性 trip_id 必须被服务端覆盖");
+        assertTrue(itinerary.getTripId().startsWith("trip_成都_2026-05-01_"),
+                "服务端 id 应保留可读前缀并追加唯一后缀，实际: " + itinerary.getTripId());
+    }
+
+    @Test
+    void generatesDistinctTripIdsForSameRequest() {
+        // trip_record.trip_id 有 UNIQUE 约束：同一目的地+出发日重复生成也不能撞 id
+        when(llmClient.chat(anyString())).thenReturn(new LlmClient.LlmResult(validItineraryJson(), 10, 5));
+
+        String first = generator.generate(tripRequest(), new CollectedData()).getTripId();
+        String second = generator.generate(tripRequest(), new CollectedData()).getTripId();
+
+        assertNotEquals(first, second, "同请求两次生成必须是两个不同的 trip_id");
+    }
 }

@@ -175,10 +175,12 @@ async function save() {
   }
   saving.value = true;
   try {
+    // 空数组 / 空串 = 用户主动清空该域（后端据此撤销明细与主档）；缺失字段才表示"不涉及该域"。
+    // 单选项取消后 form.pace 为 null，转成空串提交，用户"取消勾选"才能真正落库。
     const resp = await saveProfileQuestionnaire({
       travelStyles: form.travelStyles,
-      pace: form.pace,
-      hotelLevel: form.hotelLevel,
+      pace: form.pace ?? "",
+      hotelLevel: form.hotelLevel ?? "",
       foodPreferences: form.foodPreferences,
       dietaryRestrictions: form.dietaryRestrictions,
       behaviorNotes: form.behaviorNotes,

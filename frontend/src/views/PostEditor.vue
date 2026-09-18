@@ -33,7 +33,7 @@ const city = ref("");
 const travelDays = ref<number | null>(null);
 const budget = ref<number | null>(null);
 const pace = ref("");
-const postType = ref<PostPayload["postType"]>("NOTE");
+const postType = ref<PostPayload["post_type"]>("NOTE");
 
 const typeOptions = [
   { key: "GUIDE", label: "🗺️ 城市攻略" },
@@ -49,16 +49,23 @@ const loadingSpots = ref(false);
 const chosenSpotIds = ref<Set<string>>(new Set());
 
 async function loadSpotCandidates() {
-  if (!city.value.trim()) {
+  const target = city.value.trim();
+  if (!target) {
     spotCandidates.value = [];
     return;
   }
   loadingSpots.value = true;
   try {
-    const feed = await getRecommendations(city.value.trim(), 1, 12, "popular");
+    const feed = await getRecommendations(target, 1, 12, "popular");
     spotCandidates.value = feed.items || [];
-  } catch {
+  } catch (err: unknown) {
+    // 非法城市由后端白名单拒绝（400）：不加载任何景点，直接提示"城市非法"。
+    // 修正前这里静默吞掉异常以外的失败，用户会看到一份被误标成该城市的异地景点。
     spotCandidates.value = [];
+    const resp = (err as { response?: { status?: number; data?: { message?: string } } })?.response;
+    if (resp?.status === 400) {
+      message.warning(resp.data?.message || "城市名不合法，请检查后重试");
+    }
   } finally {
     loadingSpots.value = false;
   }
@@ -136,19 +143,19 @@ async function save() {
     title: title.value.trim(),
     summary: summary.value.trim() || undefined,
     content: content.value.trim(),
-    coverImage: coverImage.value.trim() || undefined,
+    cover_image: coverImage.value.trim() || undefined,
     city: city.value.trim() || undefined,
-    travelDays: travelDays.value || undefined,
+    travel_days: travelDays.value || undefined,
     budget: budget.value || undefined,
     pace: pace.value || undefined,
-    postType: postType.value,
+    post_type: postType.value,
     spots: selectedSpots.value.length ? selectedSpots.value : undefined,
   };
   try {
     if (editingId.value != null) {
       await updatePost(editingId.value, payload);
-      // P0-1：已发布内容发生实质修改 → 后端自动转重新审核，公开流不再展示旧版
-      message.success("已保存；已发布内容若有修改需重新审核通过后才会公开");
+      // P1-1 版本化：已发布内容的修改稿独立送审 —— 审核期间线上仍是原版本，通过后自动切换
+      message.success("已保存；若原帖已发布，修改稿将进入审核（期间线上仍展示原版本）");
     } else {
       const resp = await createPost(payload);
       message.success("草稿已保存");
@@ -219,7 +226,7 @@ onMounted(() => void loadForEdit());
           :key="t.key"
           type="button"
           :class="['pe-type', { 'pe-type--on': postType === t.key }]"
-          @click="postType = t.key as PostPayload['postType']"
+          @click="postType = t.key as PostPayload['post_type']"
         >
           {{ t.label }}
         </button>

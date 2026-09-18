@@ -50,6 +50,17 @@ public class RecommendationController {
         try {
             String userId = UserContext.getUserId(); // 未登录时为 null → 热门降级
             RecommendationFeed feed = feedService.feed(userId, city, page, pageSize, sort, feedTraceId);
+            // 非法城市（假城市 / 乱输入 / 错别字未命中白名单）：400 + 可读文案，
+            // 绝不返回异地景点充数 —— 否则前端"加载该城市景点"会展示一份被误标成该城市的北京景点。
+            // 形近输入（如"北就"）会带上"你是不是想找「北京」"的建议。
+            if (Boolean.TRUE.equals(feed.getInvalidCity())) {
+                body.put("success", false);
+                body.put("error", "城市非法");
+                body.put("message", feed.getInvalidCitySuggestion() != null
+                        ? "未找到城市「" + city + "」，你是不是想找「" + feed.getInvalidCitySuggestion() + "」？"
+                        : "未找到城市「" + city + "」，请检查城市名是否正确");
+                return ResponseEntity.badRequest().body(body);
+            }
             body.put("success", true);
             body.put("data", feed);
             return ResponseEntity.ok(body);

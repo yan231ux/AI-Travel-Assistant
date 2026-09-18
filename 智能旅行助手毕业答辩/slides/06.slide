@@ -1,0 +1,30 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>登录注册</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>03 核心技术</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 620, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/01_register.png" style={{ width: 620, height: 348, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>注册页 · 用户名 / 昵称 / 密码</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 18, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>自研 JWT 鉴权</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>HS256 签名、7 天有效期，未引入 Spring Security，轻量可控。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>密码 BCrypt 加密</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>加盐哈希存储，明文永不落库，防拖库泄露。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>ThreadLocal + 拦截器</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>统一解析用户身份，业务代码无侵入，静态资源豁免鉴权。</Text></Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>06 / 23</Text>
+  </Box>
+</Slide>

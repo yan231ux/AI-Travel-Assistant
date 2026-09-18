@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -23,15 +24,18 @@ public class TripRecordService {
     private final AgentTraceRepository agentTraceRepository;
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
+    private final TravelEventService travelEventService;
 
     public TripRecordService(TripRecordRepository tripRecordRepository,
                              AgentTraceRepository agentTraceRepository,
                              ObjectMapper objectMapper,
-                             AuditService auditService) {
+                             AuditService auditService,
+                             TravelEventService travelEventService) {
         this.tripRecordRepository = tripRecordRepository;
         this.agentTraceRepository = agentTraceRepository;
         this.objectMapper = objectMapper;
         this.auditService = auditService;
+        this.travelEventService = travelEventService;
     }
     
     /**
@@ -72,24 +76,46 @@ public class TripRecordService {
     
     /**
      * 保存行程（userId 以服务端解析的登录用户为准，覆盖请求体中的 user_id，防伪造归属）。
-     * 仅当 trip_id 属于当前用户时更新；否则作为新行程插入（trip_id 为 UUID，跨用户冲突概率可忽略）。
+     *
+     * 幂等语义：同一 (user_id, trip_id) 重复保存 = 更新；否则新增。
+     * 两个必须踩住的坑（否则保存直接 500、无记录、管理端审计也看不到）：
+     * 1) trip_id 有全局 UNIQUE 约束，所以 id 必须全局唯一（由服务端生成，见 ItineraryGenerator）；
+     * 2) 查询必须"包含逻辑删除行"——用户删掉行程后又保存同一 trip_id 时，
+     *    常规查询因 @TableLogic 过滤不到旧行会误判为新增，INSERT 撞唯一键。此时应复活旧行。
      */
     @Transactional
     public void saveTrip(TripSaveRequest request, String userId) {
-        // 检查当前用户是否已有该行程
-        TripRecord existing = tripRecordRepository.selectOne(
-                new LambdaQueryWrapper<TripRecord>()
-                        .eq(TripRecord::getTripId, request.getTripId())
-                        .eq(TripRecord::getUserId, userId)
-        );
+        if (request == null || request.getItinerary() == null) {
+            throw new IllegalArgumentException("行程内容不能为空");
+        }
+        // 兜底：缺 trip_id（异常载荷/老客户端）时由服务端补一个全局唯一 id，避免撞唯一键
+        if (request.getTripId() == null || request.getTripId().isBlank()) {
+            request.setTripId("trip_" + UUID.randomUUID().toString().replace("-", ""));
+        }
 
-        if (existing != null) {
-            // 更新
-            existing.setItinerary(request.getItinerary());
-            existing.setUserId(userId);
-            tripRecordRepository.updateById(existing);
+        // 含已删除行查询：命中说明"这条行程存在过"，走更新（必要时先复活）
+        TripRecord existing = tripRecordRepository.selectKeyIncludingDeleted(request.getTripId(), userId);
+        boolean updating = existing != null;
+
+        if (updating) {
+            if (Integer.valueOf(1).equals(existing.getDeleted())) {
+                tripRecordRepository.restoreById(existing.getId());
+            }
+            TripRecord update = new TripRecord();
+            update.setId(existing.getId());
+            update.setDestination(request.getItinerary().getDestination());
+            update.setItinerary(request.getItinerary());
+            update.setUserId(userId);
+            tripRecordRepository.updateById(update);
         } else {
-            // 新增
+            // trip_id 全局唯一：若已被其他用户占用（历史遗留的"目的地_日期"式确定性 id），
+            // 由服务端改派一个唯一 id，保证保存永远能落库，而不是抛唯一键冲突 500。
+            // 改派后的 id 通过响应回给前端（Controller 读 request.getTripId()），前端会回写，避免二次保存又生成新记录。
+            if (tripRecordRepository.countByTripId(request.getTripId()) > 0) {
+                String reassigned = "trip_" + UUID.randomUUID().toString().replace("-", "");
+                log.warn("trip_id {} 已被其他用户占用，服务端改派为 {}", request.getTripId(), reassigned);
+                request.setTripId(reassigned);
+            }
             TripRecord record = new TripRecord();
             record.setTripId(request.getTripId());
             record.setDestination(request.getItinerary().getDestination());
@@ -100,10 +126,16 @@ public class TripRecordService {
 
         saveAgentTrace(request);
         // 全链路审计（阶段四任务 10）：行程保存/更新（destination 作人读上下文）
-        auditService.record(userId, AuditLog.CAT_TRIP, existing != null ? "trip_updated" : "trip_saved",
+        auditService.record(userId, AuditLog.CAT_TRIP, updating ? "trip_updated" : "trip_saved",
                 "trip", request.getTripId(),
-                AuditService.detailOf("destination",
-                        request.getItinerary() == null ? null : request.getItinerary().getDestination()));
+                AuditService.detailOf("destination", request.getItinerary().getDestination()));
+        // 行程事件埋点（阶段二数据地基）：TRIP_SAVED + SPOT_SAVED；事件表自带去重，
+        // 幂等保存（同 trip_id 重复保存=更新）不会重复统计。旁路埋点失败不影响保存事务。
+        try {
+            travelEventService.recordTripSaved(userId, request.getItinerary());
+        } catch (Exception e) {
+            log.warn("保存行程事件埋点失败（不影响保存）: {}", e.getMessage());
+        }
     }
 
     /**

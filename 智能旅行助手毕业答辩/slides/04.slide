@@ -1,0 +1,35 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>系统功能总览</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>02 系统功能</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 720, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/03_home_empty.png" style={{ width: 720, height: 392, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>首页 · 个性化推荐流（新用户画像为空，展示通用热门推荐）</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 14, justifyContent: 'center' }}>
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>五大核心能力</Text>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>智能行程规划</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>ReAct Agent 多轮推理 + SSE 流式生成</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>个性化推荐</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>画像推断 + 匹配度评分，可解释排序</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>RAG 攻略检索</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>10 城攻略库，向量 + BM25 混合检索</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>4</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>社区与平台治理</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>发帖 · AI 审核 · 后台治理 · 数据看板</Text></Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>04 / 23</Text>
+  </Box>
+</Slide>

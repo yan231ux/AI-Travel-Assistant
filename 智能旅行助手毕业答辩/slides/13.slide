@@ -1,0 +1,30 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>社区内容生态</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>04 社区与内容</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 620, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/10_guide_detail.png" style={{ width: 620, height: 348, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>社区流 · 多用户攻略卡片，标注匹配偏好 / 点赞 / 收藏 / 不感兴趣</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 18, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>多用户内容生态</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>真实用户发布的攻略、笔记在同一流内聚合展示。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>内容与画像联动</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>卡片显式标注「匹配你的偏好」，个性化融入社区浏览。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>轻互动反馈</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>点赞 / 收藏 / 不感兴趣，行为反哺推荐画像。</Text></Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>13 / 23</Text>
+  </Box>
+</Slide>

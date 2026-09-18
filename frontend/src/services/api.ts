@@ -12,6 +12,7 @@ import type {
   FollowResponse,
   Itinerary,
   LoginRequest,
+  PendingRevision,
   PostDetail,
   PostItem,
   PostPage,
@@ -31,6 +32,7 @@ import type {
   TripListResponse,
   TripRequestPayload,
   TripSaveResponse,
+  TrendingSpotFeed,
   User,
   UserHome,
   WeatherForecastResponse,
@@ -355,6 +357,29 @@ export async function getRecommendations(
   return response.data.data;
 }
 
+/**
+ * 首页「大家最近在规划」热门景点（设计方案 §6.2 / §6.4）。
+ *
+ * 定位提醒：这是**社会热度**，不是"适合你"。文档 §6.1 明确要求首页把"热门规划"
+ * 与"个性化推荐"分开标注，所以返回值里没有任何匹配度/画像字段，UI 也不能把它
+ * 包装成"为你推荐"。后端直出 { items, window_days, generated_at, degraded, errors }，
+ * 没有 success/data 包裹；degraded=true 时前端应显式提示，而不是显示成"暂无热门"。
+ *
+ * @param city  可选城市过滤；不传 = 跨城市（各城市内部归一化后比较，避免大城市霸榜）
+ * @param days  统计窗口，默认 7 天（后端限制 1~30）
+ * @param limit 返回条数，默认 8（后端限制 1~20）
+ */
+export async function getHomeTrendingSpots(
+  city?: string | null,
+  days = 7,
+  limit = 8
+): Promise<TrendingSpotFeed> {
+  const response = await api.get<TrendingSpotFeed>("/home/trending-spots", {
+    params: { city: city || undefined, days, limit },
+  });
+  return response.data;
+}
+
 /** 景点详情（含可信度三档/是否去过/收藏状态/同城相关推荐） */
 export async function fetchSpotDetail(spotId: string): Promise<SpotDetail> {
   const response = await api.get<{ success: boolean; data: SpotDetail }>(
@@ -459,7 +484,14 @@ export async function getUserHome(userId: string): Promise<UserHome> {
 /** 当前用户最新信息（阶段二：登录/启动时同步 role；旧 localStorage 缺 role 时用） */
 export interface MeResponse {
   success: boolean;
-  user?: { id: string; role?: string } | null;
+  user?: {
+    id: string;
+    role?: string | null;
+    /** 角色中文名（如"内容审核员"） */
+    role_label?: string | null;
+    /** 权限点集合（前端据过滤管理端菜单/路由） */
+    permissions?: string[] | null;
+  } | null;
 }
 
 export async function fetchMe(): Promise<MeResponse> {
@@ -474,6 +506,12 @@ export async function register(payload: RegisterRequest): Promise<AuthResponse> 
 
 export async function login(payload: LoginRequest): Promise<AuthResponse> {
   const response = await api.post<AuthResponse>("/auth/login", payload);
+  return response.data;
+}
+
+/** 管理员登录（独立入口）：非管理端账号会被后端 403 拦截 */
+export async function adminLogin(payload: LoginRequest): Promise<AuthResponse> {
+  const response = await api.post<AuthResponse>("/auth/admin-login", payload);
   return response.data;
 }
 
@@ -597,6 +635,35 @@ export async function submitPost(
     `/community/posts/${postId}/submit`
   );
   return response.data;
+}
+
+/** 作者查看自己某条帖子的最新 AI 审核细分状态（PENDING/RUNNING/PASSED/REVIEW/FAILED）。无任务返回 null。 */
+export interface MyPostModerationStatus {
+  task_id: number;
+  status: "PENDING" | "RUNNING" | "PASSED" | "REVIEW" | "FAILED";
+  risk_level?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | null;
+  rule_hit_count?: number | null;
+  decision?: "APPROVE" | "REJECT" | null;
+  decision_by?: string | null;
+  decision_reason?: string | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+}
+export async function getMyPostModerationStatus(
+  postId: number
+): Promise<MyPostModerationStatus | null> {
+  try {
+    const response = await api.get<{ success: boolean; data: MyPostModerationStatus }>(
+      `/community/posts/${postId}/moderation-status`
+    );
+    return response.data?.data || null;
+  } catch (err: unknown) {
+    // 204 No Content / 404（无任务或帖子已删）→ 视为"暂无状态"
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 204 || status === 404) return null;
+    throw err;
+  }
 }
 
 /** 点赞/收藏/不喜欢状态变更（POST 生效 / DELETE 取消；幂等） */
@@ -736,8 +803,12 @@ export async function getPendingReports(page = 1, pageSize = 20): Promise<Report
   return response.data.items || [];
 }
 
-export async function handleReport(reportId: number, action: "RESOLVE" | "DISMISS"): Promise<void> {
-  await api.post(`/community/moderation/reports/${reportId}/handle`, { action });
+export async function handleReport(
+  reportId: number,
+  action: "RESOLVE" | "DISMISS",
+  note?: string
+): Promise<void> {
+  await api.post(`/community/moderation/reports/${reportId}/handle`, { action, note });
 }
 
 /* ---------- 阶段四：推荐 A/B 实验 + 推荐流监控（任务 6/7，管理端） ---------- */
@@ -790,6 +861,8 @@ export interface FeedMetricsItem {
   avg_score: number;
   by_variant: Record<string, number>;
   by_quality: Record<string, number>;
+  /** 各城市推荐量（曝光行按城市聚合；帖子流无城市维度，恒为空表） */
+  by_city: Record<string, number>;
   feedbacks: Record<string, number>;
   save_rate: number;
   dislike_rate: number;
@@ -799,16 +872,25 @@ export interface FeedMetricsItem {
 export async function getFeedMonitor(days = 7): Promise<{
   days: number;
   feeds: Record<"SPOT_FEED" | "POST_FEED", FeedMetricsItem>;
+  /** 数据源读取失败时为 true，读数不可信 */
+  degraded: boolean;
+  errors: string[];
 }> {
-  const response = await api.get<{ success: boolean; days: number; feeds: Record<"SPOT_FEED" | "POST_FEED", FeedMetricsItem> }>(
-    "/admin/feed-monitor",
-    { params: { days } }
-  );
+  const response = await api.get<{
+    success: boolean;
+    days: number;
+    feeds: Record<"SPOT_FEED" | "POST_FEED", FeedMetricsItem>;
+    degraded?: boolean;
+    errors?: string[];
+  }>("/admin/feed-monitor", { params: { days } });
+  const degraded = response.data.degraded === true;
   return {
     days: response.data.days || days,
     feeds:
       response.data.feeds ||
       ({ SPOT_FEED: emptyFeed(), POST_FEED: emptyFeed() } as Record<"SPOT_FEED" | "POST_FEED", FeedMetricsItem>),
+    degraded: degraded || !response.data.feeds,
+    errors: response.data.errors ?? (response.data.feeds ? [] : ["feeds"]),
   };
 }
 
@@ -821,9 +903,71 @@ function emptyFeed(): FeedMetricsItem {
     avg_score: 0,
     by_variant: {},
     by_quality: {},
+    by_city: {},
     feedbacks: {},
     save_rate: 0,
     dislike_rate: 0,
+  };
+}
+
+/* ---------- 城市推荐质量（设计方案 §6「城市推荐质量」，管理端） ---------- */
+
+/** 单城市推荐质量读数（GET /admin/recommendations/city-quality 元素） */
+export interface CityQualityItem {
+  city: string;
+  /** 可推荐景点数（在线且未被治理标记，与推荐池同口径） */
+  recommendable_spots: number;
+  /** 有攻略景点数（可信度 GUIDE_MATCHED / VERIFIED） */
+  guide_backed_spots: number;
+  /** 无攻略景点数（= 可推荐 − 有攻略，服务端保证两数自洽） */
+  poi_only_spots: number;
+  /** 平均质量分 = 可信度加权（VERIFIED 100 / GUIDE_MATCHED 70 / POI_ONLY 40），不是攻略内容分 */
+  avg_quality_score: number;
+  /** 窗口内曝光行数（反馈率的分母） */
+  exposures: number;
+  /** 窗口内被曝光过的去重用户数 */
+  users: number;
+  save_count: number;
+  dislike_count: number;
+  /** 收藏率 % = 先曝光后收藏的去重计数 ÷ 曝光行数 */
+  save_rate: number;
+  dislike_rate: number;
+  last_synced_at?: string | null;
+  last_rag_updated_at?: string | null;
+}
+
+export interface CityQualityResponse {
+  items: CityQualityItem[];
+  window_days: number;
+  generated_at: string;
+  /** 任一数据源读取失败 → true（此时"空城市"不代表真的没数据） */
+  degraded: boolean;
+  errors: string[];
+  /** 后端写明的指标口径 + 未采集项说明，页面需原样透出（不留静默缺口） */
+  notes: string[];
+}
+
+/**
+ * 城市推荐质量（管理端）：按城市拆开看"有没有货 / 货好不好 / 用户买不买账"。
+ * 与 /admin/feed-monitor 的分工：那边是全站两条流的读数，这边是城市维度切片。
+ */
+export async function getRecommendationCityQuality(
+  days = 30,
+  limit = 50
+): Promise<CityQualityResponse> {
+  const response = await api.get<CityQualityResponse & { success?: boolean }>(
+    "/admin/recommendations/city-quality",
+    { params: { days, limit } }
+  );
+  const d = response.data;
+  return {
+    items: d.items ?? [],
+    window_days: d.window_days ?? days,
+    generated_at: d.generated_at ?? "",
+    // 拿不到 items 字段本身就说明响应异常 → 一并降级，不让页面显示成"没有城市数据"
+    degraded: d.degraded === true || !d.items,
+    errors: d.errors ?? (d.items ? [] : ["items"]),
+    notes: d.notes ?? [],
   };
 }
 
@@ -861,5 +1005,838 @@ export async function getAuditLogs(params: {
   };
 }
 
+/* =====================================================================
+ * 管理后台（管理员后台与内容运营中心设计方案：独立 /admin 空间 + 内容运营骨架）
+ * 服务端全部 requireAdmin 二次校验；前端路由守卫只做体验层。
+ * ===================================================================== */
+
+/** 后台作者信息（治理上下文） */
+export interface AdminAuthorInfo {
+  id: string;
+  nickname: string;
+  role?: string | null;
+  registered_at?: string | null;
+  published_posts?: number;
+  resolved_reports?: number;
+}
+
+/** 针对某对象的举报摘要 */
+export interface AdminReportBrief {
+  id: number;
+  reason: string;
+  detail?: string | null;
+  status?: string | null;
+  reporter_name?: string | null;
+  created_at?: string | null;
+}
+
+/** 操作审计条目 */
+export interface AdminAuditEntry {
+  action: string;
+  category?: string | null;
+  actor?: string | null;
+  target_type?: string | null;
+  target_id?: string | null;
+  detail?: string | null;
+  created_at?: string | null;
+}
+
+/** 帖子审核证据详情（管理员专用，替代普通用户 PostDetail） */
+export interface ReviewPostDetail {
+  id: number;
+  title: string;
+  summary?: string | null;
+  content: string;
+  cover_image?: string | null;
+  city?: string | null;
+  travel_days?: number | null;
+  budget?: number | null;
+  pace?: string | null;
+  post_type: string;
+  status: string;
+  quality_score?: number;
+  low_quality?: boolean;
+  reject_reason?: string | null;
+  like_count: number;
+  favorite_count: number;
+  comment_count: number;
+  view_count: number;
+  published_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  author: AdminAuthorInfo;
+  reports: AdminReportBrief[];
+  audit: AdminAuditEntry[];
+  /* ---------- P1-1 版本化：审核队列标记 + 待审修改版本快照 ---------- */
+  /** 是否存在待审修改版本（已发布帖被编辑 → 审核页需展示"将切换成什么"） */
+  has_pending_revision?: boolean;
+  /** 待审修改版本内容快照（无待审版本为 null） */
+  pending_revision?: PendingRevision | null;
+}
+
+/** 被举报帖子完整上下文 */
+export interface ReportTargetPost {
+  id: number;
+  title: string;
+  summary?: string | null;
+  content: string;
+  cover_image?: string | null;
+  city?: string | null;
+  post_type?: string | null;
+  status: string;
+  quality_score?: number;
+  low_quality?: boolean;
+  reject_reason?: string | null;
+  like_count?: number;
+  favorite_count?: number;
+  comment_count?: number;
+  view_count?: number;
+  published_at?: string | null;
+  created_at?: string | null;
+  author?: AdminAuthorInfo | null;
+  reports?: AdminReportBrief[];
+}
+
+/** 举报证据详情（P0-3：快照 → 完整上下文） */
+export interface ReportEvidence {
+  report: {
+    id: number;
+    target_type: "POST" | "COMMENT";
+    target_id: number;
+    reason: string;
+    detail?: string | null;
+    status: string;
+    reporter_id: string;
+    reporter_name: string;
+    handled_by?: string | null;
+    handled_at?: string | null;
+    handle_note?: string | null;
+    created_at?: string | null;
+  };
+  target_post?: ReportTargetPost | null;
+  target_comment?: {
+    id: number;
+    post_id: number;
+    parent_id?: number | null;
+    content: string;
+    status: string;
+    author?: AdminAuthorInfo | null;
+    created_at?: string | null;
+  } | null;
+  audit: AdminAuditEntry[];
+}
+
+/** 攻略列表/详情项（内容运营） */
+export interface GuideItem {
+  id: number;
+  city: string;
+  title: string;
+  summary?: string | null;
+  cover_image?: string | null;
+  source_type?: string | null;
+  source_name?: string | null;
+  source_file?: string | null;
+  author?: string | null;
+  status: string;
+  quality_score: number;
+  reject_reason?: string | null;
+  version: number;
+  rag_status: string;
+  rag_indexed_revision?: number | null;
+  published_revision_id?: number | null;
+  current_revision_id?: number | null;
+  published_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  spot_count?: number;
+  spot_matched?: number;
+}
+
+export interface GuideSpotRef {
+  name: string;
+  matched?: boolean;
+  spot_id?: string | null;
+  poi_id?: string | null;
+}
+
+export interface GuideTagRef {
+  category: string;
+  tag: string;
+}
+
+export interface GuideRevisionItem {
+  id: number;
+  revision_no: number;
+  hash?: string | null;
+  status?: string | null;
+  change_summary?: string | null;
+  editor_id?: string | null;
+  created_at?: string | null;
+}
+
+export interface RagTaskItem {
+  id: number;
+  revision_id?: number | null;
+  status: string;
+  error_message?: string | null;
+  triggered_by?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface GuideDetail extends GuideItem {
+  content_markdown: string;
+  current_hash?: string | null;
+  published_revision_no?: number | null;
+  spots: GuideSpotRef[];
+  tags: GuideTagRef[];
+  revisions: GuideRevisionItem[];
+  rag_tasks: RagTaskItem[];
+  spot_total?: number;
+  spot_matched?: number;
+  spot_unmatched?: number;
+}
+
+export interface GuidePayload {
+  city: string;
+  title: string;
+  summary?: string;
+  coverImage?: string;
+  sourceType?: string;
+  sourceName?: string;
+  content: string;
+  changeSummary?: string;
+}
+
+/** 管理后台看板（设计方案 §3.1） */
+export interface AdminDashboardSummary {
+  generated_at: string;
+  /** 统计项失败时为 null（不可用），绝不伪装成 0；前端据此显示"—/数据暂时不可用" */
+  todo: {
+    pending_posts: number | null;
+    pending_reports: number | null;
+    pending_guides: number | null;
+    low_quality_pending: number | null;
+  };
+  content: {
+    posts_total: number | null;
+    published_posts: number | null;
+    hidden_posts: number | null;
+    published_today: number | null;
+    reports_7d: number | null;
+    guides_total: number | null;
+    guides_published: number | null;
+    cities_with_guide: number | null;
+    users_total: number | null;
+    report_resolved: number | null;
+    report_dismissed: number | null;
+    report_resolve_rate?: number | null;
+  };
+  recent_ops: AdminAuditEntry[];
+  /** 是否可见"最近操作"（审计内容，需 AUDIT_VIEW；false 时 recent_ops 恒为空） */
+  recent_ops_visible?: boolean;
+  /** 是否有统计项查询失败 */
+  degraded?: boolean;
+  /** 失败项清单（key 定位到具体统计项） */
+  errors?: { key: string; error: string }[];
+}
+
+/** 管理后台看板汇总 */
+export async function getAdminSummary(): Promise<AdminDashboardSummary> {
+  const response = await api.get<{ success: boolean; data: AdminDashboardSummary }>(
+    "/admin/dashboard/summary"
+  );
+  return response.data.data;
+}
+
+/** 管理端帖子审核/治理队列（status: PENDING_REVIEW/PUBLISHED/HIDDEN） */
+export async function getReviewPosts(
+  status: "PENDING_REVIEW" | "PUBLISHED" | "HIDDEN" = "PENDING_REVIEW",
+  page = 1,
+  pageSize = 20
+): Promise<PostPage> {
+  const response = await api.get<{ success: boolean; items: PostItem[]; total: number; page: number }>(
+    "/admin/review/posts",
+    { params: { status, page, pageSize } }
+  );
+  return { items: response.data.items || [], total: response.data.total || 0, page: response.data.page || 1 };
+}
+
+/** 帖子审核证据详情（审核页不跳普通用户 PostDetail） */
+export async function getPostReviewDetail(postId: number): Promise<ReviewPostDetail> {
+  const response = await api.get<{ success: boolean; data: ReviewPostDetail }>(
+    `/admin/review/posts/${postId}`
+  );
+  return response.data.data;
+}
+
+/** 举报证据详情（完整被举报内容 + 上下文） */
+export async function getReportEvidence(reportId: number): Promise<ReportEvidence> {
+  const response = await api.get<{ success: boolean; data: ReportEvidence }>(
+    `/admin/reports/${reportId}`
+  );
+  return response.data.data;
+}
+
+/** 攻略列表（内容运营） */
+export async function getGuides(params: {
+  city?: string;
+  status?: string;
+  keyword?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<{ items: GuideItem[]; total: number; page: number }> {
+  const response = await api.get<{ success: boolean; data: { items: GuideItem[]; total: number; page: number } }>(
+    "/admin/guides",
+    { params }
+  );
+  return response.data.data;
+}
+
+/** 攻略详情 */
+export async function getGuideDetail(id: number): Promise<GuideDetail> {
+  const response = await api.get<{ success: boolean; data: GuideDetail }>(`/admin/guides/${id}`);
+  return response.data.data;
+}
+
+/** 新建攻略草稿 */
+export async function createGuide(payload: GuidePayload): Promise<{ id: number; message?: string }> {
+  const response = await api.post<{ success: boolean; id: number; message?: string }>("/admin/guides", payload);
+  return response.data;
+}
+
+/** 保存攻略编辑（unchanged=true 表示无变化未产生新版本） */
+export async function updateGuide(
+  id: number,
+  payload: GuidePayload
+): Promise<{ unchanged: boolean; version: number; message?: string }> {
+  const response = await api.put<{ success: boolean; unchanged: boolean; version: number; message?: string }>(
+    `/admin/guides/${id}`,
+    payload
+  );
+  return response.data;
+}
+
+export async function submitGuide(id: number): Promise<void> {
+  await api.post(`/admin/guides/${id}/submit`);
+}
+
+export async function publishGuide(id: number): Promise<void> {
+  await api.post(`/admin/guides/${id}/publish`);
+}
+
+export async function rejectGuide(id: number, reason: string): Promise<void> {
+  await api.post(`/admin/guides/${id}/reject`, { reason });
+}
+
+export async function hideGuide(id: number): Promise<void> {
+  await api.post(`/admin/guides/${id}/hide`);
+}
+
+export async function restoreGuide(id: number): Promise<void> {
+  await api.post(`/admin/guides/${id}/restore`);
+}
+
+/** 归档（PUBLISHED/HIDDEN → ARCHIVED：停止公开消费并从 RAG 检索源移除） */
+export async function archiveGuide(id: number): Promise<void> {
+  await api.post(`/admin/guides/${id}/archive`);
+}
+
+/** 取消归档（ARCHIVED → DRAFT） */
+export async function unarchiveGuide(id: number): Promise<void> {
+  await api.post(`/admin/guides/${id}/unarchive`);
+}
+
+/** 复制为新版本（fork 一条全新草稿） */
+export async function copyGuide(id: number): Promise<{ id: number; message?: string }> {
+  const response = await api.post<{ success: boolean; id: number; message?: string }>(`/admin/guides/${id}/copy`);
+  return response.data;
+}
+
+/** 回滚上一已发布版本（撤销待审编辑 / 错误发布） */
+export async function rollbackGuide(id: number): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/guides/${id}/rollback`);
+  return response.data;
+}
+
+/** 手动重建/重试 RAG 索引（同步执行，返回任务结果） */
+export async function reindexGuide(id: number): Promise<{
+  message?: string;
+  data?: { task_id?: number; revision_id?: number; status?: string; error_message?: string | null };
+}> {
+  const response = await api.post<{
+    success: boolean;
+    message?: string;
+    data?: { task_id?: number; revision_id?: number; status?: string; error_message?: string | null };
+  }>(`/admin/guides/${id}/reindex`);
+  return response.data;
+}
+
+/** 静态 Markdown 幂等导入（source_file + content_hash 判重；文件变更入待审） */
+export async function importGuides(): Promise<{
+  files: string[];
+  imported: number;
+  changed_pending: number;
+  unchanged: number;
+}> {
+  const response = await api.post<{ success: boolean; data: { files: string[]; imported: number; changed_pending: number; unchanged: number } }>(
+    "/admin/guides/import"
+  );
+  return response.data.data;
+}
+
+
+/* ==================== 景点数据治理（设计方案 §5，/admin/spots） ==================== */
+
+export interface AdminSpotItem {
+  id: number;
+  spot_id: string;
+  poi_id?: string | null;
+  name: string;
+  city: string;
+  address?: string | null;
+  longitude?: number | null;
+  latitude?: number | null;
+  category?: string | null;
+  image_url?: string | null;
+  description?: string | null;
+  tags?: string | null;
+  source?: string | null;
+  data_quality?: string | null;
+  /** ONLINE / OFFLINE */
+  status?: string | null;
+  /** NON_SPOT / CLOSED / OUTDATED / ERROR_POI / null(正常) */
+  flag?: string | null;
+  flag_reason?: string | null;
+  manual_override?: boolean;
+  /** 人工锁定字段（逗号分隔：name,address,description,tags…） */
+  manual_override_fields?: string | null;
+  last_verified_by?: string | null;
+  last_verified_at?: string | null;
+  merged_into?: string | null;
+  last_synced_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AdminSpotSummary {
+  total: number;
+  online: number;
+  offline: number;
+  flagged: number;
+  merged: number;
+}
+
+export interface AdminSpotPage {
+  items: AdminSpotItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  summary: AdminSpotSummary;
+}
+
+export interface AdminSpotDetail extends AdminSpotItem {
+  favoriteCount: number;
+  aliasCount: number;
+  guideLinkCount: number;
+  postLinkCount: number;
+}
+
+/** 景点治理列表（城市/上下架/治理标记/关键词过滤） */
+export async function listAdminSpots(params: {
+  city?: string;
+  status?: string;
+  flag?: string;
+  keyword?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<AdminSpotPage> {
+  const response = await api.get<{ success: boolean; data: AdminSpotPage }>("/admin/spots", { params });
+  return response.data.data;
+}
+
+/** 治理详情（完整字段 + 收藏/别名/攻略/帖子关联计数） */
+export async function getAdminSpot(id: number): Promise<AdminSpotDetail> {
+  const response = await api.get<{ success: boolean; data: AdminSpotDetail }>(`/admin/spots/${id}`);
+  return response.data.data;
+}
+
+/** 编辑字段（白名单人工修正，修改即锁定；unlockFields 显式解锁） */
+export async function updateAdminSpot(
+  id: number,
+  payload: {
+    name?: string;
+    address?: string;
+    category?: string;
+    description?: string;
+    tags?: string;
+    imageUrl?: string;
+    longitude?: number;
+    latitude?: number;
+    unlockFields?: string[];
+    reason?: string;
+  }
+): Promise<{ message?: string }> {
+  const response = await api.put<{ success: boolean; message?: string }>(`/admin/spots/${id}`, payload);
+  return response.data;
+}
+
+/** 设置/清除治理标记（flag 空/null = 清除；NON_SPOT/CLOSED/ERROR_POI 自动下线） */
+export async function flagAdminSpot(id: number, flag?: string, reason?: string): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/spots/${id}/flag`, {
+    flag: flag ?? "",
+    reason: reason ?? "",
+  });
+  return response.data;
+}
+
+/** 下线（人工） */
+export async function offlineAdminSpot(id: number, reason?: string): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/spots/${id}/offline`, {
+    reason: reason ?? "",
+  });
+  return response.data;
+}
+
+/** 重新上线（存在未清除治理标记时服务端拒绝） */
+export async function onlineAdminSpot(id: number): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/spots/${id}/online`);
+  return response.data;
+}
+
+/** 合并重复景点到目标 */
+export async function mergeAdminSpot(
+  id: number,
+  targetSpotId: string,
+  reason?: string
+): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/spots/${id}/merge`, {
+    targetSpotId,
+    reason: reason ?? "",
+  });
+  return response.data;
+}
+
+/** 手动单点重同步（强刷高德） */
+export async function resyncAdminSpot(id: number): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/spots/${id}/resync`);
+  return response.data;
+}
+
+/** 重新匹配 RAG 攻略卡片 */
+export async function rematchAdminSpotGuide(id: number): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(`/admin/spots/${id}/rematch-guide`);
+  return response.data;
+}
+
+/* ================= 用户与账号治理（设计方案 §7 /admin/users） ================= */
+
+/** 用户治理列表项 */
+export interface AdminUserGovernItem {
+  id: string;
+  username: string;
+  nickname?: string | null;
+  /** 角色码：USER / CONTENT_REVIEWER / CITY_EDITOR / RECOMMENDATION_OPERATOR / SUPER_ADMIN */
+  role: string;
+  /** 角色中文名（服务端下发，用于列表展示"他管什么"） */
+  role_label?: string | null;
+  /** ACTIVE / SUSPENDED */
+  account_status: string;
+  post_limited: boolean;
+  comment_banned: boolean;
+  violation_count: number;
+  post_count: number;
+  last_login_at?: string | null;
+  created_at?: string | null;
+}
+
+export interface AdminUserPage {
+  items: AdminUserGovernItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/** 用户治理列表（keyword=用户名/昵称；status=ALL/ACTIVE/SUSPENDED；from/to=注册时间段） */
+export async function listAdminUsers(params: {
+  keyword?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<AdminUserPage> {
+  const response = await api.get<{ success: boolean; data: AdminUserPage }>("/admin/users", { params });
+  return response.data.data;
+}
+
+/**
+ * 治理动作：POST_LIMIT / UNPOST_LIMIT / COMMENT_BAN / UNCOMMENT_BAN / SUSPEND / RESTORE。
+ * 限制即时生效于真实链路：发帖/评论被拒、暂停账号登录被拒。
+ */
+export async function governAdminUser(
+  id: string,
+  action: string,
+  reason: string
+): Promise<{ message?: string; data?: { account_status?: string } }> {
+  const response = await api.post<{ success: boolean; message?: string; data?: { account_status?: string } }>(
+    `/admin/users/${id}/govern`,
+    { action, reason }
+  );
+  return response.data;
+}
+
+/**
+ * 分配管理端角色（高风险，§11 第五阶段）：role + reason + confirm=true 三者缺一不可。
+ * 服务端还会拒绝：改自己的角色、把最后一名超管降级、非法/历史角色码。
+ */
+export async function assignAdminUserRole(
+  id: string,
+  role: string,
+  reason: string,
+  confirm: boolean
+): Promise<{ message?: string; data?: { role?: string; role_label?: string } }> {
+  const response = await api.post<{
+    success: boolean;
+    message?: string;
+    data?: { role?: string; role_label?: string };
+  }>(`/admin/users/${id}/role`, { role, reason, confirm });
+  return response.data;
+}
+
+/* ================= 推荐人工干预（设计方案 §6.3 /admin/recommendations/interventions） ================= */
+
+/** 干预动作：SPOT 置顶/降权/黑名单；CITY 城市精选 */
+export type AdminInterventionAction = "PIN" | "DEMOTE" | "BLACKLIST" | "FEATURED";
+
+/** 推荐人工干预列表项 */
+export interface AdminInterventionItem {
+  id: string;
+  target_type: "SPOT" | "CITY";
+  target_id: string;
+  action: AdminInterventionAction;
+  reason?: string | null;
+  effective_from?: string | null;
+  effective_until?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  /** ACTIVE / SCHEDULED / EXPIRED */
+  status: "ACTIVE" | "SCHEDULED" | "EXPIRED";
+  spot_name?: string | null;
+  spot_city?: string | null;
+}
+
+export interface AdminInterventionPage {
+  items: AdminInterventionItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/** 干预列表（scope=ALL/ACTIVE/SCHEDULED/EXPIRED） */
+export async function listAdminInterventions(params: {
+  action?: string;
+  targetType?: string;
+  scope?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<AdminInterventionPage> {
+  const response = await api.get<{ success: boolean; data: AdminInterventionPage }>(
+    "/admin/recommendations/interventions",
+    { params }
+  );
+  return response.data.data;
+}
+
+/** 新建/覆盖保存干预（同对象同动作 = 覆盖窗口与原因） */
+export async function saveAdminIntervention(payload: {
+  target_type: "SPOT" | "CITY";
+  target_id: string;
+  action: AdminInterventionAction;
+  reason: string;
+  effective_from?: string;
+  effective_until?: string;
+}): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(
+    "/admin/recommendations/interventions",
+    payload
+  );
+  return response.data;
+}
+
+/** 删除干预（即时恢复算法排序） */
+export async function removeAdminIntervention(id: string): Promise<void> {
+  await api.delete(`/admin/recommendations/interventions/${id}`);
+}
+
+/* ================= AI 内容审核（阶段三 §4.7 /admin/content/ai-review） ================= */
+
+/** 审核/风险字段采用 snake_case（与后端 JSON 直传） */
+export interface ModerationTask {
+  id: number;
+  target_type: "POST" | "COMMENT" | "GUIDE" | "SPOT";
+  target_id: string;
+  revision_id?: number | null;
+  content_hash: string;
+  task_type: string;
+  status: "PENDING" | "RUNNING" | "PASSED" | "REVIEW" | "FAILED";
+  risk_level?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | null;
+  risk_score?: number | null;
+  model_name?: string | null;
+  prompt_version?: string | null;
+  result_json?: string | null;
+  matched_rules_json?: string | null;
+  rule_hit_count: number;
+  content_title?: string | null;
+  content_text?: string | null;
+  city?: string | null;
+  error_message?: string | null;
+  retry_count: number;
+  decision?: "APPROVE" | "REJECT" | null;
+  decision_by?: string | null;
+  decision_reason?: string | null;
+  decided_at?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface ModerationPage {
+  items: ModerationTask[];
+  total: number;
+  page: number;
+}
+
+/** AI 审核队列分页（status/targetType 可选过滤） */
+export async function listModerationTasks(params: {
+  status?: string;
+  targetType?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<ModerationPage> {
+  const response = await api.get<{ success: boolean; items: ModerationTask[]; total: number; page: number }>(
+    "/admin/content/moderation",
+    { params }
+  );
+  const { items, total, page } = response.data;
+  return { items: items || [], total: total || 0, page: page || 1 };
+}
+
+/** 任务详情（原文快照 + 规则命中 + AI 结构化输出） */
+export async function getModerationTask(id: number): Promise<ModerationTask> {
+  const response = await api.get<{ success: boolean; data: ModerationTask }>(
+    `/admin/content/moderation/${id}`
+  );
+  return response.data.data;
+}
+
+/** 人工决策（覆盖 AI 结论；REJECT 必须填原因） */
+export async function decideModerationTask(
+  id: number,
+  action: "APPROVE" | "REJECT",
+  reason?: string
+): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(
+    `/admin/content/moderation/${id}/decide`,
+    { action, reason }
+  );
+  return response.data;
+}
+
+/** 失败/待审任务重试（重跑规则+AI 流水线） */
+export async function retryModerationTask(id: number): Promise<{ message?: string }> {
+  const response = await api.post<{ success: boolean; message?: string }>(
+    `/admin/content/moderation/${id}/retry`
+  );
+  return response.data;
+}
+
+/* ================= 数据看板（阶段四 §5.3 六张图 /admin/analytics/*） ================= */
+
+/** 聚合响应壳：degraded = 任一部分查询失败（显式降级，不伪装成 0） */
+export interface AnalyticsResp<T> {
+  data: T | null;
+  degraded: boolean;
+  errors: string[];
+}
+
+export interface SpotAdoptRow {
+  item_id: string;
+  item_name: string;
+  city: string;
+  adopt_count: number;
+  adopt_users: number;
+}
+
+export interface CityHeatRow {
+  city: string;
+  trip_generated: number;
+  trip_saved: number;
+  spot_adopt: number;
+  active_users: number;
+}
+
+export interface ModerationFunnel {
+  total: number;
+  auto_passed: number;
+  review: number;
+  ai_failed: number;
+  human_approved: number;
+  human_rejected: number;
+  rule_hits: number;
+}
+
+export interface RiskBreakdownRow {
+  risk_level: string;
+  cnt: number;
+}
+
+export interface TrendRow {
+  stat_date: string;
+  trips: number;
+  saves: number;
+  adopts: number;
+  favorites: number;
+}
+
+export interface RagStatus {
+  guides: { rag_status: string; cnt: number }[];
+  tasks: { status: string; cnt: number }[];
+}
+
+async function analyticsGet<T>(path: string, params?: Record<string, unknown>): Promise<AnalyticsResp<T>> {
+  const response = await api.get<AnalyticsResp<T>>(path, { params });
+  return response.data;
+}
+
+/** 图表一：景点规划采用排行（days 窗口 + city 筛选） */
+export function getSpotAdoption(days: number, city?: string) {
+  return analyticsGet<SpotAdoptRow[]>("/admin/analytics/spot-adopt", { days, city });
+}
+
+/** 图表二：城市热度排行 */
+export function getCityHeat(days: number) {
+  return analyticsGet<CityHeatRow[]>("/admin/analytics/city-heat", { days });
+}
+
+/** 图表三：内容审核漏斗 */
+export function getModerationFunnel(days: number) {
+  return analyticsGet<ModerationFunnel>("/admin/analytics/moderation-funnel", { days });
+}
+
+/** 图表四：内容风险构成 */
+export function getRiskBreakdown(days: number) {
+  return analyticsGet<RiskBreakdownRow[]>("/admin/analytics/risk-breakdown", { days });
+}
+
+/** 图表五：推荐/规划趋势 */
+export function getTrend(days: number) {
+  return analyticsGet<TrendRow[]>("/admin/analytics/trend", { days });
+}
+
+/** 图表六：RAG 索引状态 */
+export function getRagStatus() {
+  return analyticsGet<RagStatus>("/admin/analytics/rag-status");
+}
 
 export default api;

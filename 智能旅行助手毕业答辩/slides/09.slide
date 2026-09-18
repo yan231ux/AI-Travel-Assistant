@@ -1,0 +1,37 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>城市名校验 · 四道防线</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>03 核心技术</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 620, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/22_city_correction.png" style={{ width: 620, height: 348, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>输入「北平」→ 系统识别为「北京」并二次确认</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 14, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230', flex: 1 }}>白名单主判定<span style={{ fontSize: 15, fontWeight: 'normal', color: '#4A5568' }}>　覆盖 10 个目标城市</span></Text>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230', flex: 1 }}>别名表<span style={{ fontSize: 15, fontWeight: 'normal', color: '#4A5568' }}>　北平 / 燕京 / 大都 → 北京</span></Text>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230', flex: 1 }}>编辑距离纠错<span style={{ fontSize: 15, fontWeight: 'normal', color: '#4A5568' }}>　错别字自动纠正</span></Text>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <Box style={{ width: 34, height: 34, borderRadius: 6, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>4</Text></Box>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230', flex: 1 }}>地理编码兜底<span style={{ fontSize: 15, fontWeight: 'normal', color: '#4A5568' }}>　高德地图校验</span></Text>
+      </Box>
+      <Box style={{ background: '#F0F5FC', borderRadius: 10, padding: '14px 20px', marginTop: 6 }}>
+        <Text style={{ fontSize: 16, color: '#1A2230', lineHeight: 1.6 }}>作为调用大模型前的<span style={{ fontWeight: 'bold', color: '#0E3F8C' }}>前置关卡</span>，未知城市直接拦截，避免无效的 LLM 调用与「瞎编行程」。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>09 / 23</Text>
+  </Box>
+</Slide>

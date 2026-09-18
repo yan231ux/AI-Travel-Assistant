@@ -92,9 +92,13 @@ class PostFeedEngineTest {
         assertTrue(ranked.get(0).score() > ranked.get(1).score());
         assertTrue(ranked.get(0).reason().contains("匹配你的偏好"));
         assertTrue(ranked.get(0).hitPreference());
-        // 未命中帖子仍可展示（降级文案，不返回空）
+        // 未命中帖子仍可展示（降级文案，不返回空），且文案必须中性：
+        // 该兜底与真实热度无关（热度公式只用于同分破平，无阈值/时间窗），
+        // 写成"热门"会让 0 赞 0 收藏的新帖冒充热门榜（用户实测到该误导）。
         assertEquals(2L, ranked.get(1).postId());
         assertNotNull(ranked.get(1).reason());
+        assertEquals("为你推荐", ranked.get(1).reason());
+        assertFalse(ranked.get(1).reason().contains("热门"));
     }
 
     @Test
@@ -125,7 +129,7 @@ class PostFeedEngineTest {
     void logExposures_writesPositionScoreHitAndVersions() {
         List<PostFeedEngine.RankedPost> shown = List.of(
                 new PostFeedEngine.RankedPost(1L, 0.86, "匹配你的偏好：历史文化", List.of("历史文化"), true),
-                new PostFeedEngine.RankedPost(2L, 0.5, "社区热门内容", List.of(), false));
+                new PostFeedEngine.RankedPost(2L, 0.5, "为你推荐", List.of(), false));
 
         engine.logExposures("u1", 7, shown);
 

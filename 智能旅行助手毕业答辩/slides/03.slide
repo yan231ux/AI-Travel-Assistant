@@ -1,0 +1,34 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>选题背景与意义</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>01 选题背景</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '34px 60px', flexDirection: 'column', gap: 20 }}>
+    <Text style={{ fontSize: 20, color: '#1A2230', lineHeight: 1.6 }}>出行决策依赖攻略，但现有方式难以满足「懂我 + 可信 + 可用」的核心诉求，三大痛点日益突出：</Text>
+    <Box style={{ flexDirection: 'row', gap: 20, flex: 1 }}>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 12, padding: 24, border: '1px solid #D6DCE5' }}>
+        <Box style={{ width: 46, height: 46, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1A2230', marginTop: 16 }}>信息过载</Text>
+        <Text style={{ fontSize: 17, color: '#4A5568', marginTop: 10, lineHeight: 1.6 }}>攻略、笔记、点评海量且分散，用户筛选有效信息的时间成本极高。</Text>
+      </Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 12, padding: 24, border: '1px solid #D6DCE5' }}>
+        <Box style={{ width: 46, height: 46, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1A2230', marginTop: 16 }}>推荐同质化</Text>
+        <Text style={{ fontSize: 17, color: '#4A5568', marginTop: 10, lineHeight: 1.6 }}>通用攻略千篇一律，不贴合个人偏好、节奏与预算，缺乏个性化。</Text>
+      </Box>
+      <Box style={{ flex: 1, background: '#F0F5FC', borderRadius: 12, padding: 24, border: '1px solid #D6DCE5' }}>
+        <Box style={{ width: 46, height: 46, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1A2230', marginTop: 16 }}>时效与可信</Text>
+        <Text style={{ fontSize: 17, color: '#4A5568', marginTop: 10, lineHeight: 1.6 }}>攻略信息过时、来源不明，AI 生成还可能「一本正经地胡说」。</Text>
+      </Box>
+    </Box>
+    <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '16px 24px', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+      <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFC107' }}>因此</Text>
+      <Text style={{ fontSize: 19, color: '#FFFFFF' }}>需要一个「懂用户、可解释、有据可查」的 AI 旅行助手——这正是本系统要解决的问题。</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>03 / 23</Text>
+  </Box>
+</Slide>

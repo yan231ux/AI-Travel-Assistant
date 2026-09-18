@@ -3,8 +3,10 @@ package com.yuntu.tripplanner.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuntu.tripplanner.client.AmapClient;
 import com.yuntu.tripplanner.common.AbBucket;
+import com.yuntu.tripplanner.common.SpotNameUtil;
 import com.yuntu.tripplanner.common.SpotTagMapper;
 import com.yuntu.tripplanner.common.SpotText;
+import com.yuntu.tripplanner.common.SpotVisibility;
 import com.yuntu.tripplanner.model.*;
 import com.yuntu.tripplanner.repository.SpotFavoriteRepository;
 import com.yuntu.tripplanner.repository.SpotFeedLogRepository;
@@ -59,6 +61,9 @@ public class RecommendationFeedService {
     private final UserProfileService userProfileService;
     private final TripRecordService tripRecordService;
     private final AbExperimentService abExperimentService;
+    private final RecommendationInterventionService interventionService;
+    /** 城市闸门：推荐/同步入口的前置校验，防止乱输入落库（2026-09-13 数据污染修复） */
+    private final CityValidator cityValidator;
 
     public RecommendationFeedService(SpotRepository spotRepository,
                                      SpotFavoriteRepository spotFavoriteRepository,
@@ -67,7 +72,9 @@ public class RecommendationFeedService {
                                      RagService ragService,
                                      UserProfileService userProfileService,
                                      TripRecordService tripRecordService,
-                                     AbExperimentService abExperimentService) {
+                                     AbExperimentService abExperimentService,
+                                     RecommendationInterventionService interventionService,
+                                     CityValidator cityValidator) {
         this.spotRepository = spotRepository;
         this.spotFavoriteRepository = spotFavoriteRepository;
         this.spotFeedLogRepository = spotFeedLogRepository;
@@ -76,6 +83,8 @@ public class RecommendationFeedService {
         this.userProfileService = userProfileService;
         this.tripRecordService = tripRecordService;
         this.abExperimentService = abExperimentService;
+        this.interventionService = interventionService;
+        this.cityValidator = cityValidator;
     }
 
     /**
@@ -109,6 +118,33 @@ public class RecommendationFeedService {
         int pageNo = Math.max(1, page);
         String cityKey = city.trim();
 
+        // 【2026-09-13 数据污染修复】先「归一化 + 校验」，再进入同步/读取流程（fail closed）。
+        // 此前只判"城市为空"，于是「火星」「1」「北就」会被原样交给高德 POI 搜索，
+        // 返回结果再以该字符串为 city 落 spot 表（实测已污染 80 行：北京景点被贴上假城市标签）。
+        // 这里既不调高德也不写库，items 全空并回传 invalid_city + 形近纠错建议供前端提示。
+        //
+        // 归一化（canonicalCity）与校验是同一步：返回 null 即"不认识"，拒绝；
+        // 返回非 null 则**此后一律用规范名读写** —— 否则"北京市""魔都"这类能通过校验的输入
+        // 会以原始串另起一套 city 键（实测一次访问即新增 15 行 '北京市' 平行数据）。
+        String canonicalCity = cityValidator.canonicalCity(cityKey);
+        if (canonicalCity == null) {
+            log.warn("非法城市被拒（不触发高德、不写库）: {}", cityKey);
+            result.setItems(List.of());
+            result.setPage(pageNo);
+            result.setPageSize(size);
+            result.setTotal(0L);
+            result.setPersonalized(false);
+            result.setProfileVersion(userId == null ? 0 : userProfileService.getProfileVersion(userId));
+            result.setInterventions(List.of());
+            result.setInvalidCity(true);
+            result.setInvalidCitySuggestion(cityValidator.suggestCity(cityKey));
+            return result;
+        }
+        if (!canonicalCity.equals(cityKey)) {
+            log.info("城市名归一化: {} → {}（读写统一用规范名）", cityKey, canonicalCity);
+            cityKey = canonicalCity;
+        }
+
         try {
             syncCityIfStale(cityKey);
         } catch (Exception e) {
@@ -119,6 +155,23 @@ public class RecommendationFeedService {
                 new LambdaQueryWrapper<Spot>()
                         .eq(Spot::getCity, cityKey)
                         .orderByDesc(Spot::getUpdatedAt));
+        // B3 景点治理：下线/合并别名/异常标记（NON_SPOT/CLOSED/ERROR_POI）的景点不进入推荐候选池
+        spots = spots.stream().filter(SpotVisibility::isActive).collect(Collectors.toList());
+
+        // §6.3 推荐人工干预（只读消费，运营与算法分层）：加载窗口内生效干预，
+        // 黑名单从候选池剔除（total 之前）；置顶/降权在排序后做稳定搬移；
+        // featured_city 与 interventions meta 独立输出，不触碰任何算法分字段。
+        List<RecommendationIntervention> activeActs = interventionService.activeNow();
+        Set<String> blacklistIds = spotIdsOf(activeActs, RecommendationIntervention.ACTION_BLACKLIST);
+        Map<String, RecommendationIntervention> pinActs = spotActsOf(activeActs,
+                RecommendationIntervention.ACTION_PIN);
+        Map<String, RecommendationIntervention> demoteActs = spotActsOf(activeActs,
+                RecommendationIntervention.ACTION_DEMOTE);
+        if (!blacklistIds.isEmpty()) {
+            spots = spots.stream()
+                    .filter(s -> !blacklistIds.contains(s.getSpotId()))
+                    .collect(Collectors.toList());
+        }
         if (spots.isEmpty()) {
             result.setItems(List.of());
             result.setPage(pageNo);
@@ -126,16 +179,22 @@ public class RecommendationFeedService {
             result.setTotal(0L);
             result.setPersonalized(false);
             result.setProfileVersion(userId == null ? 0 : userProfileService.getProfileVersion(userId));
+            result.setFeaturedCity(null);
+            result.setFeaturedReason(null);
+            result.setInterventions(List.of());
             return result;
         }
 
-        // A/B 实验（阶段四任务 6，spot_feed_quality_gate）：命中处理组 → "为你推荐"的候选池
+        // A/B 实验（阶段四任务 6，攻略质量门）：命中处理组 → "为你推荐"的候选池
         // 只保留有真实攻略内容的景点（GUIDE_MATCHED/VERIFIED，剔除纯高德 POI_ONLY）。
         // 过滤后不足下限则整体回退全量（数据稀疏城市不空流）；热门/最新 Tab 是用户显式浏览，
         // 不参与该实验。变体由粘性分桶决定（AbExperimentService.resolveVariant），无实验/匿名 → null（基线）。
-        String abVariant = wantPersonalized(sort) && userId != null && !userId.isBlank()
-                ? abExperimentService.resolveVariant(userId, AbExperimentService.EXP_SPOT_QUALITY_GATE)
-                : null;
+        // 实验名取自「当前 ACTIVE 的景点流实验」而非写死常量——管理面可自建任意名，写死会与库内 exp_name 对不上，
+        // 导致实验建了永不生效（对照/处理组恒 0）。
+        AbExperiment spotExp = wantPersonalized(sort) && userId != null && !userId.isBlank()
+                ? abExperimentService.activeOf(AbExperiment.FEED_SPOT) : null;
+        String abVariant = spotExp == null
+                ? null : abExperimentService.resolveVariant(userId, spotExp.getExpName());
         if (AbBucket.VARIANT_TREATMENT.equals(abVariant)) {
             List<Spot> guided = spots.stream()
                     .filter(s -> s.getDataQuality() != null
@@ -143,7 +202,7 @@ public class RecommendationFeedService {
                     .collect(Collectors.toList());
             if (guided.size() >= MIN_QUALITY_POOL) {
                 log.info("A/B[{}] 处理组生效: user={} city={} 候选池 {} → {}",
-                        AbExperimentService.EXP_SPOT_QUALITY_GATE, userId, cityKey,
+                        spotExp.getExpName(), userId, cityKey,
                         spots.size(), guided.size());
                 spots = guided;
             }
@@ -168,6 +227,9 @@ public class RecommendationFeedService {
                 .map(s -> toItem(s, prefs, visitedNames, collectedMap, personalized))
                 .sorted(comparator(sort, personalized))
                 .collect(Collectors.toList());
+        // §6.3 运营置顶/降权：在算法排序后做稳定搬移（置顶前置、降权沉底），
+        // 同一景点同时存在两动作时以降权为准（保守：宁可压后也不夸大推荐）
+        ranked = orderByIntervention(ranked, pinActs.keySet(), demoteActs.keySet());
 
         // 内存分页（单城候选量 30~60，规模小无需 SQL 分页）
         int from = Math.min((pageNo - 1) * size, ranked.size());
@@ -178,6 +240,16 @@ public class RecommendationFeedService {
         result.setTotal(total);
         result.setPersonalized(personalized);
         result.setProfileVersion(userId == null ? 0 : userProfileService.getProfileVersion(userId));
+        // §6.3 运营元信息（与算法分分离）：本页卡片命中的干预 + 城市精选标记
+        result.setInterventions(pageInterventionMeta(result.getItems(), pinActs, demoteActs));
+        RecommendationIntervention featured = featuredOf(activeActs, cityKey);
+        if (featured != null) {
+            result.setFeaturedCity(Boolean.TRUE);
+            result.setFeaturedReason(featured.getReason());
+        } else {
+            result.setFeaturedCity(null);
+            result.setFeaturedReason(null);
+        }
 
         // 曝光日志（仅真正个性化分支；热门/最新不写，与帖子推荐流口径一致），
         // 供推荐流监控（任务 7）按变体/攻略质量对照命中率与反馈漏斗
@@ -191,6 +263,93 @@ public class RecommendationFeedService {
     /** 是否命中"为你推荐"语义（personalized 或默认）——A/B 质量门只作用于它 */
     private static boolean wantPersonalized(String sort) {
         return "personalized".equalsIgnoreCase(sort) || sort == null || sort.isBlank();
+    }
+
+    /* ================= §6.3 人工干预消费（运营与算法分层，全部只读） ================= */
+
+    /** 干预列表中某动作命中的 spot_id 集合（SPOT 对象） */
+    private static Set<String> spotIdsOf(List<RecommendationIntervention> acts, String action) {
+        return acts.stream()
+                .filter(a -> RecommendationIntervention.TARGET_SPOT.equals(a.getTargetType()))
+                .filter(a -> action.equals(a.getAction()))
+                .map(RecommendationIntervention::getTargetId)
+                .collect(Collectors.toSet());
+    }
+
+    /** 干预列表中某动作命中的 spot_id → 干预行（同动作唯一，直接 toMap） */
+    private static Map<String, RecommendationIntervention> spotActsOf(
+            List<RecommendationIntervention> acts, String action) {
+        return acts.stream()
+                .filter(a -> RecommendationIntervention.TARGET_SPOT.equals(a.getTargetType()))
+                .filter(a -> action.equals(a.getAction()))
+                .collect(Collectors.toMap(RecommendationIntervention::getTargetId, a -> a, (x, y) -> x));
+    }
+
+    /** 当前城市的"城市精选"干预（CITY 对象，target_id=城市名） */
+    private static RecommendationIntervention featuredOf(List<RecommendationIntervention> acts, String city) {
+        return acts.stream()
+                .filter(a -> RecommendationIntervention.TARGET_CITY.equals(a.getTargetType()))
+                .filter(a -> RecommendationIntervention.ACTION_FEATURED.equals(a.getAction()))
+                .filter(a -> city.equals(a.getTargetId()))
+                .findFirst().orElse(null);
+    }
+
+    /**
+     * 稳定搬移：置顶景点整体前置、降权景点整体沉底（各自保持原相对顺序）。
+     * 降权优先于置顶（同景点双动作时按降权处理，保守语义）。
+     */
+    private static List<RecommendationItem> orderByIntervention(List<RecommendationItem> ranked,
+                                                                Set<String> pinIds,
+                                                                Set<String> demoteIds) {
+        if (pinIds.isEmpty() && demoteIds.isEmpty()) {
+            return ranked;
+        }
+        List<RecommendationItem> head = new ArrayList<>();
+        List<RecommendationItem> mid = new ArrayList<>();
+        List<RecommendationItem> tail = new ArrayList<>();
+        for (RecommendationItem it : ranked) {
+            String sid = it.getSpotId();
+            if (demoteIds.contains(sid)) {
+                tail.add(it);
+            } else if (pinIds.contains(sid)) {
+                head.add(it);
+            } else {
+                mid.add(it);
+            }
+        }
+        if (head.isEmpty() && tail.isEmpty()) {
+            return ranked;
+        }
+        List<RecommendationItem> merged = new ArrayList<>(head.size() + mid.size() + tail.size());
+        merged.addAll(head);
+        merged.addAll(mid);
+        merged.addAll(tail);
+        return merged;
+    }
+
+    /** 本页卡片命中的运营干预 meta（供前端打「运营置顶/人工降权」标识；独立于算法分） */
+    private static List<RecommendationFeed.RecommendationInterventionMeta> pageInterventionMeta(
+            List<RecommendationItem> items,
+            Map<String, RecommendationIntervention> pinActs,
+            Map<String, RecommendationIntervention> demoteActs) {
+        if (items == null || items.isEmpty()) {
+            return List.of();
+        }
+        List<RecommendationFeed.RecommendationInterventionMeta> metas = new ArrayList<>();
+        for (RecommendationItem it : items) {
+            String sid = it.getSpotId();
+            RecommendationIntervention act = demoteActs.getOrDefault(sid, pinActs.get(sid));
+            if (act == null) {
+                continue;
+            }
+            RecommendationFeed.RecommendationInterventionMeta meta =
+                    new RecommendationFeed.RecommendationInterventionMeta();
+            meta.setSpotId(sid);
+            meta.setAction(act.getAction());
+            meta.setReason(act.getReason());
+            metas.add(meta);
+        }
+        return metas;
     }
 
     /**
@@ -309,6 +468,18 @@ public class RecommendationFeedService {
 
     /** 实际执行高德景点搜索并 upsert spot 表（数量不足或过期时才被 syncCityIfStale 调用） */
     private void doSyncCity(String city) {
+        // 兜底闸门（第二道防线）：绝不把非已知城市交给高德搜索，更不会以其为 city 写 spot 表。
+        // 同时在此**再归一化一次**（幂等）：本方法是 spot 表的唯一自动写入口，
+        // 只要上游任何一处漏了归一化，"北京市""魔都"就会另起一套 city 键 —— 写库路径必须收敛到规范名。
+        String canonical = cityValidator.canonicalCity(city);
+        if (canonical == null) {
+            log.warn("跳过非已知城市的景点同步（防止脏数据入库）: {}", city);
+            return;
+        }
+        if (!canonical.equals(city)) {
+            log.info("同步入口城市名归一化: {} → {}", city, canonical);
+            city = canonical;
+        }
         List<Map<String, Object>> pois;
         try {
             pois = amapClient.searchPoi(city, "景点");
@@ -336,16 +507,22 @@ public class RecommendationFeedService {
                             .eq(Spot::getPoiId, poiId)
                             .last("LIMIT 1"));
             if (existing != null) {
-                existing.setName(name);
-                existing.setAddress(str(poi.get("address")));
-                existing.setCategory(str(poi.get("type")));
-                existing.setImageUrl(str(poi.get("image_url")));
-                existing.setLongitude(num(poi.get("longitude")));
-                existing.setLatitude(num(poi.get("latitude")));
+                // B3 治理保护：下线/合并别名/已标记异常（NON_SPOT/CLOSED/ERROR_POI）的行保持冻结，
+                // 自动同步绝不复活、不覆盖 —— 管理员修正（人工锁定字段）也不被无条件覆盖。
+                if (!SpotVisibility.isActive(existing)) {
+                    log.debug("同步跳过治理对象（冻结）：spot={} status={} flag={} merged={}",
+                            existing.getSpotId(), existing.getStatus(),
+                            existing.getFlag(), existing.getMergedInto());
+                    continue;
+                }
+                Set<String> locked = lockedFields(existing);
+                applyPoiToSpot(existing, poi, locked);
                 existing.setLastSyncedAt(LocalDateTime.now());
-                // Review P2-4：已有 POI 也重新做一次 RAG 增强——该景点后续命中攻略卡片时，
-                // 只会在命中时覆盖简介/地址并升级 data_quality（POI_ONLY → GUIDE_MATCHED）
-                enrichFromGuide(existing, city);
+                if (Spot.FLAG_OUTDATED.equals(existing.getFlag())) {
+                    // 自动同步成功 = 一次成功的核验刷新：清除"过时待核验"标记
+                    existing.setFlag(null);
+                    existing.setFlagReason(null);
+                }
                 spotRepository.updateById(existing);
                 upserted++;
                 continue;
@@ -373,6 +550,133 @@ public class RecommendationFeedService {
             }
         }
         log.info("城市景点按需同步：{}（候选 {}，落库/更新 {}）", city, pois.size(), upserted);
+    }
+
+    /* ============ 景点数据治理支持（B组 设计方案 §5，供 AdminSpotService 调用） ============ */
+
+    /** 单点重同步结果：已更新 */
+    public static final int SYNC_UPDATED = 1;
+    /** 单点重同步结果：同名搜索未命中相同 poi_id（可能已下线/改名/挪走） */
+    public static final int SYNC_NO_MATCH = 2;
+    /** 单点重同步结果：spot 不存在 */
+    public static final int SYNC_NOT_FOUND = 3;
+
+    /**
+     * 单点强制重同步（管理员「手动触发重新同步」）。
+     *
+     * <p>与 {@link #doSyncCity} 全城批量不同：按景点名在城市内做定向关键词搜索，
+     * 只对「poi_id 与库内一致」的结果落库 —— 命中同名的其他 POI 不会污染本行。
+     * 更新范围 = 未被人工锁定的字段（manual_override_fields），治理状态
+     * （status/flag/merged_into 等）一律不动 —— 管理员手工修正不被自动同步覆盖（§5 注意）。
+     * 同步成功且原标记为 OUTDATED（过时待核验）时自动清除该标记（核验动作闭环）。
+     *
+     * @return {@link #SYNC_UPDATED} / {@link #SYNC_NO_MATCH} / {@link #SYNC_NOT_FOUND}
+     */
+    public int resyncSpot(String spotId) {
+        Spot spot = spotRepository.selectOne(new LambdaQueryWrapper<Spot>()
+                .eq(Spot::getSpotId, spotId).last("LIMIT 1"));
+        if (spot == null || spot.getCity() == null || spot.getName() == null
+                || spot.getCity().isBlank() || spot.getName().isBlank()) {
+            return SYNC_NOT_FOUND;
+        }
+        Set<String> locked = lockedFields(spot);
+        List<Map<String, Object>> pois = amapClient.searchPoiFresh(spot.getCity(), spot.getName());
+        Map<String, Object> hit = null;
+        for (Map<String, Object> poi : pois) {
+            if (spot.getPoiId() != null && spot.getPoiId().equals(str(poi.get("poi_id")))) {
+                hit = poi;
+                break;
+            }
+        }
+        if (hit == null) {
+            log.info("单点重同步未命中同名 POI（可能已下线/改名）：spot={} city={} 候选 {} 个",
+                    spotId, spot.getCity(), pois.size());
+            return SYNC_NO_MATCH;
+        }
+        applyPoiToSpot(spot, hit, locked);
+        spot.setLastSyncedAt(LocalDateTime.now());
+        if (Spot.FLAG_OUTDATED.equals(spot.getFlag())) {
+            spot.setFlag(null);
+            spot.setFlagReason(null);
+        }
+        spotRepository.updateById(spot);
+        return SYNC_UPDATED;
+    }
+
+    /**
+     * 单点「重新匹配攻略」（管理员）：用当前名称重跑 RAG 攻略卡片匹配，
+     * 命中则回填可信简介并升级 data_quality（GUIDE_MATCHED）。描述/标签被人工锁定则跳过
+     * （管理员手工修正优先于攻略回填）；命中且原标记 OUTDATED 时同步清标记。
+     *
+     * @return true=命中攻略卡片并完成增强；false=未命中/被人工锁定/景点不存在
+     */
+    public boolean rematchGuide(String spotId) {
+        Spot spot = spotRepository.selectOne(new LambdaQueryWrapper<Spot>()
+                .eq(Spot::getSpotId, spotId).last("LIMIT 1"));
+        if (spot == null) {
+            return false;
+        }
+        Set<String> locked = lockedFields(spot);
+        if (locked.contains("description") || locked.contains("tags")) {
+            log.info("攻略重匹配跳过（描述/标签人工锁定）：spot={}", spotId);
+            return false;
+        }
+        enrichFromGuide(spot, spot.getCity());
+        if (Spot.FLAG_OUTDATED.equals(spot.getFlag())) {
+            spot.setFlag(null);
+            spot.setFlagReason(null);
+        }
+        spotRepository.updateById(spot);
+        return spot.getSource() != null && spot.getSource().contains("RAG");
+    }
+
+    /**
+     * 解析人工锁定字段集合（manual_override_fields 逗号分隔；未开启人工修正 → 空集）。
+     * 字段名与 {@link #applyPoiToSpot} 判断一致：name/address/category/imageUrl/longitude/
+     * description/tags（longitude 同时代表经纬坐标组）。
+     */
+    public static Set<String> lockedFields(Spot spot) {
+        Set<String> locked = new HashSet<>();
+        if (spot != null && Boolean.TRUE.equals(spot.getManualOverride())
+                && spot.getManualOverrideFields() != null && !spot.getManualOverrideFields().isBlank()) {
+            for (String f : spot.getManualOverrideFields().split(",")) {
+                if (f != null && !f.isBlank()) {
+                    locked.add(f.trim());
+                }
+            }
+        }
+        return locked;
+    }
+
+    /**
+     * 把高德 POI 字段应用到 spot 行（治理后的唯一更新入口）：
+     * 只覆盖未锁定字段；治理状态（status/flag/merged_into/manual_override）永不触碰；
+     * 描述/标签均未锁定时才做 RAG 攻略增强（攻略可能改写描述/地址）。
+     */
+    private void applyPoiToSpot(Spot spot, Map<String, Object> poi, Set<String> locked) {
+        String name = str(poi.get("name"));
+        if (name != null && !name.isBlank() && !locked.contains("name")) {
+            spot.setName(name);
+            spot.setNormalizedName(normalize(name));
+        }
+        if (!locked.contains("address")) {
+            spot.setAddress(str(poi.get("address")));
+        }
+        if (!locked.contains("category")) {
+            spot.setCategory(str(poi.get("type")));
+        }
+        if (!locked.contains("imageUrl")) {
+            spot.setImageUrl(str(poi.get("image_url")));
+        }
+        if (!locked.contains("longitude")) {
+            spot.setLongitude(num(poi.get("longitude")));
+            spot.setLatitude(num(poi.get("latitude")));
+        }
+        if (!locked.contains("description") && !locked.contains("tags")) {
+            enrichFromGuide(spot, spot.getCity());
+        } else if (locked.contains("description") || locked.contains("tags")) {
+            log.debug("RAG 增强跳过（描述/标签人工锁定）：spot={}", spot.getSpotId());
+        }
     }
 
     /**
@@ -441,9 +745,11 @@ public class RecommendationFeedService {
         item.setScore(d.finalScore());
         // P0-1：真实命中（无硬回避 + 有正偏好标签）才暴露"个性化/匹配度"字段；
         // score 是含基础分 0.5 的综合排序分，禁止前端当匹配度展示。
+        // 2026-09-09 粒度修正：可见匹配度 = 偏好强度 × 候选覆盖度（见 visibleMatchScore），
+        // 避免"同一画像条目被所有候选命中 → 全城清一色同分"的观感失真（同分≠造假，但无区分度）。
         if (personalizedFeed && d.hit()) {
             item.setPersonalized(Boolean.TRUE);
-            item.setMatchScore(clamp01(d.preferenceScore()));
+            item.setMatchScore(visibleMatchScore(d, item.getTags()));
             item.setMatchedPreferences(d.matchedTags());
         }
         item.setRecommendReason(reasonOf(d, spot.getDataQuality(), personalizedFeed));
@@ -452,6 +758,30 @@ public class RecommendationFeedService {
 
     private static double clamp01(double v) {
         return Math.max(0, Math.min(1, v));
+    }
+
+    /**
+     * 用户可见匹配度（2026-09-09 粒度修正，纯函数便于单测）：
+     * 在偏好强度（命中画像 Σ权重×置信度，见 {@link ScoreDetail#preferenceScore()}）基础上，
+     * 再按「候选内容中偏好特征的实际占比」折算 —— coverage = 命中的偏好标签去重数 / 候选标签去重数。
+     *
+     * <p>语义：候选若同时身兼多种风格（如既属自然风景又是城市漫游），对"只偏好自然风景"的用户，
+     * 贴合度应低于"身份纯粹"的候选，而不是所有候选都亮同一个百分比。
+     * 候选标签 ≤1（或映射缺失）时不做折算，保持原强度；命中标签数受 hit() 保证 ≥1。
+     * 排序分/画像分（evaluate/finalScore）不动 —— 只精化"给用户看的匹配度"这一可见字段。
+     *
+     * <p>示例：候选仅 [自然风景]、画像仅命中自然风景 → 1.0 → 原值；候选 [自然风景,城市漫游]、
+     * 画像仅命中自然风景 → 0.5 折算；画像同时命中两者 → 1.0 不减。
+     */
+    static double visibleMatchScore(ScoreDetail d, List<String> candidateTags) {
+        double strength = d.preferenceScore();
+        int n = candidateTags == null ? 0 : (int) candidateTags.stream().distinct().count();
+        if (n <= 1) {
+            return clamp01(strength);
+        }
+        int m = d.matchedTags() == null ? 0 : (int) d.matchedTags().stream().distinct().count();
+        double coverage = Math.min(1.0, (double) Math.max(m, 0) / n);
+        return clamp01(strength * coverage);
     }
 
     /**
@@ -560,13 +890,9 @@ public class RecommendationFeedService {
         return "spot_" + city + "_" + poiId;
     }
 
-    /** 名称规范化（仅匹配用）：去空白/全半角括号/行政区划后缀 */
+    /** 名称规范化（仅匹配用）：共享口径见 {@link SpotNameUtil}（攻略后台景点匹配同源） */
     private static String normalize(String name) {
-        if (name == null) {
-            return "";
-        }
-        return name.replaceAll("[\\s\\u3000（）()]", "")
-                .replaceAll("(风景区|景区|公园|古镇|老街|景点)$", "");
+        return SpotNameUtil.normalize(name);
     }
 
     private static String str(Object o) {

@@ -35,13 +35,14 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 除 /auth/** 注册/登录外，所有请求需携带有效 JWT（无效返回 401）。
+        // 仅注册/登录/管理员登录免鉴权；/auth/me 需要 JWT，才能从 UserContext 同步真实角色。
         // /uploads/** 为图片静态资源：<img> 加载不带 Authorization 头，必须放行；
         // 上传接口在 /file/**（不在排除内），仍需登录。
         // /system/health 为运行健康检查（审查报告 P2-6）：部署/演示前探测依赖状态，须免登录。
         registry.addInterceptor(jwtAuthInterceptor)
                 .addPathPatterns("/**")
-                .excludePathPatterns("/auth/**", "/uploads/**", "/system/health");
+            .excludePathPatterns("/auth/register", "/auth/login", "/auth/admin-login",
+                    "/uploads/**", "/system/health");
     }
 
     /** 上传图片静态映射：/uploads/xxx.jpg → 文件系统 ${app.upload-dir}/xxx.jpg */

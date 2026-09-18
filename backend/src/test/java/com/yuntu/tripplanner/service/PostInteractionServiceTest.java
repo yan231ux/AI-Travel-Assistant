@@ -4,11 +4,13 @@ import com.yuntu.tripplanner.exception.ForbiddenException;
 import com.yuntu.tripplanner.exception.PostNotFoundException;
 import com.yuntu.tripplanner.model.BehaviorRequest;
 import com.yuntu.tripplanner.model.TravelPost;
+import com.yuntu.tripplanner.model.UserBehavior;
 import com.yuntu.tripplanner.repository.PostInteractionRepository;
 import com.yuntu.tripplanner.repository.TravelPostRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
@@ -18,6 +20,7 @@ import java.time.LocalDateTime;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -116,6 +119,16 @@ class PostInteractionServiceTest {
     }
 
     @Test
+    void dislike_ownPost_forbidden() {
+        // published(1L) 的作者是 u2：用 u2 自己对帖子点"不感兴趣" → 必须 403
+        when(postRepository.selectById(1L)).thenReturn(published(1L));
+
+        assertThrows(ForbiddenException.class,
+                () -> service.interact("u2", 1L, "DISLIKE", true));
+        verify(interactionRepository, never()).insert(any());
+    }
+
+    @Test
     void interact_missingPost_notFound() {
         when(postRepository.selectById(99L)).thenReturn(null);
 
@@ -136,5 +149,51 @@ class PostInteractionServiceTest {
         assertThrows(IllegalStateException.class,
                 () -> service.interact("u1", 1L, "LIKE", true));
         verify(interactionRepository).insert(any());
+    }
+
+    /* ---- 画像可撤销：取消收藏回退（与「收藏 +0.15」对称，回退幅度更小） ---- */
+
+    @Test
+    void unfavorite_rollsBackProfileWithUnsave() {
+        when(postRepository.selectById(1L)).thenReturn(published(1L));
+        when(interactionRepository.delete(any())).thenReturn(1);
+        when(interactionRepository.selectCount(any()))
+                .thenReturn(0L).thenReturn(0L).thenReturn(0L);
+
+        var state = service.interact("u1", 1L, "FAVORITE", false);
+
+        assertFalse(state.favorited());
+        // 确实删掉了收藏行 → 触发 UNSAVE 画像回退（不是 DISLIKE：用户只是改主意，不是"不喜欢"）
+        ArgumentCaptor<BehaviorRequest> cap = ArgumentCaptor.forClass(BehaviorRequest.class);
+        verify(userProfileService).recordBehavior(eq("u1"), cap.capture());
+        assertEquals(UserBehavior.ACTION_UNSAVE, cap.getValue().getActionType());
+        assertEquals(UserBehavior.ITEM_TYPE_POST, cap.getValue().getItemType());
+        assertEquals("1", cap.getValue().getItemId());
+    }
+
+    @Test
+    void unfavorite_whenNotFavorited_doesNotTouchProfile() {
+        // 幂等空删 → 无正向贡献可退，不扣分
+        when(postRepository.selectById(1L)).thenReturn(published(1L));
+        when(interactionRepository.delete(any())).thenReturn(0);
+        when(interactionRepository.selectCount(any()))
+                .thenReturn(0L).thenReturn(0L).thenReturn(0L);
+
+        service.interact("u1", 1L, "FAVORITE", false);
+
+        verify(userProfileService, never()).recordBehavior(anyString(), any());
+    }
+
+    @Test
+    void unlike_doesNotRollBackProfile() {
+        // 点赞是 0.05 弱信号，取消点赞不回退：高频轻操作回退会反复扰动画像
+        when(postRepository.selectById(1L)).thenReturn(published(1L));
+        when(interactionRepository.delete(any())).thenReturn(1);
+        when(interactionRepository.selectCount(any()))
+                .thenReturn(0L).thenReturn(0L).thenReturn(0L);
+
+        service.interact("u1", 1L, "LIKE", false);
+
+        verify(userProfileService, never()).recordBehavior(anyString(), any());
     }
 }

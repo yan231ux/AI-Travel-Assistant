@@ -31,6 +31,17 @@ export function postStatusLabel(status?: string | null): string {
   return "未知";
 }
 
+/**
+ * 该状态的内容是否开放"公开互动"（点赞/收藏/不感兴趣/评论/举报）。
+ *
+ * <p>唯一判定口径：**只有已发布**才能被互动。草稿/审核中/未通过/已隐藏一律关闭——
+ * 对未公开内容点赞或评论本身就是不该发生的写入（后端也会拒），前端必须同源收窄；
+ * 卡片与详情页共用本判定，禁止各处自行比较 status 字符串。
+ */
+export function isInteractiveStatus(status?: string | null): boolean {
+  return status === "PUBLISHED";
+}
+
 /** 封面占位色板（无封面时按帖子 id 取色，稳定不闪） */
 const COVER_COLORS = ["#dbe7f5", "#f5e9db", "#e5f0e0", "#f0e0ea", "#e7e0f0", "#dff0f2"];
 

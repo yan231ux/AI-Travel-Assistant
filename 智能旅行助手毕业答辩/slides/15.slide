@@ -1,0 +1,26 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>举报与内容治理</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>05 平台治理</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '26px 40px', flexDirection: 'column', gap: 16 }}>
+    <Box style={{ flexDirection: 'row', gap: 24, flex: 1 }}>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Box style={{ background: '#F0F5FC', borderRadius: 8, padding: '6px 14px', alignSelf: 'flex-start' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#4A5568' }}>举报中心 · 待处理</Text></Box>
+        <Image src="assets/15_reports.png" style={{ width: '100%', height: 280, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      </Box>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Box style={{ background: '#F0F5FC', borderRadius: 8, padding: '6px 14px', alignSelf: 'flex-start' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#4A5568' }}>帖子治理 · 质量评分与下架</Text></Box>
+        <Image src="assets/16_posts.png" style={{ width: '100%', height: 280, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      </Box>
+    </Box>
+    <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'center', background: '#F0F5FC', borderRadius: 10, padding: '14px 22px' }}>
+      <Box style={{ width: 8, height: 44, background: '#1E4FA8', borderRadius: 4 }} />
+      <Text style={{ fontSize: 17, color: '#1A2230', lineHeight: 1.6, flex: 1 }}>举报门禁拦截「举报自己 / 未公开内容」；帖子治理用质量评分识别低质内容，支持证据查看与下架，形成「AI 初审 + 人工治理」双层闭环。</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>15 / 23</Text>
+  </Box>
+</Slide>

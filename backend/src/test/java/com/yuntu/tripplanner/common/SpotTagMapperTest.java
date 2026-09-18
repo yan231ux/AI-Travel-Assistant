@@ -68,4 +68,35 @@ class SpotTagMapperTest {
         assertTrue(SpotTagMapper.foodTags("街角家常菜").isEmpty() || !SpotTagMapper.foodTags("街角家常菜").contains("火锅"),
                 "未命中口味词典不产出标签");
     }
+
+    /* ============ 2026-09-09 建筑名胜修正：纯建筑古迹不应被 type "风景名胜" 误打"自然风景" ============ */
+
+    /** 高德 type 仅有"风景名胜"，名称含强历史建筑信号（天安门/天坛/纪念堂/陵/寺/宫/塔/门 等）→ 改为"历史文化" */
+    @Test
+    void pureArchitecture_overridesScenicToHistory() {
+        // 用户截图里的"全 48%"真凶：天安门/天坛/毛主席纪念堂被高德"风景名胜"误打"自然风景"
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "天安门").contains("历史文化"));
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "天坛公园").contains("历史文化"));
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "毛主席纪念堂").contains("历史文化"));
+        assertFalse(SpotTagMapper.styleTags("风景名胜;风景名胜", "天安门").contains("自然风景"),
+                "纯建筑古迹不该再被误标为自然风景");
+    }
+
+    /** 名称含强自然信号（山/海/湖/植物园/草原…）则尊重自然属性，不被强制改成"历史文化" */
+    @Test
+    void strongNatureSignal_preservedAsNature() {
+        // 这些是真正的自然/园林景观，不应被建筑名胜修正误改
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "景山公园").contains("自然风景"));
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "北海公园").contains("自然风景"));
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "中山公园").contains("自然风景"));
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "杭州西湖").contains("自然风景"));
+    }
+
+    /** 自然+历史双信号都缺（普通 POI 名称）→ 不动 type 推断，保持原"自然风景" */
+    @Test
+    void plainName_keepsTypeInference() {
+        // "省级旅游度假区" 不含山/海/湖/坛/寺 等强信号 → 保持高德 type 推断
+        assertTrue(SpotTagMapper.styleTags("风景名胜;风景名胜", "省级旅游度假区").contains("自然风景"),
+                "无强自然也强历史信号 → 保持高德 type 推断");
+    }
 }

@@ -1,0 +1,26 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>攻略与景点治理</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>05 平台治理</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '26px 40px', flexDirection: 'column', gap: 16 }}>
+    <Box style={{ flexDirection: 'row', gap: 24, flex: 1 }}>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Box style={{ background: '#F0F5FC', borderRadius: 8, padding: '6px 14px', alignSelf: 'flex-start' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#4A5568' }}>攻略内容 · 自动索引与质量评分</Text></Box>
+        <Image src="assets/17_guides.png" style={{ width: '100%', height: 280, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      </Box>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Box style={{ background: '#F0F5FC', borderRadius: 8, padding: '6px 14px', alignSelf: 'flex-start' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#4A5568' }}>景点数据 · 333 条治理</Text></Box>
+        <Image src="assets/18_spots.png" style={{ width: '100%', height: 280, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      </Box>
+    </Box>
+    <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'center', background: '#F0F5FC', borderRadius: 10, padding: '14px 22px' }}>
+      <Box style={{ width: 8, height: 44, background: '#1E4FA8', borderRadius: 4 }} />
+      <Text style={{ fontSize: 17, color: '#1A2230', lineHeight: 1.6, flex: 1 }}>攻略「两段式发布」：RAG 索引成功才切换为已发布版本；景点支持重匹配攻略 / 下线 / 合并同名，治理字段锁定防误改。</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>17 / 23</Text>
+  </Box>
+</Slide>

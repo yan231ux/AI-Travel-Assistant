@@ -4,11 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.yuntu.tripplanner.common.AbBucket;
+import com.yuntu.tripplanner.common.AdminPermission;
 import com.yuntu.tripplanner.common.ContentRuleChecker;
+import com.yuntu.tripplanner.model.ContentModerationTask;
 import com.yuntu.tripplanner.common.PostDuplicateDetector;
 import com.yuntu.tripplanner.common.PostQualityScorer;
 import com.yuntu.tripplanner.exception.ForbiddenException;
 import com.yuntu.tripplanner.exception.PostNotFoundException;
+import com.yuntu.tripplanner.model.AbExperiment;
 import com.yuntu.tripplanner.model.AuditLog;
 import com.yuntu.tripplanner.model.PostAuthor;
 import com.yuntu.tripplanner.model.PostCreateRequest;
@@ -22,12 +25,17 @@ import com.yuntu.tripplanner.model.PostTag;
 import com.yuntu.tripplanner.model.PostUpdateRequest;
 import com.yuntu.tripplanner.model.Spot;
 import com.yuntu.tripplanner.model.TravelPost;
+import com.yuntu.tripplanner.model.TravelPostRevision;
 import com.yuntu.tripplanner.model.UserPreference;
 import com.yuntu.tripplanner.repository.PostInteractionRepository;
 import com.yuntu.tripplanner.repository.PostSpotRepository;
 import com.yuntu.tripplanner.repository.SpotRepository;
 import com.yuntu.tripplanner.repository.TravelPostRepository;
+import com.yuntu.tripplanner.repository.TravelPostRevisionRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -79,8 +87,22 @@ public class PostService {
     private final PostFeedEngine postFeedEngine;
     /** A/B 实验（阶段四任务 6：帖子推荐流低质过滤实验） */
     private final AbExperimentService abExperimentService;
+    /** 城市名校验（2026-09-13：发帖/编辑城市字段归一化，杜绝"1"/"火星"等垃圾城市进库污染画像标签） */
+    private final CityValidator cityValidator;
     /** 全链路审计（阶段四任务 10：内容发布/审核动作留痕） */
     private final AuditService auditService;
+    /** 帖子编辑版本（审查报告 P1-1：公开版本 / 编辑版本分离） */
+    private final TravelPostRevisionRepository revisionRepository;
+
+    /** 关联景点快照的 JSON 编解码（PostSpotRef 仅字符串字段，无需额外模块） */
+    private static final ObjectMapper SPOTS_MAPPER = new ObjectMapper();
+    /**
+     * AI 内容审核（阶段三：提交审核后异步初筛）。可选 setter 注入 —— 不能走构造器：
+     * ContentModerationService 决策回调又依赖 PostService（setter），构造环会让
+     * Spring 报 "currently in creation" 无法启动。
+     */
+    @Autowired(required = false)
+    private ContentModerationService moderationService;
 
     public PostService(TravelPostRepository postRepository,
                        PostSpotRepository postSpotRepository,
@@ -92,7 +114,9 @@ public class PostService {
                        PostTagService postTagService,
                        PostFeedEngine postFeedEngine,
                        AbExperimentService abExperimentService,
-                       AuditService auditService) {
+                       CityValidator cityValidator,
+                       AuditService auditService,
+                       TravelPostRevisionRepository revisionRepository) {
         this.postRepository = postRepository;
         this.postSpotRepository = postSpotRepository;
         this.interactionRepository = interactionRepository;
@@ -103,7 +127,9 @@ public class PostService {
         this.postTagService = postTagService;
         this.postFeedEngine = postFeedEngine;
         this.abExperimentService = abExperimentService;
+        this.cityValidator = cityValidator;
         this.auditService = auditService;
+        this.revisionRepository = revisionRepository;
     }
 
     /* ================= 创建 / 编辑 / 删除（作者本人） ================= */
@@ -114,6 +140,8 @@ public class PostService {
         if (userId == null || userId.isBlank()) {
             throw new IllegalArgumentException("缺少用户标识");
         }
+        // 用户治理（§7）：暂停账号 / 限制发帖用户拒绝新建
+        communityUserService.requireCanPublish(userId);
         if (req == null || req.getTitle() == null || req.getTitle().isBlank()) {
             throw new IllegalArgumentException("标题不能为空");
         }
@@ -139,15 +167,15 @@ public class PostService {
     /**
      * 编辑帖子：仅作者本人。
      *
-     * <p>状态语义（审查报告 P0-1：已发布内容修改后必须重新审核，禁止"改完仍公开"绕过
-     * 规则检查与人工审核）：
+     * <p>状态语义（审查报告 P0-1 禁止"改完仍公开"绕过审核；P1-1 进一步做公开/编辑版本分离）：
      * <ul>
      *   <li>DRAFT：直接改（仍为草稿）；</li>
      *   <li>REJECTED：改后回 DRAFT，需重新提交审核；</li>
      *   <li>PENDING_REVIEW：直接改（本就在审核队列中，审核员看到的是最新内容）；</li>
-     *   <li>PUBLISHED / HIDDEN：发生<b>实质变更</b>（标题/摘要/正文/封面/城市/节奏/天数/预算/类型/关联景点
-     *       任一变化）→ 立即转 PENDING_REVIEW 并清空 published_at，公开流不再展示旧版本；
-     *       仅提交且无实质变更 → 保持原状态，不制造无谓的审核任务。</li>
+     *   <li>PUBLISHED：发生<b>实质变更</b>（标题/摘要/正文/封面/城市/节奏/天数/预算/类型/关联景点
+     *       任一变化）→ 生成一条待审<b>编辑版本</b>，主表保持 PUBLISHED，公开流继续展示旧版本；
+     *       审核通过才把版本内容切换为线上版本。仅提交且无实质变更 → 不制造无谓的审核任务。</li>
+     *   <li>HIDDEN：没有线上版本可保护 → 回到 PENDING_REVIEW 重新审核。</li>
      * </ul>
      * 依据 PostUpdateRequest 约定：字段为 null 表示不修改（与详情回填值一致的提交 = 无变更）。
      */
@@ -191,7 +219,7 @@ public class PostService {
             }
         }
         if (req.getCity() != null) {
-            String city = blankToNull(req.getCity().trim());
+            String city = normalizeCity(req.getCity());
             if (!Objects.equals(city, post.getCity())) {
                 post.setCity(city);
                 changed = true;
@@ -227,19 +255,32 @@ public class PostService {
                 // 被拒后修改 → 回草稿，作者需主动重新提交
                 post.setStatus(TravelPost.STATUS_DRAFT);
                 post.setRejectReason(null);
-            } else if (TravelPost.STATUS_PUBLISHED.equals(originalStatus)
-                    || TravelPost.STATUS_HIDDEN.equals(originalStatus)) {
-                // P0-1：已发布（或违规隐藏后）内容被作者修改 → 立即重新进入审核，
-                // 公开流不再展示旧版本；审核员通过后才重新公开。
+            } else if (TravelPost.STATUS_PUBLISHED.equals(originalStatus)) {
+                // P1-1 版本化（2026-09-18）：已发布内容被修改 → 修改稿落 travel_post_revision 待审，
+                // 主表保持 PUBLISHED —— 线上继续服务旧版本、读者无感；审核通过后才原子切换。
+                // 与旧行为的区别：不再"整篇下架 + published_at 清空"（那会让老帖凭空消失并变新帖）。
+                Long revId = savePendingRevision(post, userId, req.getSpots(), spotsChanged);
+                log.info("已发布帖子提交修改版本: postId={} userId={} revisionId={}", postId, userId, revId);
+                auditService.record(userId, AuditLog.CAT_CONTENT, "post_revision_submitted",
+                        "post", String.valueOf(postId),
+                        AuditService.detailOf("revision_id", revId,
+                                "reason", "已发布内容发生实质修改，生成待审编辑版本"));
+                if (moderationService != null) {
+                    moderationService.submitAsync(ContentModerationTask.TARGET_POST, String.valueOf(postId),
+                            revId, post.getTitle(), post.getCity(), post.getContent(), userId);
+                }
+                return; // 线上版本原样保留：不写主表正文、不动 published_at、不替换关联景点
+            } else if (TravelPost.STATUS_HIDDEN.equals(originalStatus)) {
+                // 已下架内容没有线上版本可保护 → 沿用原语义：回到待审
                 post.setStatus(TravelPost.STATUS_PENDING_REVIEW);
                 post.setPublishedAt(null);
                 post.setRejectReason(null);
                 publishedCleared = true;
-                log.info("已发布帖子被修改，转重新审核: postId={} userId={} oldStatus={}", postId, userId, originalStatus);
+                log.info("已隐藏帖子被修改，转重新审核: postId={} userId={}", postId, userId);
                 auditService.record(userId, AuditLog.CAT_CONTENT, "post_requeued",
                         "post", String.valueOf(postId),
                         AuditService.detailOf("old_status", originalStatus,
-                                "reason", "已发布内容发生实质修改，需重新审核"));
+                                "reason", "已下架内容发生实质修改，需重新审核"));
             }
             // PENDING_REVIEW / DRAFT：状态不变（本就在队列中 / 仍是草稿）
         }
@@ -250,6 +291,135 @@ public class PostService {
         if (publishedCleared) {
             // updateById 默认跳过 null 字段 → 需显式把 published_at 落 NULL（P0-1 状态机不变式）
             clearPublishedAt(postId);
+        }
+    }
+
+    /* ================= 编辑版本（P1-1 公开版本 / 编辑版本分离） ================= */
+
+    /**
+     * 把「编辑后的内容」存为待审版本，并把 travel_post.pending_revision_id 指向它。
+     *
+     * <p>传进来的 {@code post} 已被 update() 改写成"编辑后的值"，此处只读不写回主表。
+     * 若同一帖子已有待审版本（作者连改两次），旧版本置 {@code SUPERSEDED} 保留历史。
+     *
+     * @return 新版本 id
+     */
+    private Long savePendingRevision(TravelPost post, String editorId,
+                                     List<PostSpotRef> reqSpots, boolean spotsChanged) {
+        List<PostSpotRef> spots;
+        if (spotsChanged) {
+            spots = reqSpots == null ? List.of() : reqSpots;
+        } else {
+            spots = loadSpots(post.getId()); // 未改关联景点 → 快照当前值，保证版本自洽
+        }
+        Long existingId = post.getPendingRevisionId();
+        if (existingId != null) {
+            TravelPostRevision old = revisionRepository.selectById(existingId);
+            if (old != null && old.isPending()) {
+                old.setStatus(TravelPostRevision.STATUS_SUPERSEDED);
+                revisionRepository.updateById(old);
+            }
+        }
+        long count = revisionRepository.selectCount(new LambdaQueryWrapper<TravelPostRevision>()
+                .eq(TravelPostRevision::getPostId, post.getId()));
+
+        TravelPostRevision rev = new TravelPostRevision();
+        rev.setPostId(post.getId());
+        rev.setRevisionNo((int) count + 1);
+        rev.setTitle(post.getTitle());
+        rev.setSummary(post.getSummary());
+        rev.setContent(post.getContent());
+        rev.setCoverImage(post.getCoverImage());
+        rev.setCity(post.getCity());
+        rev.setTravelDays(post.getTravelDays());
+        rev.setBudget(post.getBudget());
+        rev.setPace(post.getPace());
+        rev.setPostType(post.getPostType());
+        rev.setSpotsJson(writeSpots(spots));
+        rev.setStatus(TravelPostRevision.STATUS_PENDING_REVIEW);
+        rev.setEditorId(editorId);
+        revisionRepository.insert(rev);
+
+        postRepository.update(null, new LambdaUpdateWrapper<TravelPost>()
+                .eq(TravelPost::getId, post.getId())
+                .set(TravelPost::getPendingRevisionId, rev.getId()));
+        return rev.getId();
+    }
+
+    /**
+     * 审核通过：把版本内容原子写回主表（关联景点一并切换），并解除待审指针。
+     * {@code published_at} 保持原值 —— 这是"修改"而不是"重新发布"，老帖不该被顶到时间线最前。
+     */
+    private void applyPendingRevision(TravelPost post, TravelPostRevision rev, String reviewer) {
+        post.setTitle(rev.getTitle());
+        post.setSummary(rev.getSummary());
+        post.setContent(rev.getContent());
+        post.setCoverImage(rev.getCoverImage());
+        post.setCity(rev.getCity());
+        post.setTravelDays(rev.getTravelDays());
+        post.setBudget(rev.getBudget());
+        post.setPace(rev.getPace());
+        post.setPostType(rev.getPostType());
+        post.setRejectReason(null);
+        postRepository.updateById(post);
+        // updateById 跳过 null 字段 → 显式解除待审指针
+        postRepository.update(null, new LambdaUpdateWrapper<TravelPost>()
+                .eq(TravelPost::getId, post.getId())
+                .set(TravelPost::getPendingRevisionId, null));
+        post.setPendingRevisionId(null);
+        if (rev.getSpotsJson() != null) {
+            replaceSpots(post.getId(), readSpots(rev.getSpotsJson()));
+        }
+        rev.setStatus(TravelPostRevision.STATUS_APPROVED);
+        rev.setReviewedBy(reviewer);
+        rev.setReviewedAt(LocalDateTime.now());
+        rev.setRejectReason(null);
+        revisionRepository.updateById(rev);
+    }
+
+    /** 审核拒绝修改稿：只处置版本（主表仍是原公开版本，作者可再次编辑）。 */
+    private void rejectPendingRevision(TravelPost post, TravelPostRevision rev, String reviewer, String reason) {
+        rev.setStatus(TravelPostRevision.STATUS_REJECTED);
+        rev.setRejectReason(reason == null || reason.isBlank() ? "修改内容不符合社区规范" : reason.trim());
+        rev.setReviewedBy(reviewer);
+        rev.setReviewedAt(LocalDateTime.now());
+        revisionRepository.updateById(rev);
+        postRepository.update(null, new LambdaUpdateWrapper<TravelPost>()
+                .eq(TravelPost::getId, post.getId())
+                .set(TravelPost::getPendingRevisionId, null));
+        post.setPendingRevisionId(null);
+    }
+
+    /** 取某帖当前待审版本（指针存在但记录已被清理 → null）。 */
+    private TravelPostRevision pendingRevisionOf(TravelPost post) {
+        if (post == null || post.getPendingRevisionId() == null) {
+            return null;
+        }
+        TravelPostRevision rev = revisionRepository.selectById(post.getPendingRevisionId());
+        return rev != null && rev.isPending() ? rev : null;
+    }
+
+    private static String writeSpots(List<PostSpotRef> spots) {
+        try {
+            return SPOTS_MAPPER.writeValueAsString(spots == null ? List.of() : spots);
+        } catch (Exception e) {
+            log.warn("关联景点快照序列化失败，按空处理: {}", e.getMessage());
+            return "[]";
+        }
+    }
+
+    /**
+     * 关联景点快照反序列化。包级可见：AdminEvidenceService 复用（同一 service 包）。
+     */
+    static List<PostSpotRef> readSpots(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return SPOTS_MAPPER.readValue(json, new TypeReference<List<PostSpotRef>>() { });
+        } catch (Exception e) {
+            log.warn("关联景点快照反序列化失败，按空处理: {}", e.getMessage());
+            return List.of();
         }
     }
 
@@ -269,6 +439,8 @@ public class PostService {
      * @return 空 = 提交成功
      */
     public List<String> submit(String userId, Long postId) {
+        // 用户治理（§7）：暂停账号 / 限制发帖用户拒绝提交审核
+        communityUserService.requireCanPublish(userId);
         TravelPost post = requireOwned(userId, postId);
         if (TravelPost.STATUS_PUBLISHED.equals(post.getStatus())
                 || TravelPost.STATUS_PENDING_REVIEW.equals(post.getStatus())) {
@@ -308,6 +480,12 @@ public class PostService {
         auditService.record(userId, AuditLog.CAT_CONTENT, "post_submitted",
                 "post", String.valueOf(postId),
                 AuditService.detailOf("quality_score", post.getQualityScore()));
+        // AI 审核初筛（阶段三）：规则已通过 → AI 结构化初筛 + 阈值聚合，辅助管理员人工复核。
+        // 异步执行 + 快照载荷（异步线程不回读源表，规避事务可见性坑）；失败不影响提交。
+        if (moderationService != null) {
+            moderationService.submitAsync(ContentModerationTask.TARGET_POST, String.valueOf(postId),
+                    null, post.getTitle(), post.getCity(), post.getContent(), userId);
+        }
         return List.of();
     }
 
@@ -373,18 +551,20 @@ public class PostService {
             return empty;
         }
 
-        // A/B 实验（阶段四任务 6，post_feed_low_quality）：命中处理组 → 把提交时质量分判定的
+        // A/B 实验（阶段四任务 6，低质过滤）：命中处理组 → 把提交时质量分判定的
         // 低质帖子（low_quality=1）排除出"为你推荐"候选；过滤后不足下限则整体回退
         // （帖子少时不空流）。无实验/匿名 → null（基线，低质帖子仍按规则参与但排后）。
-        String abVariant = abExperimentService.resolveVariant(
-                viewerId, AbExperimentService.EXP_POST_LOW_QUALITY);
+        // 实验名取自「当前 ACTIVE 的帖子流实验」而非写死常量——管理面可自建任意名，写死会与库内 exp_name 对不上。
+        AbExperiment postExp = abExperimentService.activeOf(AbExperiment.FEED_POST);
+        String abVariant = postExp == null
+                ? null : abExperimentService.resolveVariant(viewerId, postExp.getExpName());
         if (AbBucket.VARIANT_TREATMENT.equals(abVariant)) {
             List<TravelPost> clean = all.stream()
                     .filter(p -> p.getLowQuality() == null || p.getLowQuality() == 0)
                     .collect(Collectors.toList());
             if (clean.size() >= MIN_RECOMMEND_POOL) {
                 log.info("A/B[{}] 处理组生效: user={} 候选 {} → {}",
-                        AbExperimentService.EXP_POST_LOW_QUALITY, viewerId, all.size(), clean.size());
+                        postExp.getExpName(), viewerId, all.size(), clean.size());
                 all = clean;
             }
         }
@@ -458,13 +638,14 @@ public class PostService {
         return pageOf(viewerId, rows, total, pageNo, size, true);
     }
 
-    /** 审核队列（管理员）：待审核，旧→新 */
+    /** 审核队列（管理员）：待审核，旧→新。P1-1 起同时包含"已发布帖的待审修改版本"。 */
     public PostPage moderationQueue(String adminId, int page, int pageSize) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         int size = Math.max(1, Math.min(pageSize <= 0 ? 12 : pageSize, 50));
         int pageNo = Math.max(1, page);
         LambdaQueryWrapper<TravelPost> w = new LambdaQueryWrapper<TravelPost>()
-                .eq(TravelPost::getStatus, TravelPost.STATUS_PENDING_REVIEW)
+                .and(q -> q.eq(TravelPost::getStatus, TravelPost.STATUS_PENDING_REVIEW)
+                        .or().isNotNull(TravelPost::getPendingRevisionId))
                 .orderByAsc(TravelPost::getCreatedAt);
         long total = postRepository.selectCount(w);
         List<TravelPost> rows = postRepository.selectList(w.last(
@@ -477,7 +658,7 @@ public class PostService {
      * 管理员可查看 PUBLISHED/HIDDEN 任一状态（新→旧），供下架违规帖/恢复误隐藏帖。
      */
     public PostPage adminPosts(String adminId, String status, int page, int pageSize) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         int size = Math.max(1, Math.min(pageSize <= 0 ? 20 : pageSize, 100));
         int pageNo = Math.max(1, page);
         String st = status == null || status.isBlank() ? TravelPost.STATUS_PUBLISHED : status.trim();
@@ -525,25 +706,46 @@ public class PostService {
             Set<String> actions = mineMap.getOrDefault(postId, Set.of());
             d.setLiked(actions.contains(PostInteraction.ACTION_LIKE));
             d.setFavorited(actions.contains(PostInteraction.ACTION_FAVORITE));
+            d.setDisliked(actions.contains(PostInteraction.ACTION_DISLIKE));
         } else {
             d.setLiked(false);
             d.setFavorited(false);
+            d.setDisliked(false);
         }
         // 浏览计数：仅公开内容且非本人时 +1（展示用，不精确到并发）
         if (post.isPubliclyVisible() && viewerId != null && !mine) {
             incrementView(postId);
             d.setViewCount((post.getViewCount() == null ? 0 : post.getViewCount()) + 1);
         }
+        // P1-1：待审修改版本 —— 作者看到「你的修改审核中」，审核员看到待切换的内容快照
+        TravelPostRevision pendingRev = pendingRevisionOf(post);
+        d.setHasPendingRevision(pendingRev != null);
+        d.setPendingRevisionNo(pendingRev == null ? null : pendingRev.getRevisionNo());
+        d.setPendingRevision(pendingRev == null ? null : revisionView(pendingRev));
         return d;
     }
 
     /* ================= 管理员审核动作 ================= */
 
-    /** 通过：PENDING_REVIEW → PUBLISHED（published_at 落当前时间） */
+    /** 通过：PENDING_REVIEW → PUBLISHED（published_at 落当前时间）；PUBLISHED 帖的待审修改版本 → 只切换内容 */
     @Transactional
     public void approve(String adminId, Long postId) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         TravelPost post = requirePost(postId);
+
+        // P1-1：通过的是"已发布帖的修改版本" → 只把版本内容切为线上版本；
+        // 帖子状态保持 PUBLISHED、published_at 不变（这是修改不是重新发布）。
+        TravelPostRevision rev = pendingRevisionOf(post);
+        if (rev != null) {
+            applyPendingRevision(post, rev, adminId);
+            log.info("帖子修改版本审核通过，线上内容已切换: postId={} revisionId={} by={}",
+                    postId, rev.getId(), adminId);
+            auditService.record(adminId, AuditLog.CAT_ADMIN, "post_revision_approved",
+                    "post", String.valueOf(postId),
+                    AuditService.detailOf("revision_id", rev.getId(), "owner_id", post.getUserId()));
+            return;
+        }
+
         if (TravelPost.STATUS_HIDDEN.equals(post.getStatus())) {
             post.setStatus(TravelPost.STATUS_PUBLISHED); // 隐藏后重新上架
         } else if (!TravelPost.STATUS_PENDING_REVIEW.equals(post.getStatus())) {
@@ -562,10 +764,24 @@ public class PostService {
                 AuditService.detailOf("owner_id", post.getUserId()));
     }
 
-    /** 拒绝：PENDING_REVIEW → REJECTED（记录原因，作者可改后重提） */
+    /** 拒绝：PENDING_REVIEW → REJECTED（记录原因，作者可改后重提）；修改版本 → 只驳回版本 */
+    @Transactional
     public void reject(String adminId, Long postId, String reason) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         TravelPost post = requirePost(postId);
+
+        // P1-1：驳回的是"已发布帖的修改版本" → 线上继续服务原内容，作者可再次编辑提交
+        TravelPostRevision rev = pendingRevisionOf(post);
+        if (rev != null) {
+            rejectPendingRevision(post, rev, adminId, reason);
+            log.info("帖子修改版本审核拒绝（线上保持原版本）: postId={} revisionId={} by={} reason={}",
+                    postId, rev.getId(), adminId, rev.getRejectReason());
+            auditService.record(adminId, AuditLog.CAT_ADMIN, "post_revision_rejected",
+                    "post", String.valueOf(postId),
+                    AuditService.detailOf("revision_id", rev.getId(), "reason", rev.getRejectReason()));
+            return;
+        }
+
         if (!TravelPost.STATUS_PENDING_REVIEW.equals(post.getStatus())) {
             throw new IllegalArgumentException("仅待审核帖子可执行拒绝操作");
         }
@@ -582,7 +798,7 @@ public class PostService {
 
     /** 隐藏（已发布违规下架）：PUBLISHED → HIDDEN（不进公开流，可再上架） */
     public void hide(String adminId, Long postId) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         TravelPost post = requirePost(postId);
         if (!post.isPubliclyVisible()) {
             throw new IllegalArgumentException("仅已发布帖子可执行隐藏操作");
@@ -595,6 +811,97 @@ public class PostService {
         auditService.record(adminId, AuditLog.CAT_ADMIN, "post_hidden",
                 "post", String.valueOf(postId),
                 AuditService.detailOf("owner_id", post.getUserId()));
+    }
+
+    /* ================= 审核联动（AI 自动发布 / 改判落地） ================= */
+
+    /**
+     * AI 低风险自动发布（<b>系统主体</b>）。
+     *
+     * <p>为什么不复用 {@link #approve}：approve 是"管理员动作"，入口第一行就做
+     * CONTENT_REVIEW 权限校验。自动发布的主体是系统（system:ai），它<b>没有也不该有</b>
+     * 一个管理员账号——直接复用 approve 必然权限失败，而"给系统发管理员权限"是更糟的设计。
+     * 所以本方法只做状态机校验（仅 PENDING_REVIEW → PUBLISHED），
+     * "有没有资格调用"由调用方（审核流水线内部）这一事实保证，并单独写审计动作以便回溯。
+     */
+    @Transactional
+    public void autoPublish(String actor, Long postId) {
+        autoPublish(actor, postId, null);
+    }
+
+    /**
+     * AI 自动放行（带版本号）。
+     *
+     * <p>P1-1：若帖子存在待审<b>修改版本</b>，此处只切换版本内容（线上原内容被替换），
+     * 帖子状态与 published_at 不变。{@code revisionId} 是审核任务创建时绑定的版本，
+     * 与当前待审版本不一致说明作者已改新稿 —— 旧任务的结论不能套用到新版本上。
+     */
+    @Transactional
+    public void autoPublish(String actor, Long postId, Long revisionId) {
+        TravelPost post = requirePost(postId);
+        TravelPostRevision rev = pendingRevisionOf(post);
+        if (rev != null) {
+            if (revisionId != null && !revisionId.equals(rev.getId())) {
+                log.info("AI 放行任务绑定的是旧版本，已忽略: postId={} taskRev={} currentRev={}",
+                        postId, revisionId, rev.getId());
+                throw new IllegalStateException("审核任务对应的编辑版本已过期");
+            }
+            applyPendingRevision(post, rev, actor);
+            log.info("帖子修改版本 AI 自动放行，线上内容已切换: postId={} revisionId={} actor={}",
+                    postId, rev.getId(), actor);
+            auditService.record(actor, AuditLog.CAT_CONTENT, "post_revision_auto_approved",
+                    "post", String.valueOf(postId),
+                    AuditService.detailOf("actor", actor, "revision_id", rev.getId(),
+                            "owner_id", post.getUserId()));
+            return;
+        }
+        if (!TravelPost.STATUS_PENDING_REVIEW.equals(post.getStatus())) {
+            throw new IllegalArgumentException("仅待审核帖子可自动发布");
+        }
+        post.setStatus(TravelPost.STATUS_PUBLISHED);
+        if (post.getPublishedAt() == null) {
+            post.setPublishedAt(LocalDateTime.now());
+        }
+        post.setRejectReason(null);
+        postRepository.updateById(post);
+        log.info("帖子自动发布（AI 低风险放行）: postId={} actor={}", postId, actor);
+        auditService.record(actor, AuditLog.CAT_CONTENT, "post_auto_published",
+                "post", String.valueOf(postId),
+                AuditService.detailOf("actor", actor, "owner_id", post.getUserId()));
+    }
+
+    /**
+     * 审核否决落地（按内容<b>当前状态</b>选动作）。
+     *
+     * <p>修正前的缺陷：审核侧无条件调 {@link #reject}，但被"AI 自动放行"的帖子已经是
+     * PUBLISHED，状态机自校验会抛错 → 异常被吞 → 帖子仍然在线，"改判拒绝"实际不生效。
+     * 因此按状态分派：已发布 → 下架（HIDDEN，可再上架）；待审 → 拒绝（REJECTED，作者可改后重提）。
+     *
+     * @return 实际执行的动作名（hide / reject / noop），便于调用方审计与断言
+     */
+    public String applyRejectFromModeration(String adminId, Long postId, String reason) {
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
+        TravelPost post = requirePost(postId);
+        // P1-1：被改判的是"待审修改版本" → 只驳回版本，线上原版本继续服务（不能整篇下架）
+        TravelPostRevision rev = pendingRevisionOf(post);
+        if (rev != null) {
+            rejectPendingRevision(post, rev, adminId, reason);
+            log.info("审核改判拒绝 → 已驳回修改版本（线上保持原内容）: postId={} revisionId={}",
+                    postId, rev.getId());
+            return "revision_rejected";
+        }
+        if (post.isPubliclyVisible()) {
+            hide(adminId, postId);
+            log.info("审核改判拒绝 → 已发布内容下架: postId={} reason={}", postId, reason);
+            return "hide";
+        }
+        if (TravelPost.STATUS_PENDING_REVIEW.equals(post.getStatus())) {
+            reject(adminId, postId, reason);
+            return "reject";
+        }
+        // DRAFT / REJECTED / DELETED：没有公开内容需要处置，决策留痕即可
+        log.info("审核改判拒绝：内容当前状态无需处置 postId={} status={}", postId, post.getStatus());
+        return "noop";
     }
 
     /* ================= 内部工具 ================= */
@@ -630,9 +937,12 @@ public class PostService {
             Map<Long, Set<String>> interaction = attachStates && viewerId != null && !viewerId.isBlank()
                     ? interactionSets(viewerId, rows.stream().map(TravelPost::getId).collect(Collectors.toList()))
                     : Map.of();
+            // P1-1：一次批量取本页"待审修改版本"，避免逐行查（N+1）
+            Map<Long, TravelPostRevision> pendingRevs = pendingRevisionsOf(rows);
             for (TravelPost p : rows) {
                 PostItem item = toItem(p, nicknames, viewerId,
-                        interaction.getOrDefault(p.getId(), Set.of()));
+                        interaction.getOrDefault(p.getId(), Set.of()),
+                        pendingRevs.get(p.getId()));
                 RankMeta meta = rankMeta.get(p.getId());
                 if (meta != null) {
                     item.setRecommendReason(meta.reason());
@@ -651,7 +961,7 @@ public class PostService {
     }
 
     private PostItem toItem(TravelPost p, Map<String, String> nicknames, String viewerId,
-                            Set<String> actions) {
+                            Set<String> actions, TravelPostRevision pendingRev) {
         PostItem it = new PostItem();
         it.setId(p.getId());
         it.setTitle(p.getTitle());
@@ -670,12 +980,61 @@ public class PostService {
         it.setCreatedAt(fmt(p.getCreatedAt()));
         it.setLiked(actions.contains(PostInteraction.ACTION_LIKE));
         it.setFavorited(actions.contains(PostInteraction.ACTION_FAVORITE));
+        it.setDisliked(actions.contains(PostInteraction.ACTION_DISLIKE));
         it.setRejectReason(p.getRejectReason());
         it.setMine(viewerId != null && p.getUserId().equals(viewerId));
+        // P1-1：待审修改版本标记（列表卡片显示「修改审核中」）
+        it.setHasPendingRevision(pendingRev != null);
+        it.setPendingRevisionNo(pendingRev == null ? null : pendingRev.getRevisionNo());
         // 阶段四任务 5：内容质量（管理队列展示）
         it.setQualityScore(p.getQualityScore());
         it.setLowQuality(p.getLowQuality() != null && p.getLowQuality() == 1);
         return it;
+    }
+
+    /**
+     * 批量取本页帖子中"待审修改版本"（postId → 版本），仅对 pending_revision_id 非空的行查一次。
+     * 指针存在但版本记录已非 PENDING（被清理/串改）→ 视为无待审版本，不误报。
+     */
+    private Map<Long, TravelPostRevision> pendingRevisionsOf(List<TravelPost> rows) {
+        List<Long> revIds = rows.stream()
+                .map(TravelPost::getPendingRevisionId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (revIds.isEmpty()) {
+            return Map.of();
+        }
+        List<TravelPostRevision> revs = revisionRepository.selectBatchIds(revIds);
+        Map<Long, TravelPostRevision> byPost = new HashMap<>();
+        for (TravelPostRevision r : revs) {
+            if (r != null && r.isPending()) {
+                byPost.put(r.getPostId(), r);
+            }
+        }
+        return byPost;
+    }
+
+    /** 待审版本内容快照（供详情/审核页展示；字段名与前端契约一致） */
+    private Map<String, Object> revisionView(TravelPostRevision rev) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", rev.getId());
+        m.put("revision_no", rev.getRevisionNo());
+        m.put("status", rev.getStatus());
+        m.put("title", rev.getTitle());
+        m.put("summary", rev.getSummary());
+        m.put("content", rev.getContent());
+        m.put("cover_image", rev.getCoverImage());
+        m.put("city", rev.getCity());
+        m.put("travel_days", rev.getTravelDays());
+        m.put("budget", rev.getBudget());
+        m.put("pace", rev.getPace());
+        m.put("post_type", rev.getPostType());
+        m.put("spots", readSpots(rev.getSpotsJson()));
+        m.put("reject_reason", rev.getRejectReason());
+        m.put("edited_at", fmt(rev.getUpdatedAt() == null ? rev.getCreatedAt() : rev.getUpdatedAt()));
+        m.put("editor", rev.getEditorId());
+        return m;
     }
 
     /** 查重：与已发布/待审帖子标题摘要高度相似时返回提示（排除自己同帖） */
@@ -706,13 +1065,13 @@ public class PostService {
         return hits;
     }
 
+    /**
+     * 关联景点数：查询失败必须向上抛——外层（提交时算质量分）会捕获并跳过打分。
+     * 若在这里吞成 0，帖子会因"关联景点=0"被错误打成低质，污染审核队列（P0-1 同模式）。
+     */
     private long countLinkedSpots(Long postId) {
-        try {
-            return postSpotRepository.selectCount(
-                    new LambdaQueryWrapper<PostSpot>().eq(PostSpot::getPostId, postId));
-        } catch (Exception e) {
-            return 0;
-        }
+        return postSpotRepository.selectCount(
+                new LambdaQueryWrapper<PostSpot>().eq(PostSpot::getPostId, postId));
     }
 
     private static String truncate(String s, int max) {
@@ -826,7 +1185,7 @@ public class PostService {
                 .setSql("view_count = IFNULL(view_count, 0) + 1"));
     }
 
-    /** 我的互动状态（LIKE/FAVORITE 集合），按帖子分组，避免 N+1 */
+    /** 我的互动状态（LIKE/FAVORITE/DISLIKE 集合），按帖子分组，避免 N+1 */
     private Map<Long, Set<String>> interactionSets(String userId, List<Long> postIds) {
         if (postIds == null || postIds.isEmpty()) {
             return Map.of();
@@ -837,7 +1196,9 @@ public class PostService {
                             .eq(PostInteraction::getUserId, userId)
                             .in(PostInteraction::getPostId, postIds)
                             .in(PostInteraction::getActionType,
-                                    List.of(PostInteraction.ACTION_LIKE, PostInteraction.ACTION_FAVORITE)));
+                                    List.of(PostInteraction.ACTION_LIKE,
+                                            PostInteraction.ACTION_FAVORITE,
+                                            PostInteraction.ACTION_DISLIKE)));
             Map<Long, Set<String>> map = new HashMap<>();
             for (PostInteraction pi : list) {
                 map.computeIfAbsent(pi.getPostId(), k -> new HashSet<>()).add(pi.getActionType());
@@ -900,7 +1261,7 @@ public class PostService {
         post.setSummary(blankToNull(summary == null ? null : summary.trim()));
         post.setContent(content);
         post.setCoverImage(validateCoverImage(coverImage)); // 审查报告 P1-2
-        post.setCity(blankToNull(city == null ? null : city.trim()));
+        post.setCity(normalizeCity(city));
         post.setTravelDays(days);
         post.setBudget(budget);
         post.setPace(blankToNull(pace == null ? null : pace.trim()));
@@ -929,6 +1290,23 @@ public class PostService {
 
     private static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s;
+    }
+
+    /**
+     * 城市名归一化（2026-09-13）：空白/非法城市（"1"、"火星"）→ null；合法城市归一到规范名
+     * （"北京市"→"北京"、"魔都"→"上海"）。帖子 city 属可选字段，非法值静默置空而非报错，
+     * 避免用户随手填数字导致垃圾城市入库、进而污染画像标签（"匹配你的偏好：1"）。
+     */
+    private String normalizeCity(String city) {
+        if (city == null || city.isBlank()) {
+            return null;
+        }
+        String canonical = cityValidator.canonicalCity(city.trim());
+        if (canonical == null) {
+            log.debug("帖子城市非法，置空：{}", city.trim());
+            return null;
+        }
+        return canonical;
     }
 
     /**
@@ -997,5 +1375,25 @@ public class PostService {
             result.merge(p.getUserId(), 1L, Long::sum);
         }
         return result;
+    }
+
+    /**
+     * 作者视角：取自己某条帖子的最新一次 AI 审核任务（精简视图）。
+     *
+     * <p>仅作者本人可查（无授权：他人不允许查询任意帖子的审核细节），
+     * 帖子不存在或已被删除 → 404。无任务（提交后异步建任务的几百毫秒窗口）→ 204。
+     */
+    public Map<String, Object> latestModerationStatus(String userId, Long postId) {
+        TravelPost post = postRepository.selectById(postId);
+        if (post == null || TravelPost.STATUS_DELETED.equals(post.getStatus())) {
+            throw new PostNotFoundException("帖子不存在");
+        }
+        if (post.getUserId() == null || !post.getUserId().equals(userId)) {
+            throw new ForbiddenException("只能查看自己帖子的审核状态");
+        }
+        if (moderationService == null) {
+            return null;
+        }
+        return moderationService.latestForViewer(ContentModerationTask.TARGET_POST, String.valueOf(postId));
     }
 }

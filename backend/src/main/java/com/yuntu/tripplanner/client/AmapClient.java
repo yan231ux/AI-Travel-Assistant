@@ -147,6 +147,15 @@ public class AmapClient {
     }
 
     /**
+     * 强刷 POI 搜索（景点数据治理"手动触发重新同步"用）：先清掉同名 Redis 缓存再查询，
+     * 保证管理员看到的是最新结果而非 24h 缓存；新结果仍写回缓存，供后续访问复用。
+     */
+    public List<Map<String, Object>> searchPoiFresh(String destination, String category) {
+        cacheService.deleteByPrefix("map:place:v2:" + destination + ":" + category);
+        return searchPoi(destination, category);
+    }
+
+    /**
      * 类别 → 搜索关键词列表（多关键词扩大候选池；默认单关键词原样）。
      * 关键词数量克制：免费 key 有 QPS 限制（CUQPS 10021），关键词过多易触发限流。
      */

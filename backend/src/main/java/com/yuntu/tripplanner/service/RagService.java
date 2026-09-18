@@ -51,7 +51,7 @@ public class RagService {
     private final long ragCacheTtl;
 
     /** 加载的攻略片段：每个片段带 source（文件名）、title（小节标题）、text（正文） */
-    private final List<Map<String, String>> chunks = new ArrayList<>();
+    private volatile List<Map<String, String>> chunks = new ArrayList<>();
 
     /** 每个城市的向量索引，惰性构建（embedding 失败则缓存空列表 → 降级关键词） */
     private final Map<String, List<ChunkVec>> vectorsByCity = new ConcurrentHashMap<>();
@@ -184,7 +184,7 @@ public class RagService {
                     } else {
                         log.warn("攻略文件 {} 缺少 H1 城市标题，无法自动纳入支持城市", filename);
                     }
-                    splitMarkdown(filename, city, content);
+                    splitMarkdown(this.chunks, filename, city, content);
                 }
             }
             log.info("RAG攻略库加载完成，共 {} 个片段；支持城市 {} 个：{}",
@@ -215,9 +215,12 @@ public class RagService {
     }
 
     /**
-     * 按 ## 和 ### 标题切分 Markdown
+     * 按 ## 和 ### 标题切分 Markdown，写入指定目标列表。
+     *
+     * @param target 片段接收列表（启动加载传 this.chunks；运行时索引任务传入临时列表，
+     *               由调用方在向量构建成功后一次性替换 chunks，避免半成品污染检索）
      */
-    private void splitMarkdown(String sourceName, String city, String markdown) {
+    private void splitMarkdown(List<Map<String, String>> target, String sourceName, String city, String markdown) {
         String currentTitle = "文档开头";
         List<String> currentLines = new ArrayList<>();
 
@@ -225,7 +228,7 @@ public class RagService {
             String trimmed = line.trim();
             if (trimmed.startsWith("## ") || trimmed.startsWith("### ")) {
                 if (!currentLines.isEmpty()) {
-                    addChunk(sourceName, city, currentTitle, currentLines);
+                    addChunk(target, sourceName, city, currentTitle, currentLines);
                 }
                 currentTitle = trimmed.replaceAll("^#+\\s*", "").trim();
                 currentLines = new ArrayList<>();
@@ -234,18 +237,18 @@ public class RagService {
             }
         }
         if (!currentLines.isEmpty()) {
-            addChunk(sourceName, city, currentTitle, currentLines);
+            addChunk(target, sourceName, city, currentTitle, currentLines);
         }
     }
 
-    private void addChunk(String sourceName, String city, String title, List<String> lines) {
+    private void addChunk(List<Map<String, String>> target, String sourceName, String city, String title, List<String> lines) {
         Map<String, String> chunk = new HashMap<>();
         chunk.put("source", sourceName);
         chunk.put("city", city);
         chunk.put("title", title);
         chunk.put("text", String.join("\n", lines));
         chunk.put("tags", deriveTags(title, String.join("\n", lines)));
-        chunks.add(chunk);
+        target.add(chunk);
     }
 
     /**
@@ -262,6 +265,86 @@ public class RagService {
      */
     public Set<String> getSupportedCities() {
         return Set.copyOf(supportedCities);
+    }
+
+    /* ================= 运行时攻略版本应用（管理后台攻略 → RAG 检索源） ================= */
+
+    /**
+     * 把一份 DB 攻略版本内容（已发布 revision 的 markdown）应用为线上检索源：
+     * <ol>
+     *   <li>按与启动加载相同的 ## / ### 规则切分；</li>
+     *   <li>对片段批量构建向量（走持久化向量缓存，未命中才调 embedding API）；</li>
+     *   <li>全部成功后才整体替换该 source 的旧片段（原子），失败则保持旧版本继续服务；</li>
+     *   <li>替换成功后失效该城市内存向量索引、Chroma upsert 标记与 RAG 查询缓存。</li>
+     * </ol>
+     *
+     * @return true=应用成功（新版本已成为检索源）；false=失败（旧版本继续服务，调用方记录索引失败）
+     */
+    public synchronized boolean applyGuideVersion(String sourceName, String city, String markdown) {
+        if (sourceName == null || sourceName.isBlank() || city == null || city.isBlank()
+                || markdown == null || markdown.isBlank()) {
+            return false;
+        }
+        List<Map<String, String>> fresh = new ArrayList<>();
+        splitMarkdown(fresh, sourceName, city, markdown);
+        if (fresh.isEmpty()) {
+            log.warn("攻略版本无有效片段，拒绝应用: source={} city={}", sourceName, city);
+            return false;
+        }
+        // 先构建全部向量（缺失/变化的片段才调 embedding；任何失败都不替换旧版）
+        List<float[]> vectors = loadOrBuildVectors(fresh);
+        if (vectors == null) {
+            log.warn("攻略版本向量构建失败，保持旧版本继续服务: source={} city={}", sourceName, city);
+            return false;
+        }
+        // 原子替换：移除同 source 旧片段后并入新片段
+        List<Map<String, String>> merged = new ArrayList<>();
+        for (Map<String, String> c : chunks) {
+            if (!sourceName.equals(c.get("source"))) {
+                merged.add(c);
+            }
+        }
+        merged.addAll(fresh);
+        this.chunks = merged;
+        supportedCities.add(city);
+        cityToFileStem.putIfAbsent(city, sourceName.replaceAll("\\.md$", ""));
+        // 该城市内存向量索引 / Chroma upsert 标记 / RAG 查询缓存全部失效
+        vectorsByCity.remove(city);
+        String collection = collectionPrefix(city);
+        chromaUpsertedCities.remove(chromaVectorStore == null ? collection
+                : chromaVectorStore.collectionName(collection));
+        cacheService.deleteByPrefix("rag:guide:");
+        log.info("攻略版本已应用为检索源: source={} city={} 片段 {} 个", sourceName, city, fresh.size());
+        return true;
+    }
+
+    /**
+     * 移除某 source 的片段（下线/删除攻略时调用，同步清理向量索引与缓存）。
+     */
+    public synchronized void removeGuideSource(String sourceName) {
+        if (sourceName == null || sourceName.isBlank()) {
+            return;
+        }
+        Set<String> cities = new HashSet<>();
+        List<Map<String, String>> kept = new ArrayList<>();
+        for (Map<String, String> c : chunks) {
+            if (sourceName.equals(c.get("source"))) {
+                cities.add(c.get("city"));
+            } else {
+                kept.add(c);
+            }
+        }
+        if (kept.size() == chunks.size()) {
+            return;
+        }
+        this.chunks = kept;
+        for (String city : cities) {
+            vectorsByCity.remove(city);
+            chromaUpsertedCities.remove(chromaVectorStore == null ? collectionPrefix(city)
+                    : chromaVectorStore.collectionName(collectionPrefix(city)));
+            cacheService.deleteByPrefix("rag:guide:" + city + ":");
+        }
+        log.info("攻略来源已移除: source={} 涉及城市 {}", sourceName, cities);
     }
 
     /**
@@ -315,19 +398,37 @@ public class RagService {
             if (title == null) {
                 continue;
             }
-            String cardName = stripCardNumber(title);
-            String cn = normalizeSpot(cardName);
-            if (cn.length() < 2) {
-                continue;
-            }
-            if (cn.equals(norm) || cn.contains(norm) || norm.contains(cn)) {
-                if (cn.length() > bestLen) {
-                    bestLen = cn.length();
-                    best = parseSpotCard(chunk);
+            // 卡片名候选 = 完整标题 + 括号注释里的别名。
+            // 真实缺陷（OPTIMIZATION_TODO Q4）：卡片「秦始皇帝陵博物院（兵马俑）」，LLM/高德常写俗名
+            // 「兵马俑博物馆」——只拿完整标题做包含匹配，两者互不包含就漏掉，门票/地址只能标"LLM建议"。
+            // 拆出括号别名后 "兵马俑" ⊂ "兵马俑博物馆" 即可命中；对任意城市的「官方名（俗名）」通用。
+            for (String candidate : cardNameCandidates(title)) {
+                String cn = normalizeSpot(candidate);
+                if (cn.length() < 2) {
+                    continue;
+                }
+                if (cn.equals(norm) || cn.contains(norm) || norm.contains(cn)) {
+                    // bestLen 比较"实际命中的候选名"长度，保证更长（更具体）的命中优先
+                    if (cn.length() > bestLen) {
+                        bestLen = cn.length();
+                        best = parseSpotCard(chunk);
+                    }
                 }
             }
         }
         return best;
+    }
+
+    /** 卡片标题的名字候选：完整标题 + 括号里的别名（各 ≥2 字才参与，避免单字误命中） */
+    private List<String> cardNameCandidates(String title) {
+        List<String> out = new ArrayList<>();
+        out.add(stripCardNumber(title));
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("[（(]([^（()）]{2,})[)）]").matcher(title);
+        while (m.find()) {
+            out.add(m.group(1).trim());
+        }
+        return out;
     }
 
     /** 城市归属判定：规范城市名互相包含即视为同一城市 */

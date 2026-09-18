@@ -1,0 +1,32 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>行程规划 · ReAct + SSE 流式</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>03 核心技术</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '26px 40px', flexDirection: 'column', gap: 16 }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Image src="assets/04_form.png" style={{ width: '100%', height: 260, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+        <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>① 表单输入 · 城市/日期/偏好/预算</Text>
+      </Box>
+      <Text style={{ fontSize: 30, color: '#3D7BD9' }}>→</Text>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Image src="assets/05_generating.png" style={{ width: '100%', height: 260, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+        <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>② ReAct 推理 · 工具调用可见</Text>
+      </Box>
+      <Text style={{ fontSize: 30, color: '#3D7BD9' }}>→</Text>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Image src="assets/06_result_day1.png" style={{ width: '100%', height: 260, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+        <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>③ 行程结果 · 日程/地图/预算</Text>
+      </Box>
+    </Box>
+    <Box style={{ background: '#F0F5FC', borderRadius: 10, padding: '14px 22px', flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+      <Box style={{ width: 8, height: 44, background: '#1E4FA8', borderRadius: 4 }} />
+      <Text style={{ fontSize: 17, color: '#1A2230', lineHeight: 1.6, flex: 1 }}>Agent 先制定计划、再调用工具（攻略检索 / 天气 / 高德 POI / 网络搜索）、评估后补足信息，最多 3 轮收敛；全程 SSE 流式推送，结果附带「数据来源说明 + 数据可信度」。</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>08 / 23</Text>
+  </Box>
+</Slide>

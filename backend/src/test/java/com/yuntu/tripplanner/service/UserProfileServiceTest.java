@@ -495,6 +495,114 @@ class UserProfileServiceTest {
         assertEquals(2, adjustments.size());
     }
 
+    /* ================= 画像可撤销（阶段三 §5.4：可撤销，但回退幅度 < 增加） ================= */
+
+    @Test
+    void unsaveBehavior_rollsBackLessThanSave() {
+        // 收藏把 历史文化 提到 0.65；取消收藏只回退 0.10 → 0.55（回退 < 增加，反复收藏/取消不会刷高权重）
+        when(userPreferenceRepository.selectOne(any())).thenReturn(
+                feedbackPrefRow("历史文化", 0.65));
+
+        List<PreferenceAdjustment> adjustments = service.recordBehavior("user-1",
+                behavior(UserBehavior.ACTION_UNSAVE, UserBehavior.ITEM_TYPE_SPOT,
+                        "故宫博物院", "科教文化;博物馆", "trip-1"));
+
+        ArgumentCaptor<UserPreference> prefCaptor = ArgumentCaptor.forClass(UserPreference.class);
+        verify(userPreferenceRepository).updateById(prefCaptor.capture());
+        assertEquals(0.55, prefCaptor.getValue().getWeight(), 0.001, "0.65 - 0.10");
+        assertEquals(1, adjustments.size());
+        assertEquals(-0.10, adjustments.get(0).getDelta(), 0.001);
+        assertTrue(Math.abs(adjustments.get(0).getDelta()) < 0.15, "回退幅度必须小于收藏的增加");
+    }
+
+    @Test
+    void unsaveWithoutExistingRow_doesNotCreateAvoidSignal() {
+        // 无对应权重行 = 无正向贡献可退：不新建行（否则凭空造出 0.40 的"近期不感兴趣"假信号）
+        when(userPreferenceRepository.selectOne(any())).thenReturn(null);
+
+        List<PreferenceAdjustment> adjustments = service.recordBehavior("user-1",
+                behavior(UserBehavior.ACTION_UNSAVE, UserBehavior.ITEM_TYPE_SPOT,
+                        "故宫博物院", "科教文化;博物馆", "trip-1"));
+
+        assertTrue(adjustments.isEmpty());
+        verify(userPreferenceRepository, never()).insert(any(UserPreference.class));
+        verify(userPreferenceRepository, never()).updateById(any(UserPreference.class));
+        verify(userBehaviorRepository).insert(any(UserBehavior.class)); // 行为本身仍留痕
+    }
+
+    @Test
+    void unsave_neverPushesBelowPositiveFloor() {
+        // 历史推断行 0.50：直接 -0.10 会掉到 0.40（越过 0.45 回避线）→ 撤销最多退到 0.45
+        UserPreference thin = feedbackPrefRow("历史文化", 0.50);
+        thin.setSource(UserPreference.SOURCE_HISTORY_INFER);
+        when(userPreferenceRepository.selectOne(any())).thenReturn(thin);
+
+        service.recordBehavior("user-1",
+                behavior(UserBehavior.ACTION_UNSAVE, UserBehavior.ITEM_TYPE_SPOT,
+                        "故宫博物院", "科教文化;博物馆", "trip-1"));
+
+        ArgumentCaptor<UserPreference> prefCaptor = ArgumentCaptor.forClass(UserPreference.class);
+        verify(userPreferenceRepository).updateById(prefCaptor.capture());
+        assertEquals(0.45, prefCaptor.getValue().getWeight(), 0.001, "撤销只收回加成，不制造负偏好");
+    }
+
+    @Test
+    void unsave_keepsExistingAvoidSignalUnchanged() {
+        // 已是 0.20 的回避行（真的不喜欢过）：撤销不能反过来"洗白"既有负偏好
+        when(userPreferenceRepository.selectOne(any())).thenReturn(
+                feedbackPrefRow("历史文化", 0.20));
+
+        List<PreferenceAdjustment> adjustments = service.recordBehavior("user-1",
+                behavior(UserBehavior.ACTION_UNSAVE, UserBehavior.ITEM_TYPE_SPOT,
+                        "故宫博物院", "科教文化;博物馆", "trip-1"));
+
+        verify(userPreferenceRepository, never()).updateById(any(UserPreference.class));
+        assertTrue(adjustments.stream().allMatch(a -> Math.abs(a.getDelta()) < 1e-9));
+    }
+
+    @Test
+    void unsave_protectsQuestionnaireChoice() {
+        // 问卷主动勾选 历史文化 w0.9：取消收藏不该抹掉用户自己选的偏好
+        when(userPreferenceRepository.selectOne(any())).thenReturn(
+                prefRow(UserPreference.CATEGORY_TRAVEL_STYLE, "历史文化", UserPreference.SOURCE_QUESTIONNAIRE));
+
+        List<PreferenceAdjustment> adjustments = service.recordBehavior("user-1",
+                behavior(UserBehavior.ACTION_UNSAVE, UserBehavior.ITEM_TYPE_SPOT,
+                        "故宫博物院", "科教文化;博物馆", "trip-1"));
+
+        verify(userPreferenceRepository, never()).updateById(any(UserPreference.class));
+        assertEquals(1, adjustments.size());
+        assertTrue(adjustments.get(0).isProtectedRow());
+        assertEquals(0.9, adjustments.get(0).getWeight(), 0.001);
+    }
+
+    @Test
+    void questionnaire_clearsDomainWhenSubmittedEmpty() {
+        // 撤销语义：列表传空数组 / 单值传空串 = 用户主动清空该域；字段缺失(null) = 本次不涉及
+        UserProfile existing = profileRow();
+        existing.setTravelStyles("自然风景");
+        existing.setHotelPreference("舒适型");
+        when(userProfileRepository.selectOne(any())).thenReturn(existing);
+        when(userPreferenceRepository.selectCount(any())).thenReturn(1L);
+
+        QuestionnaireRequest q = new QuestionnaireRequest();
+        q.setTravelStyles(List.of()); // 清空
+        q.setPace("");                // 清空
+        // hotelLevel / foodPreferences / dietaryRestrictions / behaviorNotes 留 null = 不涉及
+
+        service.applyQuestionnaire("user-1", q);
+
+        ArgumentCaptor<UserProfile> profileCaptor = ArgumentCaptor.forClass(UserProfile.class);
+        verify(userProfileRepository).updateById(profileCaptor.capture());
+        UserProfile updated = profileCaptor.getValue();
+        assertNull(updated.getTravelStyles(), "空数组 = 清空该域");
+        assertNull(updated.getPacePreference(), "空串 = 清空该域");
+        assertEquals("火锅", updated.getFoodPreferences(), "未提交的域保持现状");
+        assertEquals("舒适型", updated.getHotelPreference(), "未提交的域保持现状");
+        assertEquals(3, updated.getProfileVersion(), "撤销也递增画像版本（结果缓存需失效）");
+        verify(userPreferenceRepository, never()).insert(any(UserPreference.class));
+    }
+
     /** 构造一次行为上报（itemId 可空） */
     private BehaviorRequest behavior(String action, String itemType, String name, String poiType, String tripId) {
         BehaviorRequest req = new BehaviorRequest();

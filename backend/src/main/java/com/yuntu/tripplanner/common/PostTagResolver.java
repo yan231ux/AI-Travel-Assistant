@@ -144,13 +144,15 @@ public final class PostTagResolver {
         if (paceTag != null && seen.add("p:" + paceTag)) {
             out.add(new Tag("pace", paceTag, paceSource));
         }
-        // 4) 城市：结构化字段（原样，仅去空白），城市标签不参与负向回避
+        // 4) 城市：结构化字段（仅去空白；明显非城市名的垃圾值不生成标签），城市标签不参与负向回避。
+        // 过滤纯数字/空白/纯符号等：否则用户随手填"1"会被当成 city 标签入库，进而写进画像、
+        // 最终渲染成"匹配你的偏好：1"（实测脏数据）。城市名进一步合法性由 PostService 源头校验兜底。
         if (isNotBlank(city)) {
             String c = city.trim();
             if (c.length() > 30) {
                 c = c.substring(0, 30);
             }
-            if (!c.isEmpty() && seen.add("c:" + c)) {
+            if (!c.isEmpty() && isValidCityLabel(c) && seen.add("c:" + c)) {
                 out.add(new Tag("city", c, SRC_POST_FIELD));
             }
         }
@@ -188,5 +190,25 @@ public final class PostTagResolver {
 
     private static boolean isNotBlank(String s) {
         return s != null && !s.isBlank();
+    }
+
+    /**
+     * 城市标签的静态卫生校验（纯函数，不依赖外部服务）：至少要含一个中文/字母字符，
+     * 且不能是纯数字或纯空白。拦截"1"、"12"、" "、纯标点等垃圾值进入画像词表。
+     */
+    private static boolean isValidCityLabel(String s) {
+        if (s == null || s.isBlank()) {
+            return false;
+        }
+        boolean hasCjkOrLetter = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isLetter(c)) {
+                hasCjkOrLetter = true;
+            } else if (!Character.isDigit(c) && !Character.isWhitespace(c)) {
+                // 允许常见城市名里的标点/连字符（如"香港"无标点；保留对"-"等宽松，仍要求至少一个字母/汉字）
+            }
+        }
+        return hasCjkOrLetter;
     }
 }

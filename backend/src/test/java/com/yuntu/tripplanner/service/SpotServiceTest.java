@@ -4,14 +4,18 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.yuntu.tripplanner.common.SpotNotFoundException;
 import com.yuntu.tripplanner.common.SpotText;
+import com.yuntu.tripplanner.model.BehaviorRequest;
+import com.yuntu.tripplanner.model.PreferenceAdjustment;
 import com.yuntu.tripplanner.model.Spot;
 import com.yuntu.tripplanner.model.SpotFavorite;
+import com.yuntu.tripplanner.model.UserBehavior;
 import com.yuntu.tripplanner.repository.SpotFavoriteRepository;
 import com.yuntu.tripplanner.repository.SpotRepository;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
@@ -20,6 +24,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -41,6 +46,8 @@ class SpotServiceTest {
     private TripRecordService tripRecordService;
     @Mock
     private UserProfileService userProfileService;
+    @Mock
+    private TravelEventService travelEventService;
 
     private SpotService service;
 
@@ -51,7 +58,7 @@ class SpotServiceTest {
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), SpotFavorite.class);
         service = new SpotService(spotRepository, spotFavoriteRepository,
-                tripRecordService, userProfileService);
+                tripRecordService, userProfileService, travelEventService);
     }
 
     private Spot spot(String spotId) {
@@ -117,6 +124,37 @@ class SpotServiceTest {
         when(spotRepository.selectOne(any())).thenReturn(null);
 
         assertThrows(SpotNotFoundException.class, () -> service.unfavorite("u1", "spot_不存在"));
+    }
+
+    /* ================= 画像可撤销：取消收藏回退（回退幅度 < 收藏增加） ================= */
+
+    @Test
+    void unfavorite_removesRowAndRollsBackProfile() {
+        when(spotRepository.selectOne(any())).thenReturn(spot("spot_上海_外滩"));
+        when(spotFavoriteRepository.delete(any())).thenReturn(1);
+        when(userProfileService.recordBehavior(anyString(), any()))
+                .thenReturn(List.of(new PreferenceAdjustment()));
+
+        List<PreferenceAdjustment> adjustments = service.unfavorite("u1", "spot_上海_外滩");
+
+        // 确实删掉了收藏行 → 才触发画像撤销，行为类型为 UNSAVE（不是 DISLIKE：不是"不喜欢"）
+        ArgumentCaptor<BehaviorRequest> reqCaptor = ArgumentCaptor.forClass(BehaviorRequest.class);
+        verify(userProfileService).recordBehavior(eq("u1"), reqCaptor.capture());
+        assertEquals(UserBehavior.ACTION_UNSAVE, reqCaptor.getValue().getActionType());
+        assertEquals("spot_上海_外滩", reqCaptor.getValue().getItemId());
+        assertEquals(1, adjustments.size());
+    }
+
+    @Test
+    void unfavorite_whenNotFavorited_doesNotTouchProfile() {
+        // 幂等空删（本来就没收藏）→ 无正向贡献可退，不能反复调接口扣分
+        when(spotRepository.selectOne(any())).thenReturn(spot("spot_上海_外滩"));
+        when(spotFavoriteRepository.delete(any())).thenReturn(0);
+
+        List<PreferenceAdjustment> adjustments = service.unfavorite("u1", "spot_上海_外滩");
+
+        assertTrue(adjustments.isEmpty());
+        verify(userProfileService, never()).recordBehavior(anyString(), any());
     }
 
     @Test

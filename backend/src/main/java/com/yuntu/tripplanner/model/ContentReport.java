@@ -53,6 +53,10 @@ public class ContentReport {
     @TableField("handled_at")
     private LocalDateTime handledAt;
 
+    /** 处理备注（管理后台举报详情：处理人填写，供事后追溯与历史展示） */
+    @TableField("handle_note")
+    private String handleNote;
+
     @TableField(value = "created_at", fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 }

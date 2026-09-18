@@ -1,0 +1,87 @@
+-- ============================================================================
+-- 数据清理：剔除「省级行政区」脏键 spot.city = '新疆'
+-- 生成时间：2026-09-13
+--
+-- 现象：高德 POI 检索把省级名当城市返回，于是 spot 表出现 city='新疆' 的 16 行。
+-- 为什么要清：城市闸门（CityValidator 白名单 70 城 + 别名归一化）上线后这些行
+--             已不可达（任何走闸门的读路径都取不到），但留在库里会污染
+--             管理端城市维度统计/热度分组，且 post_spot 还挂着指向它们的悬空引用。
+--
+-- 引用核查（清理前实测）：
+--   user_spot_favorite / spot_feed_log / spot_trending_daily / user_behavior /
+--   travel_event / candidate_evidence / recommendation_log / city_trending_daily /
+--   city_guide_spot  → 0 行
+--   post_spot        → 1 行（id=1，post_id=8 关联 "人民公园"）
+-- 影响行数：spot 16 行（id 347~362，连续无缺口）+ post_spot 1 行
+--
+-- 执行：docker exec -i trip-planner-mysql mysql -uroot -proot \
+--         --default-character-set=utf8mb4 trip_planner < 本文件
+--
+-- 回滚：本文件「清理前完整快照」段已整段注释（否则会与现存行主键冲突）。
+--       如需还原，把该段每行行首的 "-- " 去掉后执行即可（含原始主键 id）。
+-- ============================================================================
+
+-- ---------- 清理 ----------
+-- 1) 先断悬空引用：post 8 关联的 "人民公园" 随景点一起下线
+DELETE FROM post_spot WHERE id = 1;
+-- 2) 删除省级脏键 16 行（原判定条件 city = '新疆'；此处用实测 id 区间，规避命令行中文编码风险）
+DELETE FROM spot WHERE id BETWEEN 347 AND 362;
+
+-- ---------- 清理后自检（期望：spot_left=0 / post_spot_left=0，city_cnt 由 21 → 20） ----------
+SELECT (SELECT COUNT(*) FROM spot WHERE id BETWEEN 347 AND 362) AS spot_left,
+       (SELECT COUNT(*) FROM post_spot WHERE id = 1) AS post_spot_left,
+       (SELECT COUNT(DISTINCT city) FROM spot) AS city_cnt;
+
+-- ============================================================================
+-- 清理前完整快照（回滚用，已注释；还原时去掉行首 "-- "）
+-- ============================================================================
+-- 
+-- /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+-- /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+-- /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+-- /*!50503 SET NAMES utf8mb4 */;
+-- /*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+-- /*!40103 SET TIME_ZONE='+00:00' */;
+-- /*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+-- /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+-- /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+-- /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+-- 
+-- /*!40000 ALTER TABLE `spot` DISABLE KEYS */;
+-- INSERT INTO `spot` (`id`, `spot_id`, `poi_id`, `name`, `normalized_name`, `city`, `address`, `longitude`, `latitude`, `category`, `image_url`, `description`, `tags`, `source`, `data_quality`, `last_synced_at`, `status`, `flag`, `flag_reason`, `manual_override`, `manual_override_fields`, `last_verified_by`, `last_verified_at`, `merged_into`, `created_at`, `updated_at`) VALUES (347,'spot_新疆_B03DF05V5I','B03DF05V5I','新疆国际大巴扎','新疆国际大巴扎','新疆','解放南路518号',87.617977,43.780006,'风景名胜;风景名胜;国家级景点|购物服务;服装鞋帽皮具店;服装鞋帽皮具店','http://store.is.autonavi.com/showpic/0fbaa36d8ce8de891efb62590c367603',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(348,'spot_新疆_B03DF016C6','B03DF016C6','新疆维吾尔自治区博物馆','新疆维吾尔自治区博物馆','新疆','西北路131号',87.584246,43.819603,'科教文化服务;博物馆;博物馆','https://store.is.autonavi.com/showpic/768b028d48ec6df20000003376982513?type=pic',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(349,'spot_新疆_B03DF066YE','B03DF066YE','红山公园','红山','新疆','红山路北一巷40号',87.606487,43.807964,'风景名胜;公园广场;公园','http://store.is.autonavi.com/showpic/d6780a28eb0a58ceb88f4866eb256e4c',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(350,'spot_新疆_B03DF0262E','B03DF0262E','人民公园','人民','新疆','友好南路3号',87.604275,43.798263,'风景名胜;公园广场;公园','https://store.is.autonavi.com/showpic/5e3d8e66f1f69c550000003370038799?type=pic',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(351,'spot_新疆_B03DF02EA3','B03DF02EA3','人民广场','人民广场','新疆','东风路与和平北路交叉口',87.624115,43.7952,'风景名胜;公园广场;城市广场','https://store.is.autonavi.com/showpic/0a43642b941b02590000003381618691?type=pic',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(352,'spot_新疆_B03DF065N7','B03DF065N7','新疆人民剧场','新疆人民剧场','新疆','建中路2号',87.621499,43.790946,'风景名胜;风景名胜相关;旅游景点','https://store.is.autonavi.com/showpic/ef2b78516f575dd21acb3e1899ebab52',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(353,'spot_新疆_B0MASAFR9S','B0MASAFR9S','新疆革命军事馆','新疆革命军事馆','新疆','青年路137号',87.626378,43.804524,'风景名胜;风景名胜;风景名胜','https://store.is.autonavi.com/showpic/e73492eb7d4bd5010000004380664611?type=pic',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(354,'spot_新疆_B03DF02FB5','B03DF02FB5','毛泽民故居','毛泽民故居','新疆','明德路29号',87.623159,43.792457,'风景名胜;风景名胜;红色景区','https://store.is.autonavi.com/showpic/59de35ab7798ab6e70d465a3f54d16b8',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(355,'spot_新疆_B03DF06LHU','B03DF06LHU','南公园','南','新疆','新华南路1689号',87.606592,43.766552,'风景名胜;公园广场;公园','https://aos-comment.amap.com/B03DF06LHU/comment/content_media_external_file_100002989_1762154408802_76220032.jpg',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:27:59','2026-09-13 12:27:59'),(356,'spot_新疆_B03DF03041','B03DF03041','水上乐园','水上乐园','新疆','燕儿窝路4号',87.613996,43.754777,'体育休闲服务;休闲场所;水上活动中心|风景名胜;风景名胜相关;旅游景点','http://aos-cdn-image.amap.com/sns/ugccomment/3589b7ce-c77d-411b-936b-2cc9591a83c4.jpg',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00'),(357,'spot_新疆_B03DF06M4P','B03DF06M4P','陕西大寺','陕西大寺','新疆','永和正街17号',87.621051,43.789304,'风景名胜;风景名胜;回教寺','https://aos-comment.amap.com/B03DF06M4P/comment/content_media_external_file_1000024608_ss__1763382656529_69092708.jpg',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00'),(358,'spot_新疆_B0FFHOGEW8','B0FFHOGEW8','红山公园北园','红山公园北园','新疆','红山路北一巷40号',87.604858,43.808376,'风景名胜;公园广场;公园','https://aos-comment.amap.com/B0FFHOGEW8/comment/content_media_external_images_media_379_1733478066486_33845543.jpg',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00'),(359,'spot_新疆_B0FFIN2Z11','B0FFIN2Z11','新疆国际大巴扎-观光塔','新疆国际大巴扎-观光塔','新疆','解放南路510号',87.618178,43.77964,'风景名胜;风景名胜;观景点','https://aos-comment.amap.com/B0FFIN2Z11/comment/content_media_external_file_5327_ss__1751699123849_16906685.jpg',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00'),(360,'spot_新疆_B03DF0300D','B03DF0300D','八路军驻新疆办事处纪念馆','八路军驻新疆办事处纪念馆','新疆','胜利路392号',87.615517,43.773533,'风景名胜;风景名胜;红色景区|风景名胜;风景名胜;纪念馆','https://store.is.autonavi.com/showpic/dd5fdf43563321aa9d34ead754031cfd',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00'),(361,'spot_新疆_B03DF03079','B03DF03079','中国工农红军西路军总支队纪念馆','中国工农红军西路军总支队纪念馆','新疆','西后街37号',87.629774,43.802463,'风景名胜;风景名胜;红色景区','https://store.is.autonavi.com/showpic/bc359a8eb7a9ac8eb8cc437c9ccef3ab',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00'),(362,'spot_新疆_B03DF05V64','B03DF05V64','新疆天山野生动物园','新疆天山野生动物园','新疆','芨芨槽子东5公里附近',87.806675,43.67755,'风景名胜;公园广场;动物园','http://store.is.autonavi.com/showpic/06d731eaf1dbcf7484ad19df5e9f700d',NULL,NULL,'AMAP','POI_ONLY','2026-09-13 12:50:43','ONLINE',NULL,NULL,0,NULL,NULL,NULL,NULL,'2026-09-13 12:28:00','2026-09-13 12:28:00');
+-- /*!40000 ALTER TABLE `spot` ENABLE KEYS */;
+-- /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+-- 
+-- /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+-- /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+-- /*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+-- /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+-- /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+-- /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+-- /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+-- 
+-- 
+-- /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+-- /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+-- /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+-- /*!50503 SET NAMES utf8mb4 */;
+-- /*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+-- /*!40103 SET TIME_ZONE='+00:00' */;
+-- /*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+-- /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+-- /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+-- /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+-- 
+-- /*!40000 ALTER TABLE `post_spot` DISABLE KEYS */;
+-- INSERT INTO `post_spot` (`id`, `post_id`, `spot_id`, `poi_id`, `spot_name`, `sort_order`) VALUES (1,8,'spot_新疆_B03DF0262E','B03DF0262E','人民公园',0);
+-- /*!40000 ALTER TABLE `post_spot` ENABLE KEYS */;
+-- /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+-- 
+-- /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+-- /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+-- /*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+-- /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+-- /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+-- /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+-- /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+-- 

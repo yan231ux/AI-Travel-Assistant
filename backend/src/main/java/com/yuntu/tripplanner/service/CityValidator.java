@@ -134,6 +134,69 @@ public class CityValidator {
         return new CityValidationResult(false, null, null);
     }
 
+    /**
+     * 零成本"是否已知目的地"判定：仅查别名映射 + 白名单，<b>不调用高德</b>。
+     *
+     * <p>用于高频入口的前置闸门（推荐景点流、城市景点同步等）：这些入口过去只判"城市为空"，
+     * 于是「火星」「1」「北就」之类会被原样透传给高德 POI 搜索，其返回结果再以该字符串为
+     * city 落库，造成"北京景点被贴上假城市标签"的数据污染。凡是要对外部服务发起调用、
+     * 或要按城市写库的入口，都应先用本方法把住闸门（fail closed）。
+     *
+     * <p>已知城市之外的<b>真实</b>小城市仍可通过 {@code known-cities} 配置追加，
+     * 不依赖高德兜底放行——写库路径必须可枚举、可解释。
+     */
+    public boolean isKnownCity(String destination) {
+        // 判定逻辑与 canonicalCity 同源（后者返回 null ⟺ 这里 false），避免两处规则日后走偏
+        return canonicalCity(destination) != null;
+    }
+
+    /**
+     * 形近/音近纠错建议（无可靠建议时返回 null），供调用方拼"你是不是想找「XX」"提示。
+     * 零成本（纯编辑距离），不触发地理编码。
+     */
+    public String suggestCity(String destination) {
+        if (destination == null || destination.isBlank()) {
+            return null;
+        }
+        return findSuggestion(stripAdminSuffix(destination.trim()));
+    }
+
+    /**
+     * 取城市<b>规范名</b>（读、写、缓存必须统一用这个键）；未知城市返回 {@code null}。
+     *
+     * <p>与 {@link #isKnownCity} 同为"零成本、不调高德"，但额外完成<b>归一化</b>：
+     * 别名 → 标准名（"魔都"→"上海"），并剥离"市/省"后缀（"北京市"→"北京"）。
+     *
+     * <p><b>为什么必须归一化而不是只做布尔校验</b>：校验通过只说明"这个输入能识别成某座城"，
+     * 但读库/写库若沿用<b>原始串</b>，同一座城就会裂成多个 city 键——
+     * 例如输入"北京市"能通过校验，却会以 {@code city='北京市'} 另起一套 spot 行，
+     * 与已有的 {@code '北京'} 互不可见，还各同步一份高德数据（实测一次访问即多出 15 行）。
+     * 因此凡"按城市读写"的入口都应改用本方法，让<b>校验与落库键同源</b>。
+     *
+     * @return 规范城市名；输入为空或不在别名/白名单内时为 {@code null}（调用方 fail closed）
+     */
+    public String canonicalCity(String destination) {
+        if (destination == null || destination.isBlank()) {
+            return null;
+        }
+        String raw = destination.trim();
+        String norm = stripAdminSuffix(raw);
+        String aliased = CITY_ALIASES.get(norm);
+        if (aliased == null) {
+            aliased = CITY_ALIASES.get(raw);
+        }
+        if (aliased != null) {
+            return aliased;
+        }
+        if (knownCities.contains(norm)) {
+            return norm;
+        }
+        if (knownCities.contains(raw)) {
+            return raw;
+        }
+        return null;
+    }
+
     /** 剥离末尾的行政区划后缀（"湛江市"→"湛江"、"北京市"→"北京"），用于白名单/别名/纠错匹配；地理编码仍用原串 */
     private String stripAdminSuffix(String s) {
         if (s.length() > 1 && (s.endsWith("市") || s.endsWith("省"))) {

@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.config;
 
+import com.yuntu.tripplanner.common.AdminRole;
 import com.yuntu.tripplanner.model.User;
 import com.yuntu.tripplanner.service.CommunityUserService;
 import lombok.extern.slf4j.Slf4j;
@@ -15,8 +16,11 @@ import org.springframework.stereotype.Component;
  *
  * <p>账号来自配置 community.admin-username / community.admin-password（默认 admin/admin123，
  * 生产必须用环境变量 COMMUNITY_ADMIN_USERNAME / COMMUNITY_ADMIN_PASSWORD 覆盖）。
- * 幂等：已存在该用户则仅确保 role=ADMIN；不存在则创建。普通用户永远无法自行提权为管理员
- * （无任何"改角色"接口，前端也不可调用）。
+ *
+ * <p>幂等语义（角色细化后）：<b>只在账号"不是任何管理端角色"时才建/提为 SUPER_ADMIN</b>。
+ * 这样既能在账号被误降为普通用户时兜底恢复（防锁死），又<b>不会覆盖</b>超管把默认 admin
+ * 改配成审核员/运营等更小权限角色的运营决策。
+ * 普通用户永远无法自行提权（无自助改角色入口，改角色需 SUPER_ADMIN 且二次确认）。
  */
 @Slf4j
 @Order(2)
@@ -49,11 +53,15 @@ public class AdminInitializer implements ApplicationRunner {
         String username = adminUsername == null || adminUsername.isBlank() ? "admin" : adminUsername.trim();
         User existing = communityUserService.findByUsername(username);
         if (existing != null) {
-            if (!CommunityUserService.ROLE_ADMIN.equals(existing.getRole())) {
-                existing.setRole(CommunityUserService.ROLE_ADMIN);
-                communityUserService.updateUser(existing);
-                log.info("管理员账号已提升: {} (id={})", username, existing.getId());
+            // 已在管理端（超管/审核员/编辑/运营）→ 不动，尊重运营对角色的调整
+            if (AdminRole.fromCode(existing.getRole()).isAdminSide()) {
+                return;
             }
+            // 停在普通用户（含被误降级）→ 兜底提为超管，避免把自己锁在门外
+            existing.setRole(AdminRole.SUPER_ADMIN.name());
+            communityUserService.updateUser(existing);
+            log.info("管理员账号已提升为 {}: {} (id={})",
+                    AdminRole.SUPER_ADMIN.name(), username, existing.getId());
             return;
         }
         User admin = new User();
@@ -61,8 +69,9 @@ public class AdminInitializer implements ApplicationRunner {
         admin.setPasswordHash(encoder.encode(
                 adminPassword == null || adminPassword.isBlank() ? "admin123" : adminPassword));
         admin.setNickname("管理员");
-        admin.setRole(CommunityUserService.ROLE_ADMIN);
+        admin.setRole(AdminRole.SUPER_ADMIN.name());
         communityUserService.insertUser(admin);
-        log.info("已创建首个管理员账号: {} (id={})", username, admin.getId());
+        log.info("已创建首个{}账号: {} (id={})",
+                AdminRole.SUPER_ADMIN.label(), username, admin.getId());
     }
 }

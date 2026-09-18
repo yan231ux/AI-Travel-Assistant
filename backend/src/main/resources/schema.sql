@@ -6,14 +6,22 @@ CREATE DATABASE IF NOT EXISTS trip_planner DEFAULT CHARACTER SET utf8mb4 COLLATE
 USE trip_planner;
 
 -- 用户表（注册/登录；表名用 users 避免 MySQL 的 user 关键字）
--- role 列：阶段二社区新增（USER/ADMIN）。新建库直接含此列；存量库由启动期自动迁移补列
--- （见 config/SchemaAutoUpgrade.java，启动时检测 information_schema 缺列即 ALTER）。
+-- role 列：阶段二社区新增（USER/ADMIN），阶段五扩为管理端角色集
+-- （USER/CONTENT_REVIEWER/CITY_EDITOR/RECOMMENDATION_OPERATOR/SUPER_ADMIN）。
+-- 新建库直接含此列；存量库由启动期自动迁移补列/加宽（见 config/SchemaAutoUpgrade.java）。
+-- 宽度取 32：最长角色码 RECOMMENDATION_OPERATOR 为 23 字符，留余量给后续角色，
+-- 避免"新增角色时分配成功但写库截断"这类只在特定角色上才暴露的坑。
 CREATE TABLE IF NOT EXISTS users (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
     username VARCHAR(50) NOT NULL COMMENT '用户名（登录名）',
     password_hash VARCHAR(100) NOT NULL COMMENT 'BCrypt密码哈希',
     nickname VARCHAR(50) COMMENT '昵称',
-    role VARCHAR(20) DEFAULT 'USER' COMMENT '角色：USER/ADMIN（社区审核用，服务端校验）',
+    role VARCHAR(32) DEFAULT 'USER' COMMENT '角色：USER/CONTENT_REVIEWER/CITY_EDITOR/RECOMMENDATION_OPERATOR/SUPER_ADMIN',
+    account_status VARCHAR(16) DEFAULT 'ACTIVE' COMMENT '账号状态：ACTIVE/SUSPENDED（治理：暂停账号）',
+    post_limited TINYINT DEFAULT 0 COMMENT '限制发帖标记（治理）',
+    comment_banned TINYINT DEFAULT 0 COMMENT '暂停评论标记（治理）',
+    violation_count INT DEFAULT 0 COMMENT '违规次数（举报成立自动累计）',
+    last_login_at DATETIME COMMENT '最近登录时间',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted TINYINT DEFAULT 0 COMMENT '逻辑删除标记',
@@ -202,6 +210,16 @@ CREATE TABLE IF NOT EXISTS spot (
     source VARCHAR(30) NOT NULL DEFAULT 'AMAP' COMMENT '数据来源：AMAP/RAG/AMAP_AND_RAG',
     data_quality VARCHAR(30) NOT NULL DEFAULT 'POI_ONLY' COMMENT '可信度：POI_ONLY/GUIDE_MATCHED/VERIFIED',
     last_synced_at DATETIME COMMENT '最近一次从高德同步时间',
+    -- 数据治理列（设计方案 §5 景点数据运营中心，B组）：人工修正/下线/标记/合并全部落库留痕，
+    -- 高德再同步只更新「未人工锁定」的字段，保证管理员修正不被自动同步无条件覆盖。
+    status VARCHAR(20) NOT NULL DEFAULT 'ONLINE' COMMENT '上下架状态：ONLINE/OFFLINE（OFFLINE=管理员下线，不推荐不展示）',
+    flag VARCHAR(30) COMMENT '治理标记：NON_SPOT非景点/CLOSED已关闭/OUTDATED已过时/ERROR_POI错误POI',
+    flag_reason VARCHAR(500) COMMENT '治理原因（管理员填写，随审计日志留痕）',
+    manual_override TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否有人工修正记录（同步时跳过被锁定字段）',
+    manual_override_fields VARCHAR(300) COMMENT '人工锁定字段（逗号分隔：name,address,description,tags…）',
+    last_verified_by VARCHAR(50) COMMENT '最近人工审核人（用户名）',
+    last_verified_at DATETIME COMMENT '最近人工审核时间',
+    merged_into VARCHAR(100) COMMENT '重复合并目标 spot_id（本行保留为下线别名指向主行）',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY uk_spot_id (spot_id),
@@ -255,12 +273,43 @@ CREATE TABLE IF NOT EXISTS travel_post (
     -- 阶段四任务 5/8：内容质量分与低质标记（确定性规则，提交审核时计算落库；存量库由 SchemaAutoUpgrade 自动补列）
     quality_score INT DEFAULT 0 COMMENT '内容质量分 0~100（确定性规则，提交时计算）',
     low_quality TINYINT DEFAULT 0 COMMENT '低质标记（内容过短/缺结构，提交时判定 0/1）',
+    -- 审查报告 P1-1：已发布帖子编辑走"版本化"，主表始终服务线上公开版本；
+    -- 待审的编辑版本 id 落此列（NULL = 无待审修改）
+    pending_revision_id BIGINT COMMENT '待审核的编辑版本ID（NULL=无；见 travel_post_revision）',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     INDEX idx_post_status_time (status, published_at),
     INDEX idx_post_user_time (user_id, created_at),
     INDEX idx_post_city (city)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户帖子（社区）';
+
+-- 帖子编辑版本（审查报告 P1-1：公开版本 / 编辑版本分离）
+-- travel_post 始终服务线上公开版本；作者编辑已发布帖子时内容落本表待审，
+-- 审核通过才原子回写主表（published_at 不变），拒绝则主表仍是原公开版本。
+CREATE TABLE IF NOT EXISTS travel_post_revision (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    post_id BIGINT NOT NULL COMMENT '帖子ID',
+    revision_no INT NOT NULL DEFAULT 1 COMMENT '版本号（同帖内自增，1 起）',
+    title VARCHAR(120) NOT NULL COMMENT '标题（版本快照）',
+    summary VARCHAR(300) COMMENT '摘要',
+    content TEXT NOT NULL COMMENT '正文',
+    cover_image VARCHAR(500) COMMENT '封面图URL',
+    city VARCHAR(80) COMMENT '关联城市',
+    travel_days INT COMMENT '行程天数',
+    budget DOUBLE COMMENT '预算（元）',
+    pace VARCHAR(20) COMMENT '节奏：轻松/适中/紧凑',
+    post_type VARCHAR(30) COMMENT '类型：GUIDE/SPOT_RECOMMENDATION/ITINERARY/NOTE',
+    spots_json TEXT COMMENT '关联景点快照JSON：[{spot_id,poi_id,spot_name}]',
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING_REVIEW' COMMENT 'PENDING_REVIEW/APPROVED/REJECTED/SUPERSEDED',
+    reject_reason VARCHAR(300) COMMENT '审核拒绝原因',
+    reviewed_by VARCHAR(50) COMMENT '审核人（管理员ID或 system:ai）',
+    reviewed_at DATETIME COMMENT '审核时间',
+    editor_id VARCHAR(50) COMMENT '提交该版本的用户ID',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    INDEX idx_rev_post (post_id, revision_no),
+    INDEX idx_rev_status_time (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='帖子编辑版本（公开版本/编辑版本分离）';
 
 -- 帖子关联景点（结构化关联；spot_id/poi_id 优先，名称仅兜底展示）
 CREATE TABLE IF NOT EXISTS post_spot (
@@ -310,6 +359,7 @@ CREATE TABLE IF NOT EXISTS content_report (
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/RESOLVED/DISMISSED',
     handled_by VARCHAR(50) COMMENT '处理人用户ID',
     handled_at DATETIME COMMENT '处理时间',
+    handle_note VARCHAR(500) COMMENT '处理备注（管理员处理时填写，供追溯）',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     UNIQUE KEY uk_reporter_target (reporter_id, target_type, target_id),
     INDEX idx_report_status_time (status, created_at)
@@ -457,3 +507,226 @@ CREATE TABLE IF NOT EXISTS audit_log (
     INDEX idx_audit_category_time (category, created_at),
     INDEX idx_audit_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='全链路审计日志（阶段四）';
+
+-- =====================================================================
+-- 管理后台内容运营中心（管理员后台与内容运营中心设计方案 2026-09-08：攻略骨架）
+-- 数据主权：数据库已发布攻略版本 = 唯一线上主数据；RAG 分片/向量 = 派生数据；
+-- classpath guides/*.md 仅作初始化导入与备份载体（导入幂等：source_file+content_hash）。
+-- =====================================================================
+
+-- 攻略主档（版本化：current_revision_id 当前编辑版 / published_revision_id 线上可见版；
+-- 编辑已发布内容 → 追加新版本并转 PENDING_REVIEW，审核通过才原子切换 published_revision_id）
+CREATE TABLE IF NOT EXISTS city_guide (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    city VARCHAR(80) NOT NULL COMMENT '城市名',
+    title VARCHAR(200) NOT NULL COMMENT '标题',
+    summary VARCHAR(500) COMMENT '摘要',
+    content_markdown MEDIUMTEXT COMMENT '当前编辑版正文（镜像 current_revision，列表预览免join）',
+    cover_image VARCHAR(500) COMMENT '封面图URL',
+    source_type VARCHAR(20) NOT NULL DEFAULT 'SYSTEM' COMMENT '来源：CURATED/COMMUNITY/IMPORTED/SYSTEM',
+    source_name VARCHAR(120) COMMENT '来源名称（机构/文件等）',
+    source_file VARCHAR(120) COMMENT '初始导入来源文件名（溯源用，不代表线上读该文件）',
+    author VARCHAR(80) COMMENT '维护人/作者',
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/PENDING_REVIEW/PUBLISHED/REJECTED/HIDDEN',
+    quality_score INT DEFAULT 0 COMMENT '内容质量分 0~100（确定性规则）',
+    reject_reason VARCHAR(300) COMMENT '审核拒绝原因（REJECTED 时）',
+    current_revision_id BIGINT COMMENT '当前编辑版本ID',
+    published_revision_id BIGINT COMMENT '线上可见版本ID（发布时原子切换）',
+    rag_status VARCHAR(20) NOT NULL DEFAULT 'NOT_INDEXED' COMMENT 'NOT_INDEXED/DEFERRED/READY/FAILED',
+    rag_indexed_revision BIGINT COMMENT '最后成功进入RAG的版本ID',
+    version INT NOT NULL DEFAULT 0 COMMENT '版本计数（当前版本号）',
+    submitted_by VARCHAR(50) COMMENT '提交审核人用户ID',
+    reviewed_by VARCHAR(50) COMMENT '审核人用户ID',
+    published_at DATETIME COMMENT '最近发布时间',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_guide_source_file (source_file),
+    INDEX idx_guide_city_status (city, status),
+    INDEX idx_guide_status_updated (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='攻略主档（管理后台内容运营）';
+
+-- 攻略版本（append-only：每次保存追加 revision_no 递增的不可变版本；
+-- content_hash=SHA-256，幂等导入/无变化保存判重依据）
+CREATE TABLE IF NOT EXISTS city_guide_revision (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    guide_id BIGINT NOT NULL COMMENT '攻略ID',
+    revision_no INT NOT NULL COMMENT '版本号（1 起递增）',
+    content_hash CHAR(64) NOT NULL COMMENT '正文SHA-256',
+    content_markdown MEDIUMTEXT NOT NULL COMMENT '版本正文快照',
+    change_summary VARCHAR(300) COMMENT '变更说明',
+    editor_id VARCHAR(50) COMMENT '编辑人用户ID',
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/PENDING_REVIEW/PUBLISHED/REJECTED',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    INDEX idx_rev_guide (guide_id, id),
+    INDEX idx_rev_hash (content_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='攻略版本（append-only）';
+
+-- 推荐人工干预（设计方案 §6.3 /admin/recommendations）：
+-- 运营在推荐链路上的低风险干预，一律带原因+生效窗口+审计；与算法分数严格分离
+-- （干预不写进任何 score 字段，只在排序层做"黑名单剔除/置顶/降权"，载荷里单独出 interventions meta）。
+-- (target_type, target_id, action) 唯一：同对象同动作重复保存 = 覆盖窗口/原因，不留多行历史。
+CREATE TABLE IF NOT EXISTS recommendation_intervention (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    target_type VARCHAR(16) NOT NULL COMMENT '对象类型：SPOT(景点) / CITY(城市)',
+    target_id VARCHAR(64) NOT NULL COMMENT 'SPOT=spot_id / CITY=城市名',
+    action VARCHAR(24) NOT NULL COMMENT 'PIN置顶 / DEMOTE降权 / BLACKLIST推荐黑名单 / FEATURED城市精选',
+    reason VARCHAR(255) COMMENT '运营原因（必填，展示与审计）',
+    effective_from DATETIME COMMENT '生效时间（空=立即）',
+    effective_until DATETIME COMMENT '失效时间（空=长期）',
+    created_by VARCHAR(50) COMMENT '创建人用户ID',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_intervention_target_action (target_type, target_id, action),
+    INDEX idx_intervention_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='推荐人工干预（运营动作登记，审计留痕）';
+
+-- 攻略-景点关联（骨架：解析"核心景点"卡片写入；spot_id/poi_id 匹配主档待后续接入）
+CREATE TABLE IF NOT EXISTS city_guide_spot (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    guide_id BIGINT NOT NULL COMMENT '攻略ID',
+    revision_id BIGINT NOT NULL COMMENT '版本ID',
+    spot_name VARCHAR(200) NOT NULL COMMENT '景点名称（解析自 Markdown）',
+    spot_id VARCHAR(100) COMMENT '系统景点ID（待关联）',
+    poi_id VARCHAR(100) COMMENT '高德POI ID（待关联）',
+    sort_order INT NOT NULL DEFAULT 0 COMMENT '出现顺序',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    INDEX idx_guide_spot_guide_rev (guide_id, revision_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='攻略-景点关联（骨架）';
+
+-- 攻略标签（骨架：与画像同词表 travel_style，供后续城市专题/推荐组织）
+CREATE TABLE IF NOT EXISTS city_guide_tag (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    guide_id BIGINT NOT NULL COMMENT '攻略ID',
+    revision_id BIGINT NOT NULL COMMENT '版本ID',
+    category VARCHAR(30) NOT NULL DEFAULT 'travel_style' COMMENT '标签域（travel_style…）',
+    tag VARCHAR(80) NOT NULL COMMENT '标签（自然风景/历史文化/…）',
+    source VARCHAR(20) NOT NULL DEFAULT 'CONTENT_PARSE' COMMENT '来源',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    INDEX idx_guide_tag_guide_rev (guide_id, revision_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='攻略标签（骨架）';
+
+-- RAG 索引任务（发布后按 revision 派生索引；过渡期标记 DEFERRED——检索源仍为 classpath Markdown）
+CREATE TABLE IF NOT EXISTS rag_index_task (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    guide_id BIGINT NOT NULL COMMENT '攻略ID',
+    revision_id BIGINT NOT NULL COMMENT '版本ID（任务按版本绑定，杜绝旧任务覆盖新版本）',
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/DEFERRED/READY/FAILED',
+    error_message VARCHAR(500) COMMENT '失败/推迟原因',
+    triggered_by VARCHAR(50) COMMENT '触发人用户ID',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    finished_at DATETIME COMMENT '结束时间',
+    INDEX idx_rag_task_guide (guide_id, id),
+    INDEX idx_rag_task_revision (revision_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 索引任务（攻略发布派生索引）';
+
+-- 通用行程事件（设计方案 §7.1，阶段二数据地基）：
+-- 产品分析专用事件流，与 user_behavior（画像反馈）分工。统计分析（采用率/保存率/收藏热度）走本表。
+-- 去重口径 §7.2：UNIQUE(user_id, trip_id, item_id, event_type) —— 同用户同行程同事件只记一次；
+-- trip_id 为空（如收藏）统一存 ''（MySQL NULL 不参与唯一约束）。
+-- item_id 口径：spot_id → poi_id → "name:" 前缀名称兜底（稳定 ID 优先，跨来源可关联）。
+CREATE TABLE IF NOT EXISTS travel_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    user_id VARCHAR(64) NOT NULL COMMENT '用户ID',
+    session_id VARCHAR(64) COMMENT '页面会话ID（可空）',
+    event_type VARCHAR(32) NOT NULL COMMENT '事件类型：TRIP_GENERATED/TRIP_SAVED/SPOT_GENERATED/SPOT_SAVED/SPOT_FAVORITED/SPOT_ADD_TO_PLAN',
+    item_type VARCHAR(16) NOT NULL COMMENT '对象类型：TRIP/SPOT',
+    item_id VARCHAR(100) NOT NULL COMMENT '对象ID（spot_id/poi_id/name:xxx/trip_id）',
+    item_name VARCHAR(200) COMMENT '名称快照（当时名称，防主档改名后对不上）',
+    city VARCHAR(64) COMMENT '城市',
+    trip_id VARCHAR(64) NOT NULL DEFAULT '' COMMENT '关联行程ID（无则空串）',
+    source VARCHAR(32) COMMENT '来源：AGENT/SAVE/FAVORITE',
+    metadata_json TEXT COMMENT '扩展元数据JSON',
+    stat_date DATE NOT NULL COMMENT '统计日期（=created_at日期部分，预聚合分区口径）',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '事件时间',
+    UNIQUE KEY uk_event_dedup (user_id, trip_id, item_id, event_type),
+    INDEX idx_event_type_date (event_type, stat_date),
+    INDEX idx_event_item_date (item_type, item_id, stat_date),
+    INDEX idx_event_city_date (city, stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用行程事件（产品分析事件流）';
+
+-- 景点热度按天预聚合（设计方案 §7.3）：事件明细 → 天级汇总，首页/可视化读聚合结果，
+-- 不再扫描全量事件表。DELETE+INSERT 幂等重算，同一天重复聚合结果收敛。
+CREATE TABLE IF NOT EXISTS spot_trending_daily (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    stat_date DATE NOT NULL COMMENT '统计日期',
+    item_id VARCHAR(100) NOT NULL COMMENT '景点ID（spot_id/poi_id/name:xxx，与事件口径一致）',
+    item_name VARCHAR(200) COMMENT '名称快照',
+    city VARCHAR(64) COMMENT '城市',
+    generated_count INT NOT NULL DEFAULT 0 COMMENT '被规划采用次数（SPOT_GENERATED）',
+    saved_count INT NOT NULL DEFAULT 0 COMMENT '随行程保存次数（SPOT_SAVED）',
+    favorited_count INT NOT NULL DEFAULT 0 COMMENT '被收藏次数（SPOT_FAVORITED）',
+    user_count INT NOT NULL DEFAULT 0 COMMENT '去重用户数（任意事件）',
+    planning_user_count INT NOT NULL DEFAULT 0 COMMENT '规划采用去重用户数（SPOT_GENERATED，日级）',
+    click_count INT NOT NULL DEFAULT 0 COMMENT '详情点击次数（user_behavior CLICK，日级）',
+    dislike_count INT NOT NULL DEFAULT 0 COMMENT '负反馈次数（user_behavior DISLIKE，日级）',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_trending_date_item (stat_date, item_id),
+    INDEX idx_trending_city_date (city, stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='景点热度按天预聚合';
+
+-- 城市热度按天预聚合（设计方案 §7.3）：与 spot_trending_daily 同源（travel_event），
+-- 供首页/看板的城市维度读取，避免每次打开都扫描全量事件表。
+CREATE TABLE IF NOT EXISTS city_trending_daily (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    stat_date DATE NOT NULL COMMENT '统计日期',
+    city VARCHAR(64) NOT NULL COMMENT '城市',
+    trip_generated_count INT NOT NULL DEFAULT 0 COMMENT '行程生成次数（TRIP_GENERATED）',
+    trip_saved_count INT NOT NULL DEFAULT 0 COMMENT '行程保存次数（TRIP_SAVED）',
+    spot_adopt_count INT NOT NULL DEFAULT 0 COMMENT '景点被规划采用次数（SPOT_GENERATED）',
+    user_count INT NOT NULL DEFAULT 0 COMMENT '去重活跃用户数',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_city_trending_date_city (stat_date, city),
+    INDEX idx_city_trending_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='城市热度按天预聚合';
+
+-- 内容审核按天预聚合（设计方案 §7.3）：读 content_moderation_task（AI 审核任务表），
+-- 供看板审核漏斗/风险构成按天读取；与事件表无关，故单独建表。
+CREATE TABLE IF NOT EXISTS content_moderation_daily (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    stat_date DATE NOT NULL COMMENT '统计日期（取任务创建时间所在日）',
+    total_count INT NOT NULL DEFAULT 0 COMMENT '任务总量',
+    auto_passed_count INT NOT NULL DEFAULT 0 COMMENT '自动放行（PASSED）',
+    review_count INT NOT NULL DEFAULT 0 COMMENT '转人工复核（REVIEW）',
+    failed_count INT NOT NULL DEFAULT 0 COMMENT 'AI 失败（FAILED）',
+    human_approved_count INT NOT NULL DEFAULT 0 COMMENT '人工通过（decision=APPROVE）',
+    human_rejected_count INT NOT NULL DEFAULT 0 COMMENT '人工拒绝（decision=REJECT）',
+    rule_hit_count INT NOT NULL DEFAULT 0 COMMENT '规则命中任务数',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_moderation_daily_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='内容审核按天预聚合';
+
+-- AI 内容审核任务（设计方案 §4.4，阶段三）：
+-- 流水线：规则检查（确定可解释）→ AI 结构化初筛 → 阈值聚合 → 自动放行/人工复核 → 人工决策 → 审计。
+-- 任务绑 content_hash（攻略再绑 revision_id）防"旧 AI 结果覆盖新内容"；
+-- 同目标同 hash 未终局任务不重复建。AI 只是建议，管理员覆盖结论（decision 列）必须填原因。
+CREATE TABLE IF NOT EXISTS content_moderation_task (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    target_type VARCHAR(16) NOT NULL COMMENT '对象类型：POST/COMMENT/GUIDE/SPOT',
+    target_id VARCHAR(64) NOT NULL COMMENT '对象ID',
+    revision_id BIGINT COMMENT '攻略版本ID（防旧结果覆盖新版本）',
+    content_hash VARCHAR(64) NOT NULL COMMENT '内容指纹 SHA-256(type+标题+正文)',
+    task_type VARCHAR(20) NOT NULL DEFAULT 'SAFETY' COMMENT '任务类型：SAFETY/QUALITY/FACT_CHECK/DUPLICATE',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/RUNNING/PASSED/REVIEW/FAILED',
+    risk_level VARCHAR(16) COMMENT 'LOW/MEDIUM/HIGH/CRITICAL',
+    risk_score DOUBLE COMMENT 'AI 风险分 0~1',
+    model_name VARCHAR(64) COMMENT 'AI 模型名',
+    prompt_version VARCHAR(20) COMMENT '提示词版本',
+    result_json TEXT COMMENT 'AI 结构化输出',
+    matched_rules_json TEXT COMMENT '规则命中JSON',
+    rule_hit_count INT NOT NULL DEFAULT 0 COMMENT '规则命中条数',
+    content_title VARCHAR(200) COMMENT '内容标题快照',
+    content_text MEDIUMTEXT COMMENT '内容正文快照（详情页追溯）',
+    city VARCHAR(64) COMMENT '城市',
+    error_message VARCHAR(500) COMMENT '失败原因',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    decision VARCHAR(16) COMMENT '管理员最终决策：APPROVE/REJECT',
+    decision_by VARCHAR(50) COMMENT '决策人',
+    decision_reason VARCHAR(255) COMMENT '决策原因（覆盖必填）',
+    decided_at DATETIME COMMENT '决策时间',
+    created_by VARCHAR(50) COMMENT '触发人（内容作者/管理员）',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    finished_at DATETIME COMMENT '流水线结束时间',
+    INDEX idx_mod_status_created (status, created_at),
+    INDEX idx_mod_target (target_type, target_id),
+    INDEX idx_mod_hash (target_type, target_id, content_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 内容审核任务（规则+AI 初筛+人工复核）';

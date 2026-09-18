@@ -171,24 +171,36 @@ public class TripController {
      */
     @PostMapping("/save")
     public ResponseEntity<Map<String, String>> saveTrip(@RequestBody TripSaveRequest request) {
+        String tripId = request == null ? null : request.getTripId();
         try {
-            log.info("保存行程: {}", request.getTripId());
-            
+            log.info("保存行程: {}", tripId);
+
             tripRecordService.saveTrip(request, UserContext.getUserId());
-            
+
             Map<String, String> response = new HashMap<>();
             response.put("message", "保存成功");
             response.put("trip_id", request.getTripId());
-            
+
             return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            log.error("保存行程失败", e);
-            
+
+        } catch (IllegalArgumentException e) {
+            // 参数问题（行程内容为空等）：回 400，文案可读
+            log.warn("保存行程参数非法: {}", e.getMessage());
+
             Map<String, String> response = new HashMap<>();
             response.put("message", "保存失败: " + e.getMessage());
-            response.put("trip_id", request.getTripId());
-            
+            response.put("trip_id", tripId);
+
+            return ResponseEntity.badRequest().body(response);
+
+        } catch (Exception e) {
+            // 细节只进日志，不回吐给前端（避免把 SQL/表结构暴露到响应体）
+            log.error("保存行程失败", e);
+
+            Map<String, String> response = new HashMap<>();
+            response.put("message", "保存失败，请稍后重试");
+            response.put("trip_id", tripId);
+
             return ResponseEntity.internalServerError().body(response);
         }
     }

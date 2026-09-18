@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuntu.tripplanner.common.SpotNotFoundException;
 import com.yuntu.tripplanner.common.SpotTagMapper;
 import com.yuntu.tripplanner.common.SpotText;
+import com.yuntu.tripplanner.common.SpotVisibility;
 import com.yuntu.tripplanner.model.*;
 import com.yuntu.tripplanner.repository.SpotFavoriteRepository;
 import com.yuntu.tripplanner.repository.SpotRepository;
@@ -38,15 +39,18 @@ public class SpotService {
     private final SpotFavoriteRepository spotFavoriteRepository;
     private final TripRecordService tripRecordService;
     private final UserProfileService userProfileService;
+    private final TravelEventService travelEventService;
 
     public SpotService(SpotRepository spotRepository,
                        SpotFavoriteRepository spotFavoriteRepository,
                        TripRecordService tripRecordService,
-                       UserProfileService userProfileService) {
+                       UserProfileService userProfileService,
+                       TravelEventService travelEventService) {
         this.spotRepository = spotRepository;
         this.spotFavoriteRepository = spotFavoriteRepository;
         this.tripRecordService = tripRecordService;
         this.userProfileService = userProfileService;
+        this.travelEventService = travelEventService;
     }
 
     /**
@@ -61,6 +65,10 @@ public class SpotService {
         Spot spot = spotRepository.selectOne(
                 new LambdaQueryWrapper<Spot>().eq(Spot::getSpotId, spotId).last("LIMIT 1"));
         if (spot == null) {
+            return null;
+        }
+        // B3 景点治理：已下线/合并别名/异常标记的景点对外不可见（详情按不存在处理，收藏已被合并重定向）
+        if (!SpotVisibility.isActive(spot)) {
             return null;
         }
         SpotDetail d = new SpotDetail();
@@ -130,6 +138,11 @@ public class SpotService {
                         .ne(Spot::getSpotId, current.getSpotId())
                         .orderByDesc(Spot::getUpdatedAt)
                         .last("LIMIT 30"));
+        if (sameCity.isEmpty()) {
+            return List.of();
+        }
+        // B3 景点治理：同城相关推荐只取正常运营中的景点
+        sameCity = sameCity.stream().filter(SpotVisibility::isActive).collect(Collectors.toList());
         if (sameCity.isEmpty()) {
             return List.of();
         }
@@ -240,11 +253,46 @@ public class SpotService {
 
         // 新收藏 → 同一事务内 SAVE 行为 + 画像增量（失败整体回滚，收藏行一并消失）
         List<PreferenceAdjustment> adjustments = trackSave(userId, spot);
+        // 行程事件埋点（阶段二数据地基）：SPOT_FAVORITED；旁路埋点失败不影响收藏事务
+        try {
+            travelEventService.recordSpotFavorited(userId, spot);
+        } catch (Exception e) {
+            log.warn("收藏事件埋点失败（不影响收藏）: {}", e.getMessage());
+        }
         return FavoriteResult.created(adjustments);
     }
 
     /** SAVE 行为留痕 + 画像增量（与收藏写库同事务，由调用方保证） */
     private List<PreferenceAdjustment> trackSave(String userId, Spot spot) {
+        return userProfileService.recordBehavior(userId, behaviorRequest(spot, UserBehavior.ACTION_SAVE));
+    }
+
+    /**
+     * 取消收藏（幂等：未收藏也不报错）。景点不存在 → 404。
+     *
+     * <p>画像可撤销（PERSONALIZATION_PLAN §5.4）：收藏按 SAVE +0.15 提权，取消时按 UNSAVE -0.10
+     * 回退 —— 幅度严格小于增加（回退 < 增加，避免"收藏→取消"反复刷高权重），且不会把权重
+     * 压进「近期不感兴趣」区间（细则见 {@code UserProfileService.REVOKE_ACTIONS}）。
+     * 只有确实删掉了收藏行才回退；重复调用（幂等空删）不扣分，避免刷接口反复扣权重。
+     */
+    @Transactional
+    public List<PreferenceAdjustment> unfavorite(String userId, String spotId) {
+        if (userId == null || userId.isBlank() || spotId == null || spotId.isBlank()) {
+            throw new IllegalArgumentException("缺少用户或景点标识");
+        }
+        Spot spot = requireSpot(spotId);
+        int removed = spotFavoriteRepository.delete(
+                new LambdaQueryWrapper<SpotFavorite>()
+                        .eq(SpotFavorite::getUserId, userId)
+                        .eq(SpotFavorite::getSpotId, spotId));
+        if (removed <= 0) {
+            return List.of(); // 本来就没收藏：无正向贡献可回退
+        }
+        return userProfileService.recordBehavior(userId, behaviorRequest(spot, UserBehavior.ACTION_UNSAVE));
+    }
+
+    /** 行为请求组装（SAVE/UNSAVE 共用；item_id 优先系统稳定 spot_id，缺失时退回 poi_id） */
+    private BehaviorRequest behaviorRequest(Spot spot, String actionType) {
         BehaviorRequest req = new BehaviorRequest();
         req.setItemType(UserBehavior.ITEM_TYPE_SPOT);
         // 审查报告 P1-6：行为主键用系统稳定 spot_id（缺失时退回 poi_id），
@@ -253,21 +301,8 @@ public class SpotService {
                 ? spot.getSpotId() : spot.getPoiId());
         req.setItemName(spot.getName());
         req.setPoiType(spot.getCategory());
-        req.setActionType(UserBehavior.ACTION_SAVE);
-        return userProfileService.recordBehavior(userId, req);
-    }
-
-    /** 取消收藏（幂等：未收藏也不报错；不反噬画像权重）。景点不存在 → 404 */
-    @Transactional
-    public void unfavorite(String userId, String spotId) {
-        if (userId == null || userId.isBlank() || spotId == null || spotId.isBlank()) {
-            throw new IllegalArgumentException("缺少用户或景点标识");
-        }
-        requireSpot(spotId);
-        spotFavoriteRepository.delete(
-                new LambdaQueryWrapper<SpotFavorite>()
-                        .eq(SpotFavorite::getUserId, userId)
-                        .eq(SpotFavorite::getSpotId, spotId));
+        req.setActionType(actionType);
+        return req;
     }
 
     /** 收藏/取消收藏结果载体（服务内聚结果，Controller 负责转 HTTP） */

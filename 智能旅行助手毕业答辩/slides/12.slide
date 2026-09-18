@@ -1,0 +1,30 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>社区发帖</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>04 社区与内容</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 40px', flexDirection: 'row', gap: 36 }}>
+    <Box style={{ width: 620, flexDirection: 'column', gap: 12 }}>
+      <Image src="assets/09_post.png" style={{ width: 620, height: 348, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      <Text style={{ fontSize: 14, color: '#8B97A8', textAlign: 'center' }}>发帖编辑 · 类型 / 标题 / 摘要 / 正文 / 城市 / 节奏 / 预算</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 18, justifyContent: 'center' }}>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>结构化发帖</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>标题 / 摘要 / 正文 + 城市 / 节奏 / 天数 / 预算元数据，便于检索与推荐。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>发布即进审核</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>帖子提交后进入 AI 审核流水线，通过才对外可见。</Text></Box>
+      </Box>
+      <Box style={{ flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+        <Box style={{ width: 36, height: 36, borderRadius: 6, background: '#1E4FA8', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 17, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text></Box>
+        <Box style={{ flex: 1 }}><Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>攻略两段式发布</Text><Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.55 }}>RAG 索引成功才切换为已发布版本，保证检索一致性。</Text></Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>12 / 23</Text>
+  </Box>
+</Slide>

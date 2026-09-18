@@ -215,4 +215,36 @@ class CityValidatorTest {
         assertEquals("厦门", wide.validate("夏门").suggestion(), "夏门 → 应建议厦门（而非白名单更靠前的澳门）");
         assertEquals("澳门", wide.validate("奥门").suggestion(), "奥门 → 应建议澳门（对称场景不能被调序误伤）");
     }
+
+    /* ---------- canonicalCity：校验与落库键同源（读写统一用规范名） ---------- */
+
+    @Test
+    void canonicalCity_stripsAdminSuffix() {
+        assertEquals("北京", validator.canonicalCity("北京市"), "带「市」后缀应归结到规范名");
+        assertEquals("北京", validator.canonicalCity("北京"), "规范名原样返回");
+        assertEquals("北京", validator.canonicalCity("  北京  "), "首尾空白应被裁剪");
+    }
+
+    @Test
+    void canonicalCity_mapsAliasToStandardName() {
+        assertEquals("上海", validator.canonicalCity("魔都"), "别名应归一到标准城市名");
+        assertEquals("成都", validator.canonicalCity("蓉城"), "别名应归一到标准城市名");
+    }
+
+    @Test
+    void canonicalCity_unknownOrBlankReturnsNull() {
+        assertNull(validator.canonicalCity("火星"), "假城市必须返回 null（调用方 fail closed）");
+        assertNull(validator.canonicalCity("不合法城市xyz"), "乱输入必须返回 null");
+        assertNull(validator.canonicalCity(""), "空串必须返回 null");
+        assertNull(validator.canonicalCity(null), "null 必须返回 null");
+    }
+
+    @Test
+    void canonicalCity_neverCallsAmap() {
+        // 归一化是纯本地判定：绝不能因为"取规范名"而消耗地理编码调用
+        validator.canonicalCity("北京市");
+        validator.canonicalCity("魔都");
+        validator.canonicalCity("火星");
+        org.mockito.Mockito.verifyNoInteractions(amapClient);
+    }
 }

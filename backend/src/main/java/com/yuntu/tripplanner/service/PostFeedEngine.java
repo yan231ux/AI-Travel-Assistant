@@ -92,7 +92,12 @@ public class PostFeedEngine {
                     prefs);
             String reason = d.explanation();
             if (reason == null && !d.hardAvoid()) {
-                reason = "社区热门内容";
+                // 兜底文案=未命中任何画像标签时的占位理由，与"热度"无关：
+                // 真实热度（popularityOf = 点赞+2×收藏+评论）当前只用于同分破平，
+                // 既无阈值也无时间窗与最小样本保护 —— 因此这里绝不能写"热门"，
+                // 否则 0 赞 0 收藏的新帖一发布就被打上"社区热门内容"（用户已实测到该误导）。
+                // 若将来要做"热门榜"，须先给真实门槛，再在专门的榜单里使用"热门"字样。
+                reason = "为你推荐";
             }
             out.add(new RankedPost(p.getId(), d.finalScore(), reason,
                     List.copyOf(d.matchedTags()), !d.matchedTags().isEmpty()));

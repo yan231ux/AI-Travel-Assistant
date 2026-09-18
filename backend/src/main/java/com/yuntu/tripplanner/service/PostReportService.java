@@ -1,7 +1,9 @@
 package com.yuntu.tripplanner.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.yuntu.tripplanner.common.AdminPermission;
 import com.yuntu.tripplanner.exception.PostNotFoundException;
 import com.yuntu.tripplanner.model.AuditLog;
 import com.yuntu.tripplanner.model.ContentReport;
@@ -87,6 +89,9 @@ public class PostReportService {
         private String handledBy;
         @JsonProperty("handled_at")
         private String handledAt;
+        /** 处理备注（管理员处理时填写；历史队列展示用） */
+        @JsonProperty("handle_note")
+        private String handleNote;
     }
 
     @Data
@@ -108,6 +113,7 @@ public class PostReportService {
         }
         String type = normalizeTargetType(targetType);
         validateTargetExists(type, targetId);
+        guardReportable(type, targetId, reporterId);
         if (reason == null || !ALLOWED_REASONS.contains(reason.trim())) {
             throw new IllegalArgumentException("举报原因需从：广告/虚假信息/辱骂/侵权/其他 中选择");
         }
@@ -134,7 +140,7 @@ public class PostReportService {
 
     /** 待处理举报队列（管理员） */
     public ReportPage pending(String adminId, int page, int pageSize) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         int size = Math.max(1, Math.min(pageSize <= 0 ? 20 : pageSize, 100));
         int pageNo = Math.max(1, page);
         LambdaQueryWrapper<ContentReport> w = new LambdaQueryWrapper<ContentReport>()
@@ -152,7 +158,7 @@ public class PostReportService {
 
     /** 已处理举报历史（管理员；RESOLVED/DISMISSED，新→旧，含处理人与时间） */
     public ReportPage history(String adminId, int page, int pageSize) {
-        communityUserService.requireAdmin(adminId);
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         int size = Math.max(1, Math.min(pageSize <= 0 ? 20 : pageSize, 100));
         int pageNo = Math.max(1, page);
         LambdaQueryWrapper<ContentReport> w = new LambdaQueryWrapper<ContentReport>()
@@ -171,10 +177,12 @@ public class PostReportService {
 
     /**
      * 处理举报：RESOLVE（确认违规 → 隐藏帖子/软删评论）/ DISMISS（证据不足驳回）。
+     *
+     * @param note 管理员处理备注（可空；随审计与历史记录落库）
      */
     @Transactional
-    public void handle(String adminId, Long reportId, String action) {
-        communityUserService.requireAdmin(adminId);
+    public void handle(String adminId, Long reportId, String action, String note) {
+        communityUserService.requirePermission(adminId, AdminPermission.CONTENT_REVIEW);
         ContentReport report = reportId == null ? null : reportRepository.selectById(reportId);
         if (report == null) {
             throw new PostNotFoundException("举报记录不存在");
@@ -193,13 +201,16 @@ public class PostReportService {
         }
         report.setHandledBy(adminId);
         report.setHandledAt(LocalDateTime.now());
+        report.setHandleNote(note == null || note.isBlank() ? null : note.trim());
         reportRepository.updateById(report);
-        log.info("举报处理完成: reportId={} action={} by={}", reportId, act, adminId);
+        log.info("举报处理完成: reportId={} action={} by={} note={}", reportId, act, adminId,
+                report.getHandleNote());
         auditService.record(adminId, AuditLog.CAT_ADMIN,
                 "RESOLVE".equals(act) ? "report_resolved" : "report_dismissed",
                 "report", String.valueOf(reportId),
                 AuditService.detailOf("target_type", report.getTargetType(),
-                        "target_id", report.getTargetId(), "reason", report.getReason()));
+                        "target_id", report.getTargetId(), "reason", report.getReason(),
+                        "note", report.getHandleNote()));
     }
 
     /* ================= 内部 ================= */
@@ -212,6 +223,8 @@ public class PostReportService {
                 post.setPublishedAt(null);
                 postRepository.updateById(post);
                 log.info("举报成立，帖子已隐藏: postId={}", post.getId());
+                // 用户治理（§7）：违规次数 +1（原子自增）
+                communityUserService.bumpViolation(post.getUserId());
             }
         } else if (ContentReport.TARGET_COMMENT.equals(report.getTargetType())) {
             PostComment comment = commentRepository.selectById(report.getTargetId());
@@ -219,6 +232,7 @@ public class PostReportService {
                 comment.setStatus(PostComment.STATUS_DELETED);
                 commentRepository.updateById(comment);
                 log.info("举报成立，评论已删除: commentId={}", comment.getId());
+                communityUserService.bumpViolation(comment.getUserId());
             }
         }
     }
@@ -272,9 +286,36 @@ public class PostReportService {
                 it.setHandledBy(handlerNames.getOrDefault(r.getHandledBy(), r.getHandledBy()));
             }
             it.setHandledAt(r.getHandledAt() == null ? null : r.getHandledAt().format(TS));
+            it.setHandleNote(r.getHandleNote());
             items.add(it);
         }
         return items;
+    }
+
+    /**
+     * 举报准入（与前端「能不能点举报」同源，服务端必须同门禁）。
+     *
+     * <p>修正前的缺口：{@link #create} 只校验"对象是否存在"，于是
+     * ① <b>作者可以举报自己的帖子</b>（前端此前也真的显示了举报按钮）；
+     * ② <b>未公开内容也能被举报</b>（草稿/审核中/未通过/已下架）。
+     * 举报是"给其他用户对抗违规内容"的工具，作者对自己内容有编辑/删除手段；
+     * 而未公开内容本就没有对外暴露，举报既无意义，又可能被用来给他人刷违规次数
+     * （举报成立会 bumpViolation 给作者记违规），因此必须在服务端挡住。
+     */
+    private void guardReportable(String type, Long targetId, String reporterId) {
+        if (!ContentReport.TARGET_POST.equals(type)) {
+            return; // 评论：仅要求评论存在且未删除（父帖可见性由发布路径保证）
+        }
+        TravelPost post = postRepository.selectById(targetId);
+        if (post == null) {
+            return; // 存在性已由 validateTargetExists 判定
+        }
+        if (reporterId != null && reporterId.equals(post.getUserId())) {
+            throw new IllegalArgumentException("不能举报自己发布的内容");
+        }
+        if (!post.isPubliclyVisible()) {
+            throw new IllegalArgumentException("该内容尚未公开，无法举报");
+        }
     }
 
     private void validateTargetExists(String type, Long targetId) {

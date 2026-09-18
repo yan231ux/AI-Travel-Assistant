@@ -1,0 +1,42 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>目录</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4', marginLeft: 16, letterSpacing: 2 }}>CONTENTS</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '30px 60px', flexDirection: 'column', gap: 14 }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20, flex: 1 }}>
+      <Box style={{ width: 52, height: 52, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>01</Text></Box>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', width: 340 }}>选题背景</Text>
+      <Text style={{ fontSize: 17, color: '#4A5568', flex: 1 }}>旅行规划的信息过载、同质化与可信挑战</Text>
+    </Box>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20, flex: 1 }}>
+      <Box style={{ width: 52, height: 52, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>02</Text></Box>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', width: 340 }}>系统功能与总体架构</Text>
+      <Text style={{ fontSize: 17, color: '#4A5568', flex: 1 }}>五大能力 + 分层技术架构</Text>
+    </Box>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20, flex: 1 }}>
+      <Box style={{ width: 52, height: 52, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>03</Text></Box>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', width: 340 }}>核心技术</Text>
+      <Text style={{ fontSize: 17, color: '#4A5568', flex: 1 }}>ReAct 行程生成 · 城市纠错 · RAG · 个性化</Text>
+    </Box>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20, flex: 1 }}>
+      <Box style={{ width: 52, height: 52, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>04</Text></Box>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', width: 340 }}>社区与内容生态</Text>
+      <Text style={{ fontSize: 17, color: '#4A5568', flex: 1 }}>发帖 · 攻略 · AI 审核</Text>
+    </Box>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20, flex: 1 }}>
+      <Box style={{ width: 52, height: 52, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>05</Text></Box>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', width: 340 }}>平台治理与运营后台</Text>
+      <Text style={{ fontSize: 17, color: '#4A5568', flex: 1 }}>权限 · 治理 · 看板 · 审计</Text>
+    </Box>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20, flex: 1 }}>
+      <Box style={{ width: 52, height: 52, borderRadius: 8, background: '#0E3F8C', alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>06</Text></Box>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', width: 340 }}>总结与展望</Text>
+      <Text style={{ fontSize: 17, color: '#4A5568', flex: 1 }}>创新点 · 局限 · 后续规划</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>02 / 23</Text>
+  </Box>
+</Slide>

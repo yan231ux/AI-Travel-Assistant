@@ -19,7 +19,7 @@ import {
   unfavoritePost,
   unlikePost,
 } from "../services/api";
-import { postTypeLabel } from "../constants/postMeta";
+import { postStatusLabel, postTypeLabel, isInteractiveStatus } from "../constants/postMeta";
 import type { CommentItem, PostDetail as PostDetailType, PostSpotRef } from "../types";
 
 /**
@@ -62,6 +62,45 @@ const canSubmit = computed(
   () => mine.value && ["DRAFT", "REJECTED"].includes(detail.value?.status || "")
 );
 
+/**
+ * 公开互动门槛：只有**已发布**的内容才开放 赞/收藏/不感兴趣/评论/举报。
+ * 判定复用 constants/postMeta 的 isInteractiveStatus（与卡片 canFeedback 同源）——
+ * 修正前详情页完全不看状态，审核中的帖子照样能点赞/评论/举报，与卡片口径自相矛盾。
+ */
+const interactive = computed(() => isInteractiveStatus(detail.value?.status));
+/** 举报仅限"已发布 + 非作者本人"：作者不举报自己的帖子（主流 App 同款交互） */
+const canReport = computed(() => interactive.value && !mine.value);
+/** 不感兴趣仅限"已发布 + 非作者本人"：自己不能对自己的帖子表态（与举报同语义，前端隐藏 + 服务端兜底） */
+const canDislike = computed(() => interactive.value && !mine.value);
+/** 非公开状态下给作者一句解释（对访客不暴露内部状态） */
+const statusHint = computed(() => {
+  if (interactive.value) return "";
+  const label = postStatusLabel(detail.value?.status);
+  if (!mine.value) return "该内容当前未公开。";
+  switch (detail.value?.status) {
+    case "DRAFT":
+      return "这是草稿，只有你能看到。公开互动需先提交审核并通过。";
+    case "PENDING_REVIEW":
+      return "内容审核中，通过后才会出现在社区并开放评论与互动。";
+    case "REJECTED":
+      return "内容未通过审核，可按拒绝原因修改后重新提交。";
+    case "HIDDEN":
+      return `内容已下线（${label}），仅你可见。如有疑问可联系管理员。`;
+    default:
+      return `内容当前状态：${label}，暂不开放互动。`;
+  }
+});
+
+/**
+ * P1-1 版本化：已发布帖存在待审修改版本时，给作者一句解释（对访客不暴露内部状态）。
+ * 线上仍是原版本 —— 不让作者误以为"改了没生效"或"帖子被撤了"。
+ */
+const revisionHint = computed(() => {
+  if (!detail.value?.has_pending_revision || !mine.value) return "";
+  const no = detail.value.pending_revision_no ?? 2;
+  return `你的修改稿（v${no}）正在审核中：线上暂时仍展示原版本，通过后自动切换，无需重新发布。`;
+});
+
 async function load() {
   loading.value = true;
   error.value = "";
@@ -72,6 +111,8 @@ async function load() {
     coverBroken.value = false;
     liked.value = !!d.liked;
     favorited.value = !!d.favorited;
+    // 2026-09-18：详情接口现已下发 disliked 状态，刷新页面不再丢失"不感兴趣"
+    disliked.value = !!d.disliked;
     likeCount.value = d.like_count || 0;
     favoriteCount.value = d.favorite_count || 0;
     await loadComments();
@@ -110,7 +151,11 @@ function toggleFavorite() {
 }
 function toggleDislike() {
   const id = detail.value!.id;
-  void runAction(() => (disliked.value ? undislikePost(id) : dislikePost(id)));
+  const target = !disliked.value;
+  // 详情页此前点完静默无反馈（用户以为"点了没反应"），与卡片口径统一补 toast
+  void runAction(() => (target ? dislikePost(id) : undislikePost(id))).then(() => {
+    message.success(target ? "已减少这类内容的推荐" : "已撤销，恢复这类内容的推荐");
+  });
 }
 
 /* ---------- 评论 ---------- */
@@ -191,6 +236,8 @@ function goEdit() {
 const reporting = ref(false);
 const reportReason = ref("");
 function startReport() {
+  // 第二道保险：按钮已按 canReport 收窄，这里再挡一次（状态变化/竞态下也不误开面板）
+  if (!canReport.value) return;
   reportReason.value = "";
   reporting.value = true;
 }
@@ -242,9 +289,14 @@ onMounted(() => void load());
           <div class="pd-head">
             <span class="pd-type">{{ postTypeLabel(detail.post_type) }}</span>
             <span v-if="detail.city" class="pd-city">📍 {{ detail.city }}</span>
-            <span v-if="detail.status !== 'PUBLISHED'" class="pd-status">{{ detail.status }}</span>
+            <span v-if="detail.status !== 'PUBLISHED'" class="pd-status">{{ postStatusLabel(detail.status) }}</span>
+            <span v-if="detail.has_pending_revision" class="pd-status pd-status--rev">
+              修改审核中 · v{{ detail.pending_revision_no ?? 2 }}
+            </span>
             <span v-if="detail.reject_reason" class="pd-reject">拒绝原因：{{ detail.reject_reason }}</span>
           </div>
+          <p v-if="statusHint" class="pd-hint">{{ statusHint }}</p>
+          <p v-if="revisionHint" class="pd-hint pd-hint--rev">{{ revisionHint }}</p>
           <h1 class="pd-title">{{ detail.title }}</h1>
           <p class="pd-author">
             <span
@@ -284,8 +336,8 @@ onMounted(() => void load());
             <button type="button" class="btn btn--danger" @click="removePost">删除</button>
           </div>
 
-          <!-- 互动条 -->
-          <div class="pd-actions">
+          <!-- 互动条（仅已发布内容开放） -->
+          <div v-if="interactive" class="pd-actions">
             <button
               type="button"
               :class="['act', liked ? 'act--like' : '']"
@@ -303,6 +355,7 @@ onMounted(() => void load());
               {{ favorited ? "★" : "☆" }} {{ favoriteCount }}
             </button>
             <button
+              v-if="canDislike"
               type="button"
               :class="['act', disliked ? 'act--dis' : '']"
               :disabled="busy"
@@ -310,13 +363,13 @@ onMounted(() => void load());
             >
               {{ disliked ? "✕ 已不感兴趣" : "✕ 不感兴趣" }}
             </button>
-            <button type="button" class="act act--report" @click="startReport">🚩 举报</button>
+            <button v-if="canReport" type="button" class="act act--report" @click="startReport">🚩 举报</button>
           </div>
         </div>
       </article>
 
-      <!-- 举报面板 -->
-      <div v-if="reporting" class="pd-report">
+      <!-- 举报面板（仅已发布 + 非本人） -->
+      <div v-if="reporting && canReport" class="pd-report">
         <p class="pd-report__title">举报这篇帖子</p>
         <div class="pd-report__chips">
           <button
@@ -335,8 +388,8 @@ onMounted(() => void load());
         </div>
       </div>
 
-      <!-- 评论区 -->
-      <section class="pd-comments">
+      <!-- 评论区（仅已发布内容开放；未公开内容不提供评论入口与列表） -->
+      <section v-if="interactive" class="pd-comments">
         <div class="pd-sec-title">💬 评论（{{ commentTotal }}）</div>
         <div class="cmt-input-row">
           <input
@@ -356,7 +409,14 @@ onMounted(() => void load());
             <div class="cmt-item__head">
               <span class="cmt-item__name">{{ c.deleted ? "系统" : c.author?.nickname || c.author?.id }}</span>
               <span class="cmt-item__time">{{ (c.created_at || "").slice(0, 16) }}</span>
-              <button v-if="c.mine" type="button" class="cmt-item__del" @click="removeComment(c)">删除</button>
+              <!-- 删除权限由后端下发（评论作者 / 楼主 / 管理员），前端不自己拼规则 -->
+              <button
+                v-if="c.can_delete"
+                type="button"
+                class="cmt-item__del"
+                :title="c.mine ? '删除我的评论' : '删除这条评论（作为楼主或管理员）'"
+                @click="removeComment(c)"
+              >删除</button>
             </div>
             <p class="cmt-item__content">{{ c.content }}</p>
           </li>
@@ -433,6 +493,25 @@ onMounted(() => void load());
 }
 .pd-reject {
   color: var(--danger);
+}
+/* 非公开状态给作者的解释行（草稿/审核中/未通过/已下架） */
+.pd-hint {
+  margin: 6px 0 2px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--color-background-secondary, rgba(0, 0, 0, 0.03));
+  color: var(--text-secondary, #6b7280);
+  font-size: 13px;
+  line-height: 1.6;
+}
+/* P1-1 版本化：修改稿审核中（线上仍是原版本） */
+.pd-status--rev {
+  background: rgba(47, 119, 112, 0.12);
+  color: var(--success, #2f7770);
+}
+.pd-hint--rev {
+  background: rgba(201, 138, 45, 0.1);
+  color: #8a6420;
 }
 .pd-title {
   font-size: 22px;

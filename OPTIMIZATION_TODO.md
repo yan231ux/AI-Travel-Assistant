@@ -285,7 +285,11 @@ Prompt 历史画像
 - **根因**：餐厅候选池只按"火锅/烧烤"等标签召回，**没有当日景点活动区域的距离过滤/距离排序**；LLM 从候选里挑店时不掌握空间合理性，模型自身又倾向于"看着顺眼"的店名。`distance_penalty` 字段一直预留 0.0 未接通。
 - **建议方向**（修复时评估）：①候选阶段用当日景点锚点（如当天市中心/首景点坐标）做距离过滤或排序，超阈值餐厅降级；②提示词增加"餐厅须靠近当日活动区域"约束并给候选距离证据；③真正接通 distance_penalty（OPTIMIZATION_TODO §4 已有铺垫）。
 - **证据出处**：行程 JSON 中 D2 午餐/晚餐 poi 与当日景点坐标对比；候选证据 candidate_evidence 的 poi_id/经纬度已具备，可支撑距离计算。
-- **状态**：待修复（登记于 2026-09-07）
+- **修复结果**：✅ 已修复（2026-09-18）——分两层落地：
+  - **候选排序层（先修，但不充分）**：接通预留的 `distancePenalty`（`PersonalizedRankingService.rankBucket`），餐厅按距离惩罚降权，证据落 `candidate_evidence.distance_penalty`。⚠️ 锚点只能取"全城景点中心"，而全城中心恰在市区，对"去临潼却回市区吃饭"非但无用、反而加剧，因此这层**不足以**解决问题。
+  - **校验修复层（真正的修复）**：`ItineraryValidator.checkMealLocation()`（步骤 2.5）按天算"当天景点坐标中心"，逐餐次判定；>25km 视为跨区，优先用候选池中**离当天活动区域最近且未被占用**的真实餐厅替换（来源标"已按当天活动区域就近调整"），无可用候选则如实警示"距当天主要景点约 N 公里，建议自行调整"；景点/餐厅缺经纬度不判定（不误报）。提示词同步加第 21 条硬约束（就餐须与当天景点同片区、≤25km、成链）。
+  - 单测 4 项：`crossDistrictMeal_replacedByNearbyCandidate`、`crossDistrictMeal_withoutNearbyCandidate_warnsHonestly`、`mealNearDaySpots_notTouched`、`mealWithoutCoordinates_notJudged_noFalsePositive`。详见 TROUBLESHOOTING §31。
+- **状态**：已修复（2026-09-18）
 
 ### Q2. 跨区交通费漏算，预算被低估
 - **现象**：D2"酒店→兵马俑 43.4km 打车"仅有距离与时长、**无金额**；华清宫（临潼）返市区晚餐/酒店也无返程计费。预算"交通费用 ¥35"严重偏低，总费用 ¥1969（预算使用率 131%）实际是低估后的数字。
@@ -299,7 +303,12 @@ Prompt 历史画像
 - **根因**：预算只在结果页做"健康度展示"，生成阶段没有按预算反向约束（如根据预算反推酒店档次/景点取舍）。
 - **建议方向**：修复时评估"生成后预算收敛"（超支时先降酒店档次/砍非核心景点，再提示）或至少"预算敏感字段进提示词让 LLM 一开始就收敛"。
 - **证据出处**：trip_西安_2026-09-07 预算明细 vs user_profile.budget_preference。
-- **状态**：待修复（登记于 2026-09-07）
+- **修复结果**：✅ 已修复（2026-09-18）——三层：
+  - **生成前（提示词第 20 条硬约束）**：`ItineraryGenerator` 按预算反推每晚住宿上限（总住宿 ≤ 总预算 45%），要求 LLM 一开始就"主动降一档"而不是超支后再补救；
+  - **生成后（确定性收敛，零 token）**：`ItineraryValidator.collapseHotelForBudget()` 超支 >20% 即按"预算 − 非住宿支出"反推住宿水位，等比压缩每晚酒店价并同步下调档次标注（`hotelLevelForPrice`，压到原住宿费 30% 为下限），把总额压回预算；极端超支（>5 倍）交回既有 `checkBudgetMismatch` 强制降级路径；
+  - **诚实兜底**：住宿已压到下限仍超支、或超支主要来自门票/餐饮/交通（住宿压不动）时不硬压，改为在来源说明中明确"预算不足以覆盖当前行程，请提高预算或精简行程"——宁可告知，不伪造达标。
+  - 单测：`overspendBudget_collapsesHotelLocally`、`withinBudget_hotelUntouched`、`hotelLevelForPrice_brackets`、`flagsSevereBudgetMismatchWithActionableAdvice`、`flagsMildBudgetMismatchWithoutExtremeLabel`。
+- **状态**：已修复（2026-09-18）
 
 ### Q4. 西安大景点未命中攻略卡片（门票标成"LLM 建议"）
 - **现象**：兵马俑博物馆（门票 ¥120）、华清宫（¥120）在结果页标为"LLM 建议（需核实）"而非"本地攻略"，尽管票价正确——说明攻略卡片没匹配上。

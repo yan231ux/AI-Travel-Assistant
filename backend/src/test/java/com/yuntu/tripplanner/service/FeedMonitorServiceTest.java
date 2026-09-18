@@ -169,6 +169,35 @@ class FeedMonitorServiceTest {
         assertEquals(50.0, post.saveRate * 100, 1e-6);
     }
 
+    /**
+     * 各城市推荐量（设计方案 §6「推荐流概览」）：曝光行按 city 聚合；
+     * city 缺失的行归入 UNKNOWN（不能因为缺城市就把曝光算丢）；帖子流无城市维度保持空表。
+     */
+    @Test
+    void spotFeed_groupsExposuresByCity() {
+        SpotFeedLog gz = spotLog("u3", "poi_g", 1, Spot.QUALITY_POI_ONLY, null, 0.6);
+        gz.setCity("广州");
+        SpotFeedLog noCity = spotLog("u4", "poi_n", 0, Spot.QUALITY_POI_ONLY, null, 0.3);
+        noCity.setCity(null);
+        when(spotFeedLogRepository.selectList(any())).thenReturn(List.of(
+                spotLog("u1", "poi_a", 1, Spot.QUALITY_GUIDE_MATCHED, null, 0.9),
+                spotLog("u2", "poi_b", 0, Spot.QUALITY_POI_ONLY, null, 0.4),
+                gz, noCity));
+        when(postFeedLogRepository.selectList(any())).thenReturn(List.of());
+        when(userBehaviorRepository.selectList(any())).thenReturn(List.of());
+
+        var report = service.report(7);
+
+        var spot = report.feeds().get(FeedMonitorService.FEED_SPOT);
+        assertEquals(2L, spot.byCity.get("上海"));
+        assertEquals(1L, spot.byCity.get("广州"));
+        assertEquals(1L, spot.byCity.get("UNKNOWN"));
+        // 载体序列化必须带上 by_city，否则前端拿不到城市分布
+        assertEquals(spot.byCity, spot.toMap().get("by_city"));
+        // 帖子流没有城市维度 → 空表而不是编造
+        assertTrue(report.feeds().get(FeedMonitorService.FEED_POST).byCity.isEmpty());
+    }
+
     @Test
     void emptyWindow_reportsZerosNotErrors() {
         when(spotFeedLogRepository.selectList(any())).thenReturn(List.of());

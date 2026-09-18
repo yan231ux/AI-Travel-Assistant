@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -81,6 +82,25 @@ public class CacheService {
             redisTemplate.opsForValue().set(buildKey(key), value, expireSeconds, TimeUnit.SECONDS);
         } catch (Exception e) {
             log.warn("写入缓存失败（降级，已跳过）: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 按 key 前缀删除缓存（如发布新攻略版本后失效该城市 RAG 查询缓存）。
+     * Redis 不可用时静默跳过。前缀含内部命名空间前缀（如 "rag:guide:"）。
+     */
+    public void deleteByPrefix(String keyPrefix) {
+        if (!cacheEnabled || keyPrefix == null || keyPrefix.isBlank()) {
+            return;
+        }
+        try {
+            Set<String> keys = redisTemplate.keys(buildKey(keyPrefix) + "*");
+            if (keys != null && !keys.isEmpty()) {
+                redisTemplate.delete(keys);
+                log.info("缓存按前缀清除: {} 共 {} 个 key", keyPrefix, keys.size());
+            }
+        } catch (Exception e) {
+            log.warn("按前缀清除缓存失败（降级，已跳过）: {}", e.getMessage());
         }
     }
 }

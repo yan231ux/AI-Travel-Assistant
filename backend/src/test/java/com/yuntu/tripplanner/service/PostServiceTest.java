@@ -3,10 +3,12 @@ package com.yuntu.tripplanner.service;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.yuntu.tripplanner.common.AdminPermission;
 import com.yuntu.tripplanner.common.ContentRuleChecker;
 import com.yuntu.tripplanner.common.PostQualityScorer;
 import com.yuntu.tripplanner.exception.ForbiddenException;
 import com.yuntu.tripplanner.exception.PostNotFoundException;
+import com.yuntu.tripplanner.model.AbExperiment;
 import com.yuntu.tripplanner.model.AuditLog;
 import com.yuntu.tripplanner.model.PostCreateRequest;
 import com.yuntu.tripplanner.model.PostItem;
@@ -15,10 +17,12 @@ import com.yuntu.tripplanner.model.PostSpot;
 import com.yuntu.tripplanner.model.PostSpotRef;
 import com.yuntu.tripplanner.model.PostUpdateRequest;
 import com.yuntu.tripplanner.model.TravelPost;
+import com.yuntu.tripplanner.model.TravelPostRevision;
 import com.yuntu.tripplanner.repository.PostInteractionRepository;
 import com.yuntu.tripplanner.repository.PostSpotRepository;
 import com.yuntu.tripplanner.repository.SpotRepository;
 import com.yuntu.tripplanner.repository.TravelPostRepository;
+import com.yuntu.tripplanner.repository.TravelPostRevisionRepository;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -71,7 +75,13 @@ class PostServiceTest {
     @Mock
     private AbExperimentService abExperimentService;
     @Mock
+    private CityValidator cityValidator;
+    @Mock
     private AuditService auditService;
+    @Mock
+    private ContentModerationService moderationService;
+    @Mock
+    private TravelPostRevisionRepository revisionRepository;
 
     private PostService service;
 
@@ -80,11 +90,20 @@ class PostServiceTest {
         // LambdaUpdateWrapper 需要 TableInfo 缓存（clearPublishedAt 里用到 wrapper.set）
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), TravelPost.class);
+        // P1-1 版本化：savePendingRevision 里对 travel_post_revision 用 wrapper 查询
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), TravelPostRevision.class);
         service = new PostService(postRepository, postSpotRepository, interactionRepository,
                 spotRepository, communityUserService, new ContentRuleChecker(),
                 userProfileService, postTagService, postFeedEngine, abExperimentService,
-                auditService);
+                cityValidator, auditService, revisionRepository);
+        // moderationService 为可选注入（setter 模拟 Spring 注入），供提交审核埋点断言用
+        org.springframework.test.util.ReflectionTestUtils.setField(service,
+                "moderationService", moderationService);
         lenient().when(communityUserService.nicknamesOf(any())).thenReturn(java.util.Map.of());
+        // 城市闸门默认恒等放行（"上海"→"上海"）；非法城市归一化场景在专门用例里 stub 覆盖
+        lenient().when(cityValidator.canonicalCity(anyString()))
+                .thenAnswer(inv -> inv.getArgument(0));
     }
 
     private TravelPost post(Long id, String userId, String status) {
@@ -140,6 +159,44 @@ class PostServiceTest {
         assertEquals(TravelPost.TYPE_GUIDE, saved.getPostType());
         assertEquals("u1", saved.getUserId());
         verify(postSpotRepository).insert(any(PostSpot.class));
+    }
+
+    /* ---- 2026-09-13：发帖城市归一化（垃圾城市置空，杜绝"匹配你的偏好：1"） ---- */
+
+    @Test
+    void create_illegalCity_blankedToNull() {
+        when(cityValidator.canonicalCity("1")).thenReturn(null);
+        doAnswer(inv -> {
+            TravelPost p = inv.getArgument(0);
+            p.setId(11L);
+            return 1;
+        }).when(postRepository).insert(any(TravelPost.class));
+
+        PostCreateRequest req = createReq();
+        req.setCity("1");
+        service.create("u1", req);
+
+        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
+        verify(postRepository).insert(captor.capture());
+        assertNull(captor.getValue().getCity());
+    }
+
+    @Test
+    void create_aliasCity_normalizedToCanonical() {
+        when(cityValidator.canonicalCity("魔都")).thenReturn("上海");
+        doAnswer(inv -> {
+            TravelPost p = inv.getArgument(0);
+            p.setId(12L);
+            return 1;
+        }).when(postRepository).insert(any(TravelPost.class));
+
+        PostCreateRequest req = createReq();
+        req.setCity("魔都");
+        service.create("u1", req);
+
+        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
+        verify(postRepository).insert(captor.capture());
+        assertEquals("上海", captor.getValue().getCity());
     }
 
     /* ---- P1-2（审查报告）：封面只收本地上传路径或合法 http(s) 链接 ---- */
@@ -265,22 +322,50 @@ class PostServiceTest {
         assertThrows(ForbiddenException.class, () -> service.update("u1", 1L, new com.yuntu.tripplanner.model.PostUpdateRequest()));
     }
 
-    /* ---- P0-1（审查报告）：PUBLISHED 修改必须重新审核，禁止"改完仍公开" ---- */
+    /* ---- P0-1（审查报告）：PUBLISHED 修改必须重新审核，禁止"改完仍公开" ----
+     * P1-1（2026-09-18 版本化）升级：不再"整篇转待审 + 清空 published_at"（会让老帖凭空消失并变新帖），
+     * 而是修改稿落版本表待审、线上版本原样保留，审核通过后原子切换。 */
 
     @Test
-    void published_editContent_goesPendingReviewAndClearsPublishedAt() {
+    void published_editContent_createsRevision_keepsLivePublished() {
         TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        LocalDateTime liveAt = published.getPublishedAt();
         when(postRepository.selectById(1L)).thenReturn(published);
+        when(revisionRepository.selectCount(any())).thenReturn(0L);
 
         PostUpdateRequest req = new PostUpdateRequest();
         req.setContent("完全重写的正文：第一天环海骑行到双廊，第二天去沙溪古镇慢慢逛……");
         service.update("u1", 1L, req);
 
+        // 主表不动（禁止"改完仍公开"→ 由"新稿进版本表待审"承接）
+        verify(postRepository, never()).updateById(any(TravelPost.class));
+        ArgumentCaptor<TravelPostRevision> revCaptor = ArgumentCaptor.forClass(TravelPostRevision.class);
+        verify(revisionRepository).insert(revCaptor.capture());
+        assertEquals(TravelPostRevision.STATUS_PENDING_REVIEW, revCaptor.getValue().getStatus());
+        assertEquals("完全重写的正文：第一天环海骑行到双廊，第二天去沙溪古镇慢慢逛……",
+                revCaptor.getValue().getContent());
+        // 线上版本：状态与发布时间都保持原样（老帖不被顶到时间线最前）
+        assertEquals(TravelPost.STATUS_PUBLISHED, published.getStatus());
+        assertEquals(liveAt, published.getPublishedAt());
+        verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class)); // 只写 pending_revision_id 指针
+        verify(auditService).record(eq("u1"), eq(AuditLog.CAT_CONTENT), eq("post_revision_submitted"),
+                eq("post"), eq("1"), anyMap());
+    }
+
+    @Test
+    void hidden_editContent_requeuesToPendingReview() {
+        // 已下架内容没有线上版本可保护 → 沿用原语义：回到待审并清空发布时间
+        TravelPost hidden = post(1L, "u1", TravelPost.STATUS_HIDDEN);
+        when(postRepository.selectById(1L)).thenReturn(hidden);
+
+        PostUpdateRequest req = new PostUpdateRequest();
+        req.setContent("重新整理后的正文：第一天……第二天……第三天……");
+        service.update("u1", 1L, req);
+
         ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
         verify(postRepository).updateById(captor.capture());
-        TravelPost saved = captor.getValue();
-        assertEquals(TravelPost.STATUS_PENDING_REVIEW, saved.getStatus());
-        assertNull(saved.getPublishedAt());
+        assertEquals(TravelPost.STATUS_PENDING_REVIEW, captor.getValue().getStatus());
+        assertNull(captor.getValue().getPublishedAt());
         // updateById 默认忽略 null 字段 → 必须再显式把 published_at 落 NULL（P0-1 实机验收发现的坑）
         verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class));
         verify(auditService).record(eq("u1"), eq(AuditLog.CAT_CONTENT), eq("post_requeued"),
@@ -288,24 +373,38 @@ class PostServiceTest {
     }
 
     @Test
-    void published_editCover_goesPendingReview() {
+    void published_editCover_createsPendingRevision_liveVersionUnchanged() {
         TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        LocalDateTime liveAt = published.getPublishedAt();
         when(postRepository.selectById(1L)).thenReturn(published);
+        when(revisionRepository.selectCount(any())).thenReturn(0L);
 
         PostUpdateRequest req = new PostUpdateRequest();
         req.setCoverImage("/uploads/abcdef1234567890abcdef1234567890.jpg");
         service.update("u1", 1L, req);
 
-        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
-        verify(postRepository).updateById(captor.capture());
-        assertEquals(TravelPost.STATUS_PENDING_REVIEW, captor.getValue().getStatus());
-        assertEquals("/uploads/abcdef1234567890abcdef1234567890.jpg", captor.getValue().getCoverImage());
+        // P1-1 版本化：修改稿落 travel_post_revision 待审，主表（线上版本）原样不动
+        ArgumentCaptor<TravelPostRevision> revCaptor = ArgumentCaptor.forClass(TravelPostRevision.class);
+        verify(revisionRepository).insert(revCaptor.capture());
+        TravelPostRevision rev = revCaptor.getValue();
+        assertEquals(TravelPostRevision.STATUS_PENDING_REVIEW, rev.getStatus());
+        assertEquals(1, rev.getRevisionNo());
+        assertEquals("/uploads/abcdef1234567890abcdef1234567890.jpg", rev.getCoverImage());
+        assertEquals(1L, rev.getPostId());
+        assertEquals("u1", rev.getEditorId());
+        // 主表正文/封面未被改写（线上继续服务原版本），且不触发状态迁移
+        verify(postRepository, never()).updateById(any(TravelPost.class));
+        // 只把 pending_revision_id 指针写上
+        verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class));
+        assertEquals(TravelPost.STATUS_PUBLISHED, published.getStatus());
+        assertEquals(liveAt, published.getPublishedAt());
     }
 
     @Test
-    void published_editLinkedSpots_goesPendingReview() {
+    void published_editLinkedSpots_snapshotsSpotsInRevision_notTouchingLiveSpots() {
         TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
         when(postRepository.selectById(1L)).thenReturn(published);
+        when(revisionRepository.selectCount(any())).thenReturn(0L);
         PostSpot oldRef = new PostSpot();
         oldRef.setPostId(1L);
         oldRef.setSpotId("spot_大理_B0001");
@@ -322,10 +421,37 @@ class PostServiceTest {
         req.setSpots(List.of(newRef));
         service.update("u1", 1L, req);
 
-        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
-        verify(postRepository).updateById(captor.capture());
-        assertEquals(TravelPost.STATUS_PENDING_REVIEW, captor.getValue().getStatus());
-        verify(postSpotRepository).delete(any());
+        // 新景点只进版本快照；线上帖子的关联景点不被删除重写
+        ArgumentCaptor<TravelPostRevision> revCaptor = ArgumentCaptor.forClass(TravelPostRevision.class);
+        verify(revisionRepository).insert(revCaptor.capture());
+        assertTrue(revCaptor.getValue().getSpotsJson().contains("spot_大理_B0002"));
+        verify(postSpotRepository, never()).delete(any());
+        verify(postRepository, never()).updateById(any(TravelPost.class));
+    }
+
+    @Test
+    void published_secondEdit_supersedesPreviousPendingRevision() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        published.setPendingRevisionId(50L);
+        when(postRepository.selectById(1L)).thenReturn(published);
+        TravelPostRevision old = new TravelPostRevision();
+        old.setId(50L);
+        old.setPostId(1L);
+        old.setRevisionNo(1);
+        old.setStatus(TravelPostRevision.STATUS_PENDING_REVIEW);
+        when(revisionRepository.selectById(50L)).thenReturn(old);
+        when(revisionRepository.selectCount(any())).thenReturn(1L);
+
+        PostUpdateRequest req = new PostUpdateRequest();
+        req.setSummary("第二次修改后的摘要");
+        service.update("u1", 1L, req);
+
+        // 连改两次：旧待审版本置 SUPERSEDED 保留历史，新版本号递增
+        assertEquals(TravelPostRevision.STATUS_SUPERSEDED, old.getStatus());
+        ArgumentCaptor<TravelPostRevision> revCaptor = ArgumentCaptor.forClass(TravelPostRevision.class);
+        verify(revisionRepository).insert(revCaptor.capture());
+        assertEquals(2, revCaptor.getValue().getRevisionNo());
+        assertEquals("第二次修改后的摘要", revCaptor.getValue().getSummary());
     }
 
     @Test
@@ -390,7 +516,7 @@ class PostServiceTest {
     @Test
     void moderationQueue_nonAdmin_throwsForbidden() {
         doThrow(new ForbiddenException("该操作需要管理员权限"))
-                .when(communityUserService).requireAdmin(anyString());
+                .when(communityUserService).requirePermission(anyString(), eq(AdminPermission.CONTENT_REVIEW));
 
         assertThrows(ForbiddenException.class, () -> service.moderationQueue("u1", 1, 12));
     }
@@ -406,6 +532,152 @@ class PostServiceTest {
         verify(postRepository).updateById(captor.capture());
         assertEquals(TravelPost.STATUS_PUBLISHED, captor.getValue().getStatus());
         assertNotNull(captor.getValue().getPublishedAt());
+    }
+
+    /* ================= P1-1 编辑版本化：公开版本 / 编辑版本分离 ================= */
+
+    private TravelPostRevision revision(Long id, Long postId, int no, String status) {
+        TravelPostRevision rev = new TravelPostRevision();
+        rev.setId(id);
+        rev.setPostId(postId);
+        rev.setRevisionNo(no);
+        rev.setStatus(status);
+        rev.setTitle("修改后的标题");
+        rev.setSummary("修改后的摘要");
+        rev.setContent("修改后的正文：第一天……第二天……内容完整。");
+        rev.setCity("大理");
+        rev.setPostType(TravelPost.TYPE_GUIDE);
+        rev.setCreatedAt(LocalDateTime.now());
+        return rev;
+    }
+
+    @Test
+    void approve_pendingRevision_switchesLiveContent_keepsStatusAndPublishedAt() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        LocalDateTime liveAt = published.getPublishedAt();
+        published.setPendingRevisionId(77L);
+        when(postRepository.selectById(1L)).thenReturn(published);
+        TravelPostRevision rev = revision(77L, 1L, 2, TravelPostRevision.STATUS_PENDING_REVIEW);
+        rev.setTitle("改后的标题");
+        rev.setContent("改后的正文内容，信息更完整。");
+        rev.setSpotsJson("[]");
+        when(revisionRepository.selectById(77L)).thenReturn(rev);
+
+        service.approve("admin", 1L);
+
+        // 版本内容原子写回主表；状态与发布时间不变（"修改"不是"重新发布"）
+        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
+        verify(postRepository).updateById(captor.capture());
+        assertEquals("改后的标题", captor.getValue().getTitle());
+        assertEquals("改后的正文内容，信息更完整。", captor.getValue().getContent());
+        assertEquals(TravelPost.STATUS_PUBLISHED, captor.getValue().getStatus());
+        assertEquals(liveAt, captor.getValue().getPublishedAt());
+        // 版本置 APPROVED 并留痕，待审指针解除
+        assertEquals(TravelPostRevision.STATUS_APPROVED, rev.getStatus());
+        assertEquals("admin", rev.getReviewedBy());
+        assertNotNull(rev.getReviewedAt());
+        verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void reject_pendingRevision_keepsLiveContent_clearsPointerOnly() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        published.setContent("原始线上正文");
+        published.setPendingRevisionId(77L);
+        when(postRepository.selectById(1L)).thenReturn(published);
+        TravelPostRevision rev = revision(77L, 1L, 1, TravelPostRevision.STATUS_PENDING_REVIEW);
+        when(revisionRepository.selectById(77L)).thenReturn(rev);
+
+        service.reject("admin", 1L, "含未核实门票价格");
+
+        // 只驳回版本：线上主表内容/状态/发布时间全部保持原样
+        assertEquals(TravelPostRevision.STATUS_REJECTED, rev.getStatus());
+        assertEquals("含未核实门票价格", rev.getRejectReason());
+        verify(revisionRepository).updateById(rev);
+        verify(postRepository, never()).updateById(any(TravelPost.class));
+        verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class));
+        assertEquals(TravelPost.STATUS_PUBLISHED, published.getStatus());
+        assertEquals("原始线上正文", published.getContent());
+        assertNull(published.getRejectReason());
+    }
+
+    @Test
+    void mine_marksPendingRevision_ofPublishedPost() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        published.setPendingRevisionId(77L);
+        when(postRepository.selectCount(any())).thenReturn(1L);
+        when(postRepository.selectList(any())).thenReturn(List.of(published));
+        when(revisionRepository.selectBatchIds(any()))
+                .thenReturn(List.of(revision(77L, 1L, 2, TravelPostRevision.STATUS_PENDING_REVIEW)));
+
+        PostPage page = service.mine("u1", 1, 12);
+
+        PostItem item = page.getItems().get(0);
+        assertTrue(item.getHasPendingRevision());
+        assertEquals(2, item.getPendingRevisionNo());
+        assertEquals(TravelPost.STATUS_PUBLISHED, item.getStatus());
+    }
+
+    @Test
+    void mine_publishedWithoutRevision_flagFalse() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        when(postRepository.selectCount(any())).thenReturn(1L);
+        when(postRepository.selectList(any())).thenReturn(List.of(published));
+
+        PostPage page = service.mine("u1", 1, 12);
+
+        assertFalse(page.getItems().get(0).getHasPendingRevision());
+        assertNull(page.getItems().get(0).getPendingRevisionNo());
+    }
+
+    @Test
+    void detail_publishedWithPendingRevision_exposesSnapshotForDiff() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        published.setPendingRevisionId(77L);
+        when(postRepository.selectById(1L)).thenReturn(published);
+        when(communityUserService.nicknameOf(anyString())).thenReturn("曾彦");
+        TravelPostRevision rev = revision(77L, 1L, 2, TravelPostRevision.STATUS_PENDING_REVIEW);
+        rev.setTitle("改后的标题");
+        rev.setSpotsJson("[]");
+        when(revisionRepository.selectById(77L)).thenReturn(rev);
+
+        var d = service.detail("u3", 1L);
+
+        // 访客看到的仍是线上版本，但接口透出"有修改待审"及快照（供审核页对比，前端只对作者/审核员展示）
+        assertEquals("大理适合慢慢逛的 5 个地方", d.getTitle());
+        assertTrue(d.getHasPendingRevision());
+        assertEquals(2, d.getPendingRevisionNo());
+        assertNotNull(d.getPendingRevision());
+        assertEquals("改后的标题", d.getPendingRevision().get("title"));
+    }
+
+    @Test
+    void approve_withStaleRevisionId_throwsIllegalState() {
+        // AI 自动放行时携带的 revisionId 与帖子当前待审指针不一致（期间作者又改了一次）→ 视为过期
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        published.setPendingRevisionId(99L);
+        when(postRepository.selectById(1L)).thenReturn(published);
+        when(revisionRepository.selectById(99L))
+                .thenReturn(revision(99L, 1L, 3, TravelPostRevision.STATUS_PENDING_REVIEW));
+
+        assertThrows(IllegalStateException.class, () -> service.autoPublish("system:ai", 1L, 77L));
+    }
+
+    @Test
+    void autoPublish_withMatchingRevisionId_appliesRevision() {
+        TravelPost published = post(1L, "u1", TravelPost.STATUS_PUBLISHED);
+        published.setPendingRevisionId(77L);
+        when(postRepository.selectById(1L)).thenReturn(published);
+        TravelPostRevision rev = revision(77L, 1L, 2, TravelPostRevision.STATUS_PENDING_REVIEW);
+        rev.setTitle("AI 放行的修改版");
+        rev.setSpotsJson("[]");
+        when(revisionRepository.selectById(77L)).thenReturn(rev);
+
+        service.autoPublish("system:ai", 1L, 77L);
+
+        assertEquals("AI 放行的修改版", published.getTitle());
+        assertEquals(TravelPost.STATUS_PUBLISHED, published.getStatus());
+        assertEquals(TravelPostRevision.STATUS_APPROVED, rev.getStatus());
     }
 
     @Test
@@ -440,6 +712,68 @@ class PostServiceTest {
         assertEquals(TravelPost.STATUS_HIDDEN, captor.getValue().getStatus());
     }
 
+    /* ================= AI 审核联动：自动发布 / 改判落地 ================= */
+
+    @Test
+    void autoPublish_pendingPost_becomesPublished_withoutAdminPermission() {
+        TravelPost pending = post(1L, "u2", TravelPost.STATUS_PENDING_REVIEW);
+        when(postRepository.selectById(1L)).thenReturn(pending);
+
+        service.autoPublish("system:ai", 1L);
+
+        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
+        verify(postRepository).updateById(captor.capture());
+        assertEquals(TravelPost.STATUS_PUBLISHED, captor.getValue().getStatus());
+        assertNotNull(captor.getValue().getPublishedAt());
+        // 系统主体不该被要求管理员权限（否则自动发布必然失败或被逼着给系统发权限）
+        verify(communityUserService, never()).requirePermission(any(), any());
+    }
+
+    @Test
+    void autoPublish_nonPendingPost_isRejectedByStateMachine() {
+        TravelPost published = post(1L, "u2", TravelPost.STATUS_PUBLISHED);
+        when(postRepository.selectById(1L)).thenReturn(published);
+
+        assertThrows(IllegalArgumentException.class, () -> service.autoPublish("system:ai", 1L));
+    }
+
+    @Test
+    void moderationReject_onPublishedPost_hidesIt() {
+        // 被 AI 自动放行的帖子已是 PUBLISHED：改判拒绝必须"下架"，而不是撞状态机报错后静默失效
+        TravelPost published = post(1L, "u2", TravelPost.STATUS_PUBLISHED);
+        when(postRepository.selectById(1L)).thenReturn(published);
+
+        String action = service.applyRejectFromModeration("admin", 1L, "改判：含敏感信息");
+
+        assertEquals("hide", action);
+        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
+        verify(postRepository).updateById(captor.capture());
+        assertEquals(TravelPost.STATUS_HIDDEN, captor.getValue().getStatus());
+    }
+
+    @Test
+    void moderationReject_onPendingPost_rejectsIt() {
+        TravelPost pending = post(1L, "u2", TravelPost.STATUS_PENDING_REVIEW);
+        when(postRepository.selectById(1L)).thenReturn(pending);
+
+        String action = service.applyRejectFromModeration("admin", 1L, "含导流广告");
+
+        assertEquals("reject", action);
+        ArgumentCaptor<TravelPost> captor = ArgumentCaptor.forClass(TravelPost.class);
+        verify(postRepository).updateById(captor.capture());
+        assertEquals(TravelPost.STATUS_REJECTED, captor.getValue().getStatus());
+        assertEquals("含导流广告", captor.getValue().getRejectReason());
+    }
+
+    @Test
+    void moderationReject_onDraftPost_isNoop() {
+        TravelPost draft = post(1L, "u2", TravelPost.STATUS_DRAFT);
+        when(postRepository.selectById(1L)).thenReturn(draft);
+
+        assertEquals("noop", service.applyRejectFromModeration("admin", 1L, "无需处置"));
+        verify(postRepository, never()).updateById(any());
+    }
+
     /* ================= 阶段三：公开流 recommended（为你推荐） ================= */
 
     @Test
@@ -456,7 +790,7 @@ class PostServiceTest {
         when(postFeedEngine.rank(anyList(), anyMap(), anyList())).thenReturn(List.of(
                 new PostFeedEngine.RankedPost(1L, 0.86, "匹配你的偏好：历史文化",
                         List.of("历史文化"), true),
-                new PostFeedEngine.RankedPost(2L, 0.5, "社区热门内容", List.of(), false)));
+                new PostFeedEngine.RankedPost(2L, 0.5, "为你推荐", List.of(), false)));
         when(postTagService.ensureBatch(anyList())).thenReturn(new java.util.HashMap<>());
 
         PostPage page = service.publicFeed("u1", null, null, "recommended", 1, 10);
@@ -507,7 +841,11 @@ class PostServiceTest {
         when(userProfileService.listPreferences("u1")).thenReturn(List.of());
         when(userProfileService.getProfileVersion("u1")).thenReturn(5);
         when(postFeedEngine.personalizedOf(anyList())).thenReturn(true);
-        when(abExperimentService.resolveVariant("u1", AbExperimentService.EXP_POST_LOW_QUALITY))
+        AbExperiment postExp = new AbExperiment();
+        postExp.setExpName("post_feed_low_quality");
+        postExp.setFeedType(AbExperiment.FEED_POST);
+        when(abExperimentService.activeOf(AbExperiment.FEED_POST)).thenReturn(postExp);
+        when(abExperimentService.resolveVariant("u1", "post_feed_low_quality"))
                 .thenReturn("TREATMENT");
         // 候选传给排序引擎的应是过滤后的：7 篇干净帖子（无 low_quality=1 的 8 号）
         when(postFeedEngine.rank(anyList(), anyMap(), anyList())).thenAnswer(inv -> {
@@ -517,7 +855,7 @@ class PostServiceTest {
             assertTrue(fed.stream().noneMatch(p -> p.getId() == 8L));
             return fed.stream()
                     .map(p -> new PostFeedEngine.RankedPost(p.getId(), 1.0,
-                            "社区热门内容", List.of(), false))
+                            "为你推荐", List.of(), false))
                     .toList();
         });
         when(postTagService.ensureBatch(anyList())).thenReturn(Map.of());
@@ -552,7 +890,7 @@ class PostServiceTest {
     @Test
     void adminPosts_nonAdmin_throwsForbidden() {
         doThrow(new ForbiddenException("该操作需要管理员权限"))
-                .when(communityUserService).requireAdmin(anyString());
+                .when(communityUserService).requirePermission(anyString(), eq(AdminPermission.CONTENT_REVIEW));
 
         assertThrows(ForbiddenException.class, () -> service.adminPosts("u1", "PUBLISHED", 1, 20));
     }
@@ -628,5 +966,33 @@ class PostServiceTest {
         assertFalse(violations.isEmpty());
         assertTrue(violations.get(0).contains("重复"));
         verify(postRepository, never()).updateById(any(TravelPost.class));
+    }
+
+    /* ============ 作者查看 AI 审核细分状态（latestModerationStatus） ============ */
+
+    @Test
+    void latestModerationStatus_noTask_returnsNull() {
+        TravelPost p = post(1L, "u1", TravelPost.STATUS_PENDING_REVIEW);
+        when(postRepository.selectById(1L)).thenReturn(p);
+        when(moderationService.latestForViewer(anyString(), anyString())).thenReturn(null);
+
+        var v = service.latestModerationStatus("u1", 1L);
+
+        assertNull(v);
+    }
+
+    @Test
+    void latestModerationStatus_otherUsersPost_throwsForbidden() {
+        TravelPost p = post(1L, "u2", TravelPost.STATUS_PENDING_REVIEW);
+        when(postRepository.selectById(1L)).thenReturn(p);
+
+        assertThrows(ForbiddenException.class, () -> service.latestModerationStatus("u1", 1L));
+    }
+
+    @Test
+    void latestModerationStatus_postMissing_throwsNotFound() {
+        when(postRepository.selectById(1L)).thenReturn(null);
+
+        assertThrows(PostNotFoundException.class, () -> service.latestModerationStatus("u1", 1L));
     }
 }

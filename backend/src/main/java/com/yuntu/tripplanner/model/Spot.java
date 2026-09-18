@@ -37,6 +37,20 @@ public class Spot {
     /** 可信度：攻略命中且通过校验 */
     public static final String QUALITY_VERIFIED = "VERIFIED";
 
+    /** 上架状态：正常对外推荐/展示 */
+    public static final String STATUS_ONLINE = "ONLINE";
+    /** 上架状态：管理员下线（不推荐不展示；原因见 flag/flag_reason） */
+    public static final String STATUS_OFFLINE = "OFFLINE";
+
+    /** 治理标记：非景点（酒店/商场等被误收为景点） */
+    public static final String FLAG_NON_SPOT = "NON_SPOT";
+    /** 治理标记：已关闭/暂停营业 */
+    public static final String FLAG_CLOSED = "CLOSED";
+    /** 治理标记：过时（信息陈旧，需重新同步核验） */
+    public static final String FLAG_OUTDATED = "OUTDATED";
+    /** 治理标记：错误 POI（高德数据本身错位/不存在） */
+    public static final String FLAG_ERROR_POI = "ERROR_POI";
+
     @TableId(type = IdType.AUTO)
     private Long id;
 
@@ -94,6 +108,38 @@ public class Spot {
     /** 最近一次从高德同步时间（按需同步的缓存新鲜度依据） */
     @TableField("last_synced_at")
     private LocalDateTime lastSyncedAt;
+
+    /** 上下架状态：ONLINE/OFFLINE（治理；OFFLINE=管理员下线，不推荐不展示） */
+    @TableField("status")
+    private String status;
+
+    /** 治理标记：NON_SPOT/CLOSED/OUTDATED/ERROR_POI（空=正常） */
+    @TableField("flag")
+    private String flag;
+
+    /** 治理原因（管理员填写） */
+    @TableField("flag_reason")
+    private String flagReason;
+
+    /** 是否存在人工修正（同步时跳过被锁定字段） */
+    @TableField("manual_override")
+    private Boolean manualOverride;
+
+    /** 人工锁定字段（逗号分隔：name,address,description,tags…，同步只更新未锁定字段） */
+    @TableField("manual_override_fields")
+    private String manualOverrideFields;
+
+    /** 最近人工审核人（用户名） */
+    @TableField("last_verified_by")
+    private String lastVerifiedBy;
+
+    /** 最近人工审核时间 */
+    @TableField("last_verified_at")
+    private LocalDateTime lastVerifiedAt;
+
+    /** 重复合并目标 spot_id（本行作为下线别名指向主行） */
+    @TableField("merged_into")
+    private String mergedInto;
 
     @TableField(value = "created_at", fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

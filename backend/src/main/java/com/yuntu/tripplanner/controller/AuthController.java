@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.controller;
 
+import com.yuntu.tripplanner.common.AdminRole;
 import com.yuntu.tripplanner.model.LoginRequest;
 import com.yuntu.tripplanner.model.RegisterRequest;
 import com.yuntu.tripplanner.model.User;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -71,7 +73,31 @@ public class AuthController {
         return ResponseEntity.ok(authBody(true, "登录成功", token, user));
     }
 
-    /** 当前登录用户信息（阶段二：同步最新 role；旧 token/localStorage 缺 role 时前端调用补齐） */
+    /**
+     * 管理员登录（独立入口，与用户登录分开）。
+     *
+     * <p>凭据错误 → 401（同普通登录）；凭据正确但角色非管理端 → 403「该账号不是管理员」
+     * （由 {@code AuthService.loginAsAdmin} 抛 {@code ForbiddenException}，统一异常处理器转 403）。
+     * 成功则返回 token + user，前端据此直接进 /admin 后台，不进入用户端。
+     */
+    @PostMapping("/admin-login")
+    public ResponseEntity<?> adminLogin(@Valid @RequestBody LoginRequest request) {
+        User user = authService.loginAsAdmin(request.getUsername(), request.getPassword());
+        if (user == null) {
+            Map<String, Object> body = new HashMap<>();
+            body.put("success", false);
+            body.put("message", "用户名或密码错误");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+        }
+        String token = jwtUtil.generateToken(user.getId(), user.getUsername());
+        log.info("管理员登录成功: {}", user.getUsername());
+        return ResponseEntity.ok(authBody(true, "管理员登录成功", token, user));
+    }
+
+    /**
+     * 当前登录用户信息（阶段二：同步最新 role；角色细化后同时下发权限点）。
+     * 旧 token/localStorage 缺 role/permissions 时前端调用补齐。
+     */
     @GetMapping("/me")
     public ResponseEntity<?> me() {
         String userId = UserContext.getUserId();
@@ -79,19 +105,37 @@ public class AuthController {
         Map<String, Object> userMap = new HashMap<>();
         userMap.put("id", userId);
         userMap.put("role", role);
+        userMap.put("role_label", AdminRole.fromCode(role).label());
+        userMap.put("permissions", permissionNamesOf(userId));
         Map<String, Object> body = new HashMap<>();
         body.put("success", true);
         body.put("user", userMap);
         return ResponseEntity.ok(body);
     }
 
-    private static Map<String, Object> authBody(boolean success, String message, String token, User user) {
+    /**
+     * 权限点名称列表（前端据此显隐管理端菜单与路由）。
+     *
+     * <p>注意：这只是<b>体验层</b>数据 —— 后端每个接口都会用自己的权限点再校验一次，
+     * 前端拿到列表只决定"显示什么"，绝不作为权限依据（改前端改不出权限）。
+     */
+    private List<String> permissionNamesOf(String userId) {
+        return communityUserService.permissionsOf(userId).stream()
+                .map(Enum::name)
+                .sorted()
+                .toList();
+    }
+
+    private Map<String, Object> authBody(boolean success, String message, String token, User user) {
         Map<String, Object> userMap = new HashMap<>();
         userMap.put("id", String.valueOf(user.getId()));
         userMap.put("username", user.getUsername());
         userMap.put("nickname", user.getNickname());
         userMap.put("role", user.getRole() == null || user.getRole().isBlank()
                 ? CommunityUserService.ROLE_USER : user.getRole());
+        userMap.put("role_label", AdminRole.fromCode(user.getRole()).label());
+        userMap.put("permissions",
+                permissionNamesOf(user.getId() == null ? null : String.valueOf(user.getId())));
 
         Map<String, Object> body = new HashMap<>();
         body.put("success", success);

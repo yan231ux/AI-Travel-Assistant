@@ -1,0 +1,26 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF' }}>
+  <Box style={{ width: '100%', height: 84, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 40px', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>AI 审核流水线</Text>
+    <Text style={{ fontSize: 16, color: '#B5D4F4' }}>05 平台治理</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 596, padding: '26px 40px', flexDirection: 'column', gap: 16 }}>
+    <Box style={{ flexDirection: 'row', gap: 24, flex: 1 }}>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Box style={{ background: '#F0F5FC', borderRadius: 8, padding: '6px 14px', alignSelf: 'flex-start' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#4A5568' }}>内容审核 · 待审队列</Text></Box>
+        <Image src="assets/13_content_review.png" style={{ width: '100%', height: 280, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      </Box>
+      <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+        <Box style={{ background: '#F0F5FC', borderRadius: 8, padding: '6px 14px', alignSelf: 'flex-start' }}><Text style={{ fontSize: 15, fontWeight: 'bold', color: '#4A5568' }}>AI 初筛 · 风险分级与状态</Text></Box>
+        <Image src="assets/14_ai_review.png" style={{ width: '100%', height: 280, objectFit: 'contain', borderRadius: 10, border: '1px solid #D6DCE5' }} />
+      </Box>
+    </Box>
+    <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '14px 24px', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFC107' }}>分级放行 + 留痕</Text>
+      <Text style={{ fontSize: 17, color: '#FFFFFF', flex: 1, lineHeight: 1.6 }}>低风险自动放行、高风险转人工复核；每条判定都记录 system:ai 主体 + taskId + risk，可追溯、可复盘。</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 40, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: '0 40px' }}>
+    <Text style={{ fontSize: 14, color: '#8B97A8' }}>智能旅行助手</Text>
+    <Text style={{ fontSize: 14, color: '#0E3F8C' }}>14 / 23</Text>
+  </Box>
+</Slide>

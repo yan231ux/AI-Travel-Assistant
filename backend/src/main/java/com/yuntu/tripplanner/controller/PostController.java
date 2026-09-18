@@ -134,4 +134,20 @@ public class PostController {
         body.put("message", "已提交审核，审核通过后公开展示");
         return ResponseEntity.ok(body);
     }
+
+    /**
+     * 作者查看自己帖子的最新 AI 审核任务（细分状态）。
+     * 仅作者本人可查；不存在则 204 让前端按"暂无任务"处理；越权则 403。
+     */
+    @GetMapping("/{postId}/moderation-status")
+    public ResponseEntity<Map<String, Object>> moderationStatus(@PathVariable Long postId) {
+        Map<String, Object> latest = postService.latestModerationStatus(UserContext.getUserId(), postId);
+        if (latest == null) {
+            return ResponseEntity.noContent().build();
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", true);
+        body.put("data", latest);
+        return ResponseEntity.ok(body);
+    }
 }

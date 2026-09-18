@@ -58,6 +58,10 @@ public class PersonalizedRankingService {
     /** 排序算法版本（与推荐日志/统一计算器同源，见 PersonalizedScoreCalculator） */
     private static final int RANKING_VERSION = PersonalizedScoreCalculator.RANKING_VERSION;
 
+    /** 餐厅距离惩罚参数（Q1）：距景点群锚点 5km 内不罚，45km 以上基本沉底 */
+    static final double FREE_RADIUS_KM = 5.0;
+    static final double SINK_RADIUS_KM = 45.0;
+
     private final UserProfileService userProfileService;
     private final TripRecordService tripRecordService;
 
@@ -102,8 +106,11 @@ public class PersonalizedRankingService {
         List<String> notes = new ArrayList<>();
         List<CandidateEvidence> evidence = new ArrayList<>();
         boolean applied = false;
-        applied |= rankBucket(poiResults, "景点", false, prefs, visitedNames, exempt, notes, evidence);
-        applied |= rankBucket(poiResults, "餐厅", true, prefs, visitedNames, exempt, notes, evidence);
+        applied |= rankBucket(poiResults, "景点", false, prefs, visitedNames, exempt, notes, evidence, null);
+        // 餐厅桶以"景点候选群的中位中心"为锚点做距离惩罚（Q1：餐厅跨区导致行程矛盾）。
+        // 必须在景点桶之后处理：锚点来自景点候选的经纬度。
+        double[] spotAnchor = medianCenter(poiResults.get("景点") instanceof List<?> l ? l : List.of());
+        applied |= rankBucket(poiResults, "餐厅", true, prefs, visitedNames, exempt, notes, evidence, spotAnchor);
 
         if (applied && !notes.isEmpty()) {
             List<String> existing = collectedData.getPersonalizedNotes();
@@ -140,7 +147,7 @@ public class PersonalizedRankingService {
     private boolean rankBucket(Map<String, Object> poiResults, String bucketKey,
                                boolean restaurant, List<UserPreference> prefs,
                                Set<String> visitedNames, Set<String> exempt, List<String> notes,
-                               List<CandidateEvidence> evidenceOut) {
+                               List<CandidateEvidence> evidenceOut, double[] anchor) {
         Object raw = poiResults.get(bucketKey);
         if (!(raw instanceof List<?> list) || list.isEmpty()) {
             return false;
@@ -168,6 +175,13 @@ public class PersonalizedRankingService {
             ScoreDetail d = PersonalizedScoreCalculator.evaluate(
                     name, poiType, restaurant, prefs, visitedNames, exempt);
 
+            // 距离惩罚（Q1，接通预留字段）：餐厅距主要景点群越远分越低。
+            // 5km 内不罚；5→45km 线性加罚，45km 以上基本沉底。景点桶不受影响（锚点即来自它们）。
+            double penalty = restaurant && anchor != null
+                    ? distancePenalty(num(c.get("latitude")), num(c.get("longitude")), anchor)
+                    : 0.0;
+            double finalScore = d.finalScore() - penalty;
+
             CandidateEvidence ev = new CandidateEvidence();
             ev.setBucket(restaurant ? CandidateEvidence.BUCKET_RESTAURANT : CandidateEvidence.BUCKET_SPOT);
             ev.setItemName(name);
@@ -177,8 +191,8 @@ public class PersonalizedRankingService {
             ev.setOriginalOrder(order);
             ev.setPreferenceScore(d.preferenceScore());
             ev.setNoveltyScore(d.noveltyScore());
-            ev.setDistancePenalty(d.distancePenalty());
-            ev.setFinalScore(d.finalScore());
+            ev.setDistancePenalty(penalty);
+            ev.setFinalScore(finalScore);
             ev.setMatchedTags(d.matchedTags().isEmpty() ? null : String.join("/", d.matchedTags()));
             ev.setAvoidTag(d.avoidTag());
             ev.setHardAvoid(d.hardAvoid() ? 1 : 0);
@@ -187,7 +201,7 @@ public class PersonalizedRankingService {
             evidenceOut.add(ev);
             order++;
 
-            scored.add(new Scored(c, name, d.finalScore(), new LinkedHashSet<>(d.matchedTags()),
+            scored.add(new Scored(c, name, finalScore, new LinkedHashSet<>(d.matchedTags()),
                     d.visited(), d.avoidTag(), d.hardAvoid()));
         }
 
@@ -254,6 +268,59 @@ public class PersonalizedRankingService {
             log.warn("读取历史行程景点失败（新颖性降级为空）: {}", e.getMessage());
         }
         return names;
+    }
+
+    /**
+     * 景点候选群的中位中心（对离群点稳健：个别远郊景点不会把锚点拉偏）。
+     * 无有效经纬度时返回 null（调用方跳过距离惩罚，不猜测）。
+     */
+    private double[] medianCenter(List<?> candidates) {
+        List<Double> lats = new ArrayList<>();
+        List<Double> lngs = new ArrayList<>();
+        if (candidates != null) {
+            for (Object o : candidates) {
+                if (!(o instanceof Map<?, ?> m)) {
+                    continue;
+                }
+                Double lat = num(m.get("latitude"));
+                Double lng = num(m.get("longitude"));
+                if (lat != null && lng != null) {
+                    lats.add(lat);
+                    lngs.add(lng);
+                }
+            }
+        }
+        if (lats.size() < 2) {
+            return null; // 样本太少，锚点不可信
+        }
+        lats.sort(Double::compareTo);
+        lngs.sort(Double::compareTo);
+        return new double[]{lats.get(lats.size() / 2), lngs.get(lngs.size() / 2)};
+    }
+
+    /**
+     * 距离惩罚（0~1，与 finalScore 同量纲）：距锚点 5km 内不罚，
+     * 5→45km 线性加罚，45km 以上趋近 1（分数清零沉底）。
+     * 经纬度缺失返回 0（不惩罚没有坐标的候选，避免误伤）。
+     */
+    static double distancePenalty(Double lat, Double lng, double[] anchor) {
+        if (lat == null || lng == null || anchor == null) {
+            return 0.0;
+        }
+        double km = haversineKm(lat, lng, anchor[0], anchor[1]);
+        double p = (km - FREE_RADIUS_KM) / (SINK_RADIUS_KM - FREE_RADIUS_KM);
+        return Math.max(0.0, Math.min(1.0, p));
+    }
+
+    /** 球面距离（km） */
+    static double haversineKm(double lat1, double lng1, double lat2, double lng2) {
+        final int R = 6371;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLng = Math.toRadians(lng2 - lng1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     private static String str(Object o) {

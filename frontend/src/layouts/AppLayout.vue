@@ -36,6 +36,11 @@ function handleLogout() {
   message.success("已退出登录");
 }
 
+/** 管理员专属：返回管理后台（普通用户不可见；后端二次鉴权兜底） */
+function goAdmin() {
+  void router.push({ name: "admin-dashboard" });
+}
+
 // 启动即同步最新用户态（补齐 role，供「管理后台」入口显隐）
 onMounted(() => {
   void syncRole();
@@ -63,14 +68,7 @@ onMounted(() => {
         </nav>
 
         <div class="nav-bar__user">
-          <button
-            v-if="isAdmin"
-            type="button"
-            :class="['nav-chip', { 'nav-chip--active': route.name === 'moderation' }]"
-            @click="go('moderation')"
-          >
-            管理后台
-          </button>
+          <button v-if="isAdmin" type="button" class="nav-bar__admin" @click="goAdmin">管理后台</button>
           <button type="button" class="nav-bar__profile" @click="go('profile')">
             <span class="nav-bar__avatar" aria-hidden="true">{{ (displayName || "U").slice(0, 1) }}</span>
             <span class="nav-bar__username">{{ displayName }}</span>
@@ -246,6 +244,24 @@ onMounted(() => {
   cursor: pointer;
   transition: all 0.2s ease;
 }
+
+/* 管理员专属「管理后台」入口（与后台运营视觉同基调；普通用户不可见） */
+.nav-bar__admin {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f7f5ef;
+  background: linear-gradient(135deg, #1f6f5c, #143f35);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+.nav-bar__admin:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(31, 111, 92, 0.35);
+}
 .nav-bar__logout:hover {
   background: rgba(198, 93, 81, 0.15);
 }
@@ -278,6 +294,10 @@ onMounted(() => {
   .nav-bar__logout {
     font-size: 12px;
     padding: 4px 8px;
+  }
+  .nav-bar__admin {
+    font-size: 12px;
+    padding: 4px 9px;
   }
   .nav-chip {
     padding: 4px 9px;

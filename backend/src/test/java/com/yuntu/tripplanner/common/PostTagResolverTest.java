@@ -68,6 +68,14 @@ class PostTagResolverTest {
         assertEquals(0, PostTagResolver.resolve(null, null, "  ", null, null, null).size());
     }
 
+    @Test
+    void garbageCity_doesNotProduceCityTag() {
+        // 用户随手填数字"1"当城市 → 不应生成 city 标签（否则会写进画像渲染成"匹配你的偏好：1"）
+        List<PostTagResolver.Tag> tags = PostTagResolver.resolve(
+                "测试帖", null, "正文", "1", null, List.of());
+        assertFalse(tags.stream().anyMatch(t -> "city".equals(t.category())));
+    }
+
     private static boolean contains(List<PostTagResolver.Tag> tags, String category, String tag, String source) {
         return tags.stream().anyMatch(t -> category.equals(t.category())
                 && tag.equals(t.tag()) && source.equals(t.source()));

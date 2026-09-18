@@ -241,6 +241,12 @@ public class ItineraryGenerator {
      */
     private String buildGenerationPrompt(TripRequest request, String dataSummary) {
         long days = ChronoUnit.DAYS.between(request.getStartDate(), request.getEndDate()) + 1;
+        // Q3 预算硬约束：按预算反推每晚酒店价上限（总住宿 ≤ 总预算 45%），让 LLM 生成时就对齐预算，
+        // 而不是生成超支行程后再依赖校验层补救
+        double effBudget = request.getBudget() != null && request.getBudget() > 0
+                ? request.getBudget() : 5000;
+        long nights = Math.max(1, days - 1);
+        long hotelCapPerNight = Math.round(effBudget * 0.45 / nights);
 
         return String.format("""
                 你是一位专业的旅行规划师。请基于以下信息生成一份详细的旅行行程。
@@ -264,7 +270,7 @@ public class ItineraryGenerator {
 
                 ```json
                 {
-                  "trip_id": "trip_{destination}_{start_date}",
+                  "trip_id": "（由系统分配，固定填 null）",
                   "destination": "目的地",
                   "summary": "行程概述（100字以内）",
                   "days": [
@@ -337,6 +343,8 @@ public class ItineraryGenerator {
 17. 用户特别要求中提到的具体地点或活动（例如"体验红花湖骑行"中的红花湖、"去XX拍照"中的XX）若为可游览地点，必须作为当天核心景点或活动安排到 spots 中，不得用其他无关景点（如海洋馆、商场）替代；若为商铺/公寓/写字楼等非游览场所，不得作为景点安排，只能作顺访提示。若用户表达的是活动（骑行/徒步/拍照/泡温泉），应安排到对应的真实地点，并在当天主题或备注中体现该活动，禁止只把它当成泛泛的"主题"而实际填入无关景点
 18. 酒店档次与店型必须匹配：hotel.name 若为青年旅舍/民宿/公寓/客栈/招待所，level 只能标"经济型"；用户要求舒适型/高档型/豪华型时，必须选择与档次相符的真实酒店（名称通常是"XX大酒店/XX酒店/XX度假酒店"），禁止用青旅/民宿/公寓冒充高档
 19. 旅行建议 tips 中不得把商铺、专卖店、公寓、写字楼等非游览场所写成"建议优先安排参观/必去"之类，仅可表述为"若感兴趣可顺路前往"
+                20. 预算硬约束（必须遵守）：整份行程估算总花费不得超过用户总预算；其中总住宿（房间数×单间价×晚数）不得超过总预算的 45%%，即每晚单间价不得超过约 %d 元（本次共 %d 晚）。若你心仪的酒店档次价位超过该上限，必须主动降一档选择（豪华→高档→舒适→经济），并在 source_notes 中说明「为匹配预算已降低酒店档次」；禁止靠调低餐饮/交通价格来凑预算
+                21. 就餐空间合理性（必须遵守）：每天的午餐/晚餐必须安排在与当天主要景点相同或相邻的片区（原则上距当天景点不超过 25 公里），按"上午景点 → 就近午餐 → 下午景点"的顺序成链。禁止出现"上午在远郊景区、中午回市区吃饭、下午再回远郊"这类物理上来不及的行程；若当天景点在郊区/郊县，午餐必须从当天景点所在片区的餐厅中选取（就近解决），不得跨区返回市区用餐
 
                 请开始生成：
                 """,
@@ -351,7 +359,9 @@ public class ItineraryGenerator {
                 request.getHotelLevel(),
                 request.getDietaryPreferences() != null ? request.getDietaryPreferences() : "无特别要求",
                 request.getSpecialNotes() != null ? request.getSpecialNotes() : "无",
-                dataSummary
+                dataSummary,
+                hotelCapPerNight,
+                nights
         );
     }
 
@@ -396,9 +406,9 @@ public class ItineraryGenerator {
      * 补充默认字段
      */
     private void fillDefaults(Itinerary itinerary, TripRequest request) {
-        if (itinerary.getTripId() == null) {
-            itinerary.setTripId(generateTripId(request));
-        }
+        // trip_id 由服务端唯一分配：即使 LLM 按提示词回了 trip_{目的地}_{日期} 这类可重复值，也一律覆盖。
+        // 原因：trip_record.trip_id 是全局唯一键，确定性 id 会让"不同用户同日同目的地"撞主键（保存 500）。
+        itinerary.setTripId(generateTripId(request));
         if (itinerary.getDestination() == null) {
             itinerary.setDestination(request.getDestination());
         }
@@ -589,11 +599,18 @@ public class ItineraryGenerator {
     }
 
     /**
-     * 生成行程ID
+     * 生成行程 ID：保留「目的地 + 出发日期」的可读前缀，追加 8 位随机后缀保证全局唯一。
+     *
+     * 唯一性是硬要求：trip_record.trip_id 上有 UNIQUE 约束，而 trip_id 又是
+     * agent_trace / recommendation_log / candidate_evidence / user_behavior 等表的关联键，
+     * 一旦重复会同时破坏保存与按 trip_id 读取轨迹的正确性。
+     * 纯「目的地_日期」在"两个用户规划同一城市同一出发日"时必然撞车，故必须带随机段。
      */
     private String generateTripId(TripRequest request) {
-        return String.format("trip_%s_%s",
+        String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        return String.format("trip_%s_%s_%s",
                 request.getDestination(),
-                request.getStartDate().format(DateTimeFormatter.ISO_LOCAL_DATE));
+                request.getStartDate().format(DateTimeFormatter.ISO_LOCAL_DATE),
+                suffix);
     }
 }

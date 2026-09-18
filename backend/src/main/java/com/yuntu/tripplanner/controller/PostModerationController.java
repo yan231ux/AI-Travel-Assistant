@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.controller;
 
+import com.yuntu.tripplanner.common.AdminPermission;
 import com.yuntu.tripplanner.model.PostPage;
 import com.yuntu.tripplanner.model.User;
 import com.yuntu.tripplanner.security.UserContext;
@@ -25,7 +26,7 @@ import java.util.Map;
  * 社区管理控制器（阶段二 §10.4 + 阶段四任务 4 完善）：审核队列 / 通过 / 拒绝 / 隐藏 /
  * 举报处理 / 帖子全量治理 / 举报历史 / 用户列表。
  *
- * <p>所有动作服务端校验 ADMIN 角色（CommunityUserService.requireAdmin → 非管理员 403），
+ * <p>所有动作服务端校验 CONTENT_REVIEW 权限（CommunityUserService.requirePermission → 无权限 403），
  * 不依赖前端隐藏按钮；审核动作记录处理人（handled_by 由登录态 userId 决定）。
  */
 @Slf4j
@@ -110,7 +111,8 @@ public class PostModerationController {
     public ResponseEntity<Map<String, Object>> handleReport(@PathVariable Long reportId,
                                                             @RequestBody(required = false) Map<String, String> body) {
         String action = body == null ? null : body.get("action");
-        reportService.handle(UserContext.getUserId(), reportId, action);
+        String note = body == null ? null : body.get("note");
+        reportService.handle(UserContext.getUserId(), reportId, action, note);
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("success", true);
         resp.put("message", "举报已处理");
@@ -153,7 +155,7 @@ public class PostModerationController {
     public ResponseEntity<Map<String, Object>> users(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
-        communityUserService.requireAdmin(UserContext.getUserId());
+        communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.CONTENT_REVIEW);
         List<User> users = communityUserService.listUsers(page, pageSize);
         Map<String, Long> counts = postService.publishedCounts(
                 users.stream().map(u -> String.valueOf(u.getId())).toList());

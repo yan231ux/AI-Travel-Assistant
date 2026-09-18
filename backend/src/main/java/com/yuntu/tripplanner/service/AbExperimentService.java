@@ -124,15 +124,14 @@ public class AbExperimentService {
                 assignmentCount(exp.getExpName(), AbBucket.VARIANT_TREATMENT));
     }
 
+    /**
+     * 分桶统计：查询失败必须抛出而不是返回 0——
+     * 返回 0 会让管理员误以为"该变体没人参与"，把数据库故障当成实验结论（P0-1 同模式）。
+     */
     private long assignmentCount(String expName, String variant) {
-        try {
-            return assignmentRepository.selectCount(new LambdaQueryWrapper<AbAssignment>()
-                    .eq(AbAssignment::getExpName, expName)
-                    .eq(AbAssignment::getVariant, variant));
-        } catch (Exception e) {
-            log.debug("分桶统计失败（忽略）: {}", e.getMessage());
-            return 0L;
-        }
+        return assignmentRepository.selectCount(new LambdaQueryWrapper<AbAssignment>()
+                .eq(AbAssignment::getExpName, expName)
+                .eq(AbAssignment::getVariant, variant));
     }
 
     /* ================= 粘性分桶（推荐流调用） ================= */
