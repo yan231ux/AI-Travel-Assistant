@@ -133,6 +133,15 @@ public class ItineraryGenerator {
         } catch (Exception e) {
             log.warn("行程校验失败（不影响返回行程）: {}", e.getMessage());
         }
+
+        // 8.5 补位景点二次补全：校验层替换/补位的景点发生在第 6 步主补全之后，还没拿到
+        //     坐标与图片（实测上海第 3 天补位的博物馆无图无坐标）。POI 无真实照片时
+        //     enrichSpot 内部会用景点真实位置的静态地图快照兜底，结果页不再满屏"暂无图片"。
+        try {
+            mapEnrichmentService.enrichMissing(itinerary);
+        } catch (Exception e) {
+            log.warn("补位景点二次补全失败（不影响行程）: {}", e.getMessage());
+        }
         // 预算修正可能改动了价格，重新计算预算分解，保证口径一致
         calculateBudget(itinerary);
 

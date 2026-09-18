@@ -156,6 +156,25 @@ public class AmapClient {
     }
 
     /**
+     * 高德静态地图快照 URL（不发起请求，仅拼装；由前端 &lt;img&gt; 直接加载 PNG）。
+     *
+     * <p>用途：POI 无真实照片时的图片兜底。高德 v3 POI 的 photos 覆盖率极低
+     * （实测上海 5 个景点只有东方明珠返回照片），而静态快照只依赖经纬度——
+     * 图的内容是该景点<b>真实位置 + 标注点</b>，绝不张冠李戴，符合"宁缺毋错"口径。
+     *
+     * <p>与其他 restapi 接口共用同一 key（Web服务类型，静态地图同域可用）。
+     */
+    public String staticMapUrl(double longitude, double latitude) {
+        // %.6f 用 Locale.ROOT，避免小数点被本地化成逗号（德语区等）
+        String loc = String.format(java.util.Locale.ROOT, "%.6f,%.6f", longitude, latitude);
+        return String.format("%s/v3/staticmap?key=%s&location=%s&zoom=15&size=640*300&markers=mid,0x1A73E8,A:%s",
+                amapConfig.getBaseUrl(),
+                URLEncoder.encode(amapConfig.getApiKey(), StandardCharsets.UTF_8),
+                URLEncoder.encode(loc, StandardCharsets.UTF_8),
+                URLEncoder.encode(loc, StandardCharsets.UTF_8));
+    }
+
+    /**
      * 类别 → 搜索关键词列表（多关键词扩大候选池；默认单关键词原样）。
      * 关键词数量克制：免费 key 有 QPS 限制（CUQPS 10021），关键词过多易触发限流。
      */

@@ -115,39 +115,98 @@ public class MapEnrichmentService {
         return itinerary;
     }
 
+    /**
+     * 二次补全（只处理缺失项）：校验层的补位/替换发生在主补全之后，新换进来的景点
+     * 还没拿到地址/坐标/图片（实测上海第 3 天补位的博物馆无图无坐标、悬在"其他安排"）。
+     *
+     * <p>只对 <b>缺图片或缺坐标</b> 的景点补全，其余跳过，避免对全量景点重复打 POI 接口；
+     * 有坐标仍无照片时由 {@link #enrichSpot} 内部的静态地图快照兜底。
+     * 不追加来源说明（主补全已加过同款，重复加会刷屏）。
+     *
+     * @return 本次实际补全成功的景点数（日志/排查用）
+     */
+    public int enrichMissing(Itinerary itinerary) {
+        if (itinerary == null || itinerary.getDays() == null || itinerary.getDestination() == null) {
+            return 0;
+        }
+        int n = 0;
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() == null) {
+                continue;
+            }
+            for (SpotItem spot : day.getSpots()) {
+                boolean missing = spot.getName() != null && !spot.getName().isBlank()
+                        && ((spot.getImageUrl() == null || spot.getImageUrl().isBlank())
+                        || spot.getLatitude() == null || spot.getLongitude() == null);
+                if (!missing) {
+                    continue;
+                }
+                try {
+                    if (enrichSpot(spot, itinerary.getDestination())) {
+                        n++;
+                    }
+                } catch (Exception e) {
+                    log.debug("二次补全景点失败: {} - {}", spot.getName(), e.getMessage());
+                }
+            }
+        }
+        if (n > 0) {
+            log.info("二次补全：{} 个补位景点拿到地址/坐标/图片", n);
+        }
+        return n;
+    }
+
     private boolean enrichSpot(SpotItem spot, String city) {
         if (spot.getName() == null || spot.getName().isEmpty()) {
             return false;
         }
+        boolean updated = false;
         Map<String, Object> place = pickBestPlace(spot.getName(), city);
-        if (place == null) {
-            return false;
-        }
-        // 地址强制用高德真实地址覆盖（LLM 可能编造地址，如把 POI 介绍文字当地址）；高德地址为空时保留原值
-        String amapAddress = (String) place.getOrDefault("address", "");
-        if (amapAddress != null && !amapAddress.isBlank()) {
-            spot.setAddress(amapAddress);
-        }
-        if (spot.getImageUrl() == null) {
-            spot.setImageUrl((String) place.getOrDefault("image_url", ""));
-        }
-        if (spot.getLatitude() == null) {
-            spot.setLatitude((Double) place.getOrDefault("latitude", null));
-        }
-        if (spot.getLongitude() == null) {
-            spot.setLongitude((Double) place.getOrDefault("longitude", null));
-        }
-        if (spot.getPoiId() == null) {
-            spot.setPoiId((String) place.getOrDefault("poi_id", ""));
-        }
-        // 高德业态 type 写入景点（供校验层判定"商铺/公寓等非游览场所不得当景点"）
-        if (spot.getPoiType() == null) {
-            Object poiType = place.get("type");
-            if (poiType != null && !poiType.toString().isBlank()) {
-                spot.setPoiType(poiType.toString());
+        if (place != null) {
+            // 地址强制用高德真实地址覆盖（LLM 可能编造地址，如把 POI 介绍文字当地址）；高德地址为空时保留原值
+            String amapAddress = (String) place.getOrDefault("address", "");
+            if (amapAddress != null && !amapAddress.isBlank()) {
+                spot.setAddress(amapAddress);
+                updated = true;
+            }
+            // 图片：只有高德 POI 真的返回了照片才采用（空串/缺失都视为没图，允许后续兜底）
+            if (spot.getImageUrl() == null || spot.getImageUrl().isBlank()) {
+                Object img = place.get("image_url");
+                if (img != null && !img.toString().isBlank()) {
+                    spot.setImageUrl(img.toString());
+                    updated = true;
+                }
+            }
+            if (spot.getLatitude() == null) {
+                spot.setLatitude((Double) place.getOrDefault("latitude", null));
+                updated = true;
+            }
+            if (spot.getLongitude() == null) {
+                spot.setLongitude((Double) place.getOrDefault("longitude", null));
+                updated = true;
+            }
+            if (spot.getPoiId() == null) {
+                spot.setPoiId((String) place.getOrDefault("poi_id", ""));
+                updated = true;
+            }
+            // 高德业态 type 写入景点（供校验层判定"商铺/公寓等非游览场所不得当景点"）
+            if (spot.getPoiType() == null) {
+                Object poiType = place.get("type");
+                if (poiType != null && !poiType.toString().isBlank()) {
+                    spot.setPoiType(poiType.toString());
+                    updated = true;
+                }
             }
         }
-        return true;
+        // 图片兜底：没有真实照片但有坐标 → 高德静态地图快照（真实位置+标注点，绝不张冠李戴）。
+        // 高德 v3 photos 覆盖率极低（实测上海 5 景点只有东方明珠有照片），没有这层兜底
+        // 结果页大部分卡片是"暂无图片"空块，观感上像数据坏了。
+        if ((spot.getImageUrl() == null || spot.getImageUrl().isBlank())
+                && spot.getLatitude() != null && spot.getLongitude() != null) {
+            spot.setImageUrl(amapClient.staticMapUrl(spot.getLongitude(), spot.getLatitude()));
+            updated = true;
+        }
+        return updated;
     }
 
     private boolean enrichHotel(HotelItem hotel, String city) {

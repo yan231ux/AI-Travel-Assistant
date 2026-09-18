@@ -133,4 +133,78 @@ class MapEnrichmentServiceTest {
         assertEquals(23, car.getEstimatedMinutes());
         assertEquals(10.8, car.getDistanceKm(), 0.01);
     }
+
+    /* ================= 图片兜底：POI 无照片 → 静态地图快照（真实位置，绝不张冠李戴） ================= */
+
+    @Test
+    void missingPhotoFallsBackToStaticMapSnapshot() {
+        // 高德 v3 photos 覆盖率极低（实测上海 5 景点只有东方明珠有照片）——
+        // POI 匹配成功但没照片、有坐标 → 用景点真实位置的静态地图快照兜底，不留"暂无图片"空块
+        when(amapClient.searchPoi("上海", "上海自然博物馆")).thenReturn(List.of(
+                Map.of("name", "上海自然博物馆", "address", "北京西路510号",
+                        "longitude", 121.4698, "latitude", 31.2805)));
+        when(amapClient.staticMapUrl(org.mockito.ArgumentMatchers.anyDouble(),
+                org.mockito.ArgumentMatchers.anyDouble()))
+                .thenReturn("https://restapi.amap.com/v3/staticmap?mock=1");
+
+        SpotItem spot = enrichSpot("上海", "上海自然博物馆");
+
+        assertNotNull(spot.getImageUrl(), "无照片但有坐标必须有图片兜底");
+        assertTrue(spot.getImageUrl().contains("staticmap"), "兜底图应是高德静态地图快照，实际：" + spot.getImageUrl());
+        assertEquals(31.2805, spot.getLatitude(), 0.0001);
+    }
+
+    @Test
+    void blankImageUrlTreatedAsMissing_realPhotoStillWins() {
+        // LLM 留下的空串图片视为没图 → 允许补全；且真实照片优先于静态快照
+        SpotItem spot = new SpotItem();
+        spot.setName("苏堤");
+        spot.setImageUrl("");
+        DayPlan day = new DayPlan();
+        day.setDayIndex(1);
+        day.setSpots(List.of(spot));
+        Itinerary it = new Itinerary();
+        it.setDestination("杭州");
+        it.setDays(List.of(day));
+        when(amapClient.searchPoi("杭州", "苏堤")).thenReturn(List.of(
+                Map.of("name", "苏堤", "image_url", "http://sudi.jpg", "address", "西湖")));
+
+        service.enrich(it);
+
+        assertEquals("http://sudi.jpg", spot.getImageUrl(), "空串图应视为缺失并用真实照片补上");
+    }
+
+    @Test
+    void enrichMissingFillsRefilledSpotWithoutTouchingCompleteOnes() {
+        // 校验层补位的景点没走过主补全（无图无坐标）→ enrichMissing 只补缺失项；
+        // 已有图有坐标的景点不重复打 POI 接口
+        SpotItem refilled = new SpotItem();
+        refilled.setName("上海市历史博物馆");
+        SpotItem complete = new SpotItem();
+        complete.setName("东方明珠广播电视塔");
+        complete.setImageUrl("http://dongfangmingzhu.jpg");
+        complete.setLatitude(121.4998);
+        complete.setLongitude(121.4998);
+        DayPlan day = new DayPlan();
+        day.setDayIndex(3);
+        day.setSpots(new ArrayList<>(List.of(refilled, complete)));
+        Itinerary it = new Itinerary();
+        it.setDestination("上海");
+        it.setDays(List.of(day));
+
+        when(amapClient.searchPoi("上海", "上海市历史博物馆")).thenReturn(List.of(
+                Map.of("name", "上海市历史博物馆", "address", "南京西路325号",
+                        "longitude", 121.4645, "latitude", 31.2337)));
+        when(amapClient.staticMapUrl(org.mockito.ArgumentMatchers.anyDouble(),
+                org.mockito.ArgumentMatchers.anyDouble()))
+                .thenReturn("https://restapi.amap.com/v3/staticmap?mock=1");
+
+        int n = service.enrichMissing(it);
+
+        assertEquals(1, n, "只补全 1 个缺失景点");
+        assertEquals("南京西路325号", refilled.getAddress(), "补位景点应拿到真实地址");
+        assertNotNull(refilled.getLatitude(), "补位景点应拿到坐标");
+        assertTrue(refilled.getImageUrl().contains("staticmap"), "无照片时用静态快照兜底");
+        assertEquals("http://dongfangmingzhu.jpg", complete.getImageUrl(), "完整景点不得被碰");
+    }
 }
