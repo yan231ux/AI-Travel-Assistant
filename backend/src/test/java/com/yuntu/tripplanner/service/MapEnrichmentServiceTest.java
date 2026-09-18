@@ -4,12 +4,14 @@ import com.yuntu.tripplanner.client.AmapClient;
 import com.yuntu.tripplanner.model.DayPlan;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.SpotItem;
+import com.yuntu.tripplanner.model.TransportItem;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -83,5 +85,52 @@ class MapEnrichmentServiceTest {
 
         assertEquals("http://sudi.jpg", spot.getImageUrl());
         assertEquals("西湖", spot.getAddress());
+    }
+
+    @Test
+    void drivingRouteNotAdoptedForMetroLeg() {
+        // 上海实测：mode=地铁 的段被驾车路线覆盖，页面出现"地铁·来源=高德路线估算（驾车）"的自相矛盾
+        // → 地铁/公交/步行等非用车段一律不用驾车路线覆盖
+        TransportItem metro = new TransportItem();
+        metro.setMode("地铁");
+        metro.setFromPlace("开蔓酒店");
+        metro.setToPlace("上海城隍庙");
+        DayPlan day = new DayPlan();
+        day.setDayIndex(1);
+        day.setTransport(new ArrayList<>(List.of(metro)));
+        Itinerary it = new Itinerary();
+        it.setDestination("上海");
+        it.setDays(List.of(day));
+
+        service.enrich(it);
+
+        assertNull(metro.getSource(), "地铁段不得被驾车路线覆盖");
+        assertNull(metro.getEstimatedMinutes(), "地铁段不得被填驾车时长");
+    }
+
+    @Test
+    void drivingRouteAdoptedForCarLeg() {
+        // 用车类交通段正常走驾车路线补全（不误伤）
+        when(amapClient.geocode("开蔓酒店")).thenReturn(Map.of("longitude", 121.0, "latitude", 31.0));
+        when(amapClient.geocode("上海城隍庙")).thenReturn(Map.of("longitude", 121.5, "latitude", 31.2));
+        when(amapClient.getDrivingRoute("121.0,31.0", "121.5,31.2"))
+                .thenReturn(Map.of("duration", 23, "distance", 10.8));
+
+        TransportItem car = new TransportItem();
+        car.setMode("打车");
+        car.setFromPlace("开蔓酒店");
+        car.setToPlace("上海城隍庙");
+        DayPlan day = new DayPlan();
+        day.setDayIndex(1);
+        day.setTransport(new ArrayList<>(List.of(car)));
+        Itinerary it = new Itinerary();
+        it.setDestination("上海");
+        it.setDays(List.of(day));
+
+        service.enrich(it);
+
+        assertEquals("高德路线估算（驾车）", car.getSource(), "用车段应正常补全驾车路线");
+        assertEquals(23, car.getEstimatedMinutes());
+        assertEquals(10.8, car.getDistanceKm(), 0.01);
     }
 }

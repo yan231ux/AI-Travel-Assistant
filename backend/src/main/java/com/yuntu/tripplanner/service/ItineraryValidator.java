@@ -47,11 +47,14 @@ import java.util.stream.Collectors;
 public class ItineraryValidator {
 
     /** 连锁快餐/连锁餐饮品牌（程序兜底，提示词已禁止但仍防 LLM 不听话）。
-     *  覆盖大陆常见连锁 + 港式连锁 + 日式国际连锁。 */
+     *  覆盖大陆常见连锁快餐 + 港式连锁 + 日式国际连锁 + 全国连锁正餐/火锅品牌。
+     *  ⚠️ 全国连锁正餐也要拦：实测上海补餐两次都补成"海底捞"（外滩店/世茂广场店），
+     *  跨天同名不同店按名称去重拦不住，必须按品牌拦。 */
     private static final List<String> CHAIN_RESTAURANTS =
             List.of("肯德基", "麦当劳", "汉堡王", "星巴克", "必胜客", "瑞幸", "蜜雪冰城", "赛百味", "德克士",
                     "大家乐", "翠华", "太兴", "谭仔", "北京楼", "美心", "添好运", "大快活",
-                    "一风堂", "一兰", "吉野家", "味千", "萨莉亚", "快乐蜂", "绿茶");
+                    "一风堂", "一兰", "吉野家", "味千", "萨莉亚", "快乐蜂", "绿茶",
+                    "海底捞", "巴奴", "呷哺呷哺", "湊湊", "费大厨", "外婆家", "西贝", "太二");
 
     /** 恶劣天气关键词（出现任一 → 当天按室内安排）。
      *  拆细"雨"：雷暴/大雨/中雨才触发室内化，「小毛毛雨」「小雨」只带伞不误判。 */
@@ -308,6 +311,12 @@ public class ItineraryValidator {
         // 3. Plan B：恶劣天气日 → 替换为室内候选（无候选则备注警示）
         applyPlanB(itinerary, collectedData, poiSpotNames, usedSpots, spotPool, ragText,
                 poiAddressMap, request);
+
+        // 3.5 景点时间轴与简介兜底：程序补位/LLM 漏填的景点没有 start_time，前端会把它们
+        //     归入「其他安排」，出现"某天看起来什么都没安排"的空洞观感
+        //     （实测上海第 3 天：补位的上海市历史博物馆无时间悬在"其他安排"，当天只剩一顿午餐）。
+        //     这里给无时间景点在当天空闲时段安排一个 90 分钟默认档期；空简介给兜底文案。
+        normalizeSpotTimeline(itinerary);
 
         // 4. 交通：统一「交通段必须带金额」口径 + 未由高德路线补全的项标注为估算（LLM）；并统一时长格式
         for (DayPlan day : itinerary.getDays()) {
@@ -2753,6 +2762,88 @@ public class ItineraryValidator {
     }
 
     /**
+     * 景点时间轴与简介兜底（确定性、零 token）。
+     *
+     * <p>程序补位（非游览场所移除后的补位、结构对齐补位、Plan B 替换）只填名称/地址/来源，
+     * 不带 start_time——前端 {@code Result.vue} 会把无时间景点归入「其他安排」，
+     * 且空简介显示为光秃秃的"暂无说明"。这里统一收口：
+     * <ol>
+     *   <li>无 start_time/end_time 的景点：在当天空闲时段（避开已有景点与餐次）安排
+     *       一个 90 分钟的默认档期（08:30-18:30 内找第一个放得下的空档，找不到则贴在最后一段活动之后）；</li>
+     *   <li>空简介：给 {@link SpotText#NO_GUIDE_DESC} 兜底文案（与简介去重降级同一口径）。</li>
+     * </ol>
+     */
+    private void normalizeSpotTimeline(Itinerary itinerary) {
+        if (itinerary == null || itinerary.getDays() == null) {
+            return;
+        }
+        for (DayPlan day : itinerary.getDays()) {
+            if (day.getSpots() == null || day.getSpots().isEmpty()) {
+                continue;
+            }
+            List<int[]> busy = new ArrayList<>();
+            for (SpotItem s : day.getSpots()) {
+                int st = parseHm(s.getStartTime());
+                int en = parseHm(s.getEndTime());
+                if (st >= 0 && en > st) {
+                    busy.add(new int[]{st, en});
+                }
+            }
+            if (day.getMeals() != null) {
+                for (MealItem m : day.getMeals()) {
+                    int st = parseHm(m.getStartTime());
+                    if (st >= 0) {
+                        busy.add(new int[]{st, st + 90}); // 餐次按 90 分钟占位
+                    }
+                }
+            }
+            busy.sort(java.util.Comparator.comparingInt(a -> a[0]));
+            for (SpotItem s : day.getSpots()) {
+                if (s.getDescription() == null || s.getDescription().isBlank()) {
+                    s.setDescription(SpotText.NO_GUIDE_DESC);
+                }
+                int st = parseHm(s.getStartTime());
+                int en = parseHm(s.getEndTime());
+                if (st >= 0 && en > st) {
+                    continue; // 已有完整时间
+                }
+                int[] slot = findFreeSlot(busy, 90);
+                if (slot != null) {
+                    s.setStartTime(String.format("%02d:%02d", slot[0] / 60, slot[0] % 60));
+                    s.setEndTime(String.format("%02d:%02d", slot[1] / 60, slot[1] % 60));
+                    busy.add(slot);
+                    busy.sort(java.util.Comparator.comparingInt(a -> a[0]));
+                }
+            }
+        }
+    }
+
+    /** 在 [08:30, 18:30] 内找第一段能容纳 need 分钟的空闲时段；找不到则贴在最后一段活动结束后 */
+    private int[] findFreeSlot(List<int[]> busy, int need) {
+        int dayStart = 8 * 60 + 30;
+        int dayEnd = 18 * 60 + 30;
+        int cursor = dayStart;
+        for (int[] b : busy) {
+            if (b[1] <= cursor) {
+                continue;
+            }
+            if (b[0] - cursor >= need) {
+                return new int[]{cursor, cursor + need};
+            }
+            cursor = Math.max(cursor, b[1]);
+            if (cursor >= dayEnd) {
+                break;
+            }
+        }
+        if (dayEnd - cursor >= need) {
+            return new int[]{cursor, cursor + need};
+        }
+        int maxEnd = busy.stream().mapToInt(b -> b[1]).max().orElse(dayStart);
+        int start = Math.max(dayStart, maxEnd);
+        return new int[]{start, start + need};
+    }
+
+    /**
      * 交通段端点对齐：每一段的起点/终点必须是"当天真实落地的地点"（酒店/景点/餐厅），
      * 或机场、车站这类合理中转枢纽；未标注端点的松散衔接段不判定。
      *
@@ -2772,6 +2863,15 @@ public class ItineraryValidator {
             List<TransportItem> kept = new ArrayList<>();
             List<String> dropped = new ArrayList<>();
             for (TransportItem t : legs) {
+                // 自环段：起终点相同（如"酒店→酒店"）——LLM 复制粘贴产生的废段，
+                // 两端都是锚点、原端点校验拦不住（上海实测首段即"开蔓酒店→开蔓酒店 35分钟 ¥6"）
+                if (t.getFromPlace() != null && t.getToPlace() != null
+                        && !t.getFromPlace().isBlank() && !t.getToPlace().isBlank()
+                        && samePlace(t.getFromPlace(), t.getToPlace())) {
+                    dropped.add(describeLeg(t) + "（起终点相同）");
+                    log.warn("交通段起终点相同（自环废段），已移除：第 {} 天 {}", day.getDayIndex(), describeLeg(t));
+                    continue;
+                }
                 boolean fromOk = resolveEndpoint(t, true, anchors);
                 boolean toOk = resolveEndpoint(t, false, anchors);
                 if (fromOk && toOk) {
@@ -2781,8 +2881,16 @@ public class ItineraryValidator {
                     log.warn("交通段端点与当天行程不符，已移除：第 {} 天 {}", day.getDayIndex(), describeLeg(t));
                 }
             }
+            if (kept.isEmpty()) {
+                if (!dropped.isEmpty()) {
+                    day.setTransport(null);
+                }
+            } else {
+                // 无论有没有删段都重排：LLM 给的交通段顺序常与活动时间轴错位
+                //（上海实测第 2 天："巴奴→城隍庙"出现在"城隍庙→巴奴"之前，时间倒流）
+                day.setTransport(orderLegsByTimeline(day, kept));
+            }
             if (!dropped.isEmpty()) {
-                day.setTransport(kept.isEmpty() ? null : kept);
                 if (day.getNotes() == null) {
                     day.setNotes(new ArrayList<>());
                 }
@@ -2791,6 +2899,64 @@ public class ItineraryValidator {
                         + "），避免展示不存在的路线");
             }
         }
+    }
+
+    /**
+     * 交通段按当天活动时间轴排序（确定性、零 token）：
+     * 酒店出发段排最前，其后按"起点活动"的开始时间升序；返回酒店的段排在该活动之后。
+     * 起点无法定位时间轴的段沉到最后（保持稳定排序），绝不凭空增删段。
+     */
+    private List<TransportItem> orderLegsByTimeline(DayPlan day, List<TransportItem> legs) {
+        Map<String, Integer> anchorTime = new HashMap<>();
+        if (day.getSpots() != null) {
+            for (SpotItem s : day.getSpots()) {
+                if (s.getName() != null && !s.getName().isBlank()) {
+                    anchorTime.putIfAbsent(normalize(s.getName()), parseHm(s.getStartTime()));
+                }
+            }
+        }
+        if (day.getMeals() != null) {
+            for (MealItem m : day.getMeals()) {
+                if (m.getName() != null && !m.getName().isBlank()) {
+                    anchorTime.putIfAbsent(normalize(m.getName()), parseHm(m.getStartTime()));
+                }
+            }
+        }
+        String hotel = day.getHotel() == null ? null : day.getHotel().getName();
+        List<TransportItem> sorted = new ArrayList<>(legs);
+        sorted.sort(java.util.Comparator.comparingInt(t -> legOrderKey(t, hotel, anchorTime)));
+        return sorted;
+    }
+
+    /** 交通段排序键：酒店出发 -1；起点活动开始时间（返回酒店段 +1 保证在"到达段"之后）；未知沉底 */
+    private int legOrderKey(TransportItem t, String hotel, Map<String, Integer> anchorTime) {
+        if (hotel != null && samePlace(t.getFromPlace(), hotel)) {
+            return -1;
+        }
+        Integer fromTime = t.getFromPlace() == null ? null : anchorTime.get(normalize(t.getFromPlace()));
+        if (fromTime != null && fromTime >= 0) {
+            boolean toHotel = hotel != null && samePlace(t.getToPlace(), hotel);
+            return toHotel ? fromTime + 1 : fromTime;
+        }
+        return Integer.MAX_VALUE / 2;
+    }
+
+    /** "HH:mm"（或含 HH:mm 的文本）→ 当天分钟数；解析失败返回 -1 */
+    private int parseHm(String s) {
+        if (s == null || s.isBlank()) {
+            return -1;
+        }
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("(\\d{1,2}):(\\d{2})").matcher(s.trim());
+        if (!m.find()) {
+            return -1;
+        }
+        int h = Integer.parseInt(m.group(1));
+        int mi = Integer.parseInt(m.group(2));
+        if (h > 23 || mi > 59) {
+            return -1;
+        }
+        return h * 60 + mi;
     }
 
     /**

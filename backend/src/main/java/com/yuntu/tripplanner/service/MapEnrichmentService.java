@@ -186,6 +186,15 @@ public class MapEnrichmentService {
                     || isVague(t.getFromPlace()) || isVague(t.getToPlace())) {
                 continue;
             }
+            // 只用驾车路线覆盖"用车类"交通段（驾车/打车/出租/网约车/未标注）。
+            // 地铁/公交/步行/骑行的时间与驾车差异大，覆盖后会出现
+            // "mode=地铁、来源=高德路线估算（驾车）"的自相矛盾（上海实测：地铁段被填驾车 23 分钟）。
+            if (!isCarMode(t.getMode())) {
+                continue;
+            }
+            if (t.getMode() == null || t.getMode().isBlank()) {
+                t.setMode("驾车");
+            }
             Map<String, Double> origin = amapClient.geocode(t.getFromPlace());
             Map<String, Double> dest = amapClient.geocode(t.getToPlace());
             if (origin == null || dest == null) {
@@ -222,6 +231,16 @@ public class MapEnrichmentService {
             return true;
         }
         return VAGUE_PLACE_WORDS.stream().anyMatch(s::contains);
+    }
+
+    /** 是否适合用驾车路线估算的交通方式（地铁/公交/步行/骑行/轨道交通的时间模型与驾车完全不同） */
+    private boolean isCarMode(String mode) {
+        if (mode == null || mode.isBlank()) {
+            return true; // 未标注 → 默认按驾车估算
+        }
+        String m = mode.trim();
+        return !(m.contains("地铁") || m.contains("公交") || m.contains("步行") || m.contains("骑行")
+                || m.contains("单车") || m.contains("高铁") || m.contains("动车") || m.contains("火车"));
     }
 
     /**

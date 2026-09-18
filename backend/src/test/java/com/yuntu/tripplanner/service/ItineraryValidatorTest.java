@@ -1422,4 +1422,99 @@ class ItineraryValidatorTest {
         assertTrue(it.getSourceNotes().stream().anyMatch(n -> n.contains("占您预算")),
                 "预算严重没用满时必须诚实说明，不能一声不吭让用户以为价格在搞笑");
     }
+
+    /* ================= 生成观感兜底（2026-09-18 上海随机行程评审） =================
+     * 用户标准："模拟真实旅行规划需求，至少一眼看上去问题不大"。
+     * ========================================================================= */
+
+    private TransportItem leg(String from, String to) {
+        TransportItem t = new TransportItem();
+        t.setMode("地铁");
+        t.setFromPlace(from);
+        t.setToPlace(to);
+        return t;
+    }
+
+    /** ⑤ 自环交通段（酒店→酒店）必须删除；剩余段按当天活动时间轴排序（时间不倒流） */
+    @Test
+    void selfLoopLegDropped_andLegsOrderedByTimeline() {
+        DayPlan d1 = day(1);
+        SpotItem morning = spot("上海四行仓库抗战纪念馆", "光复路21号");
+        morning.setStartTime("09:30");
+        morning.setEndTime("12:00");
+        SpotItem afternoon = spot("上海城隍庙", "方浜中路249号");
+        afternoon.setStartTime("14:00");
+        afternoon.setEndTime("15:30");
+        d1.getSpots().addAll(List.of(morning, afternoon));
+        MealItem lunch = meal("巴奴毛肚火锅(人广来福士店)");
+        lunch.setStartTime("12:45");
+        d1.setMeals(new ArrayList<>(List.of(lunch)));
+        d1.setHotel(hotel("开蔓酒店(上海延吉中路地铁站店)", "舒适型", 320.0));
+
+        String h = "开蔓酒店(上海延吉中路地铁站店)";
+        // 输入顺序故意错乱：自环段、时间倒流的往返对
+        d1.setTransport(new ArrayList<>(List.of(
+                leg(h, h),                  // 自环废段
+                leg("上海城隍庙", "巴奴毛肚火锅(人广来福士店)"),   // 14:00 出发 → 应在午餐段之后
+                leg(h, "上海城隍庙"),        // 酒店出发 → 应最前
+                leg("上海四行仓库抗战纪念馆", "巴奴毛肚火锅(人广来福士店)"), // 09:30 出发
+                leg("巴奴毛肚火锅(人广来福士店)", "上海城隍庙"),   // 12:45 出发
+                leg("上海城隍庙", h))));     // 返回酒店
+
+        Itinerary it = itineraryOf(d1, "上海");
+        validator.validateAndRepair(it, request("上海"), collectedWithPoi(Map.of(), null));
+
+        List<TransportItem> legs = d1.getTransport();
+        assertEquals(5, legs.size(), "自环段应被删除，其余 5 段保留");
+        assertTrue(legs.stream().noneMatch(t -> t.getFromPlace().equals(t.getToPlace())),
+                "不得残留起终点相同的自环段");
+        assertEquals(h, legs.get(0).getFromPlace(), "酒店出发段应排最前");
+        assertEquals("上海城隍庙", legs.get(0).getToPlace());
+        assertEquals("上海四行仓库抗战纪念馆", legs.get(1).getFromPlace(), "09:30 的段排第二");
+        assertEquals("巴奴毛肚火锅(人广来福士店)", legs.get(2).getFromPlace(), "12:45 午餐出发段排第三");
+        assertEquals("上海城隍庙", legs.get(3).getFromPlace(), "14:00 的段排第四（时间不倒流）");
+        assertEquals(h, legs.get(4).getToPlace(), "返回酒店段排最后");
+        assertTrue(d1.getNotes().stream().anyMatch(n -> n.contains("起终点相同")),
+                "删除自环段要如实说明");
+    }
+
+    /** ⑤ 无时间的补位景点必须有默认档期（否则前端归入"其他安排"，当天看起来是空的）+ 空简介兜底 */
+    @Test
+    void untimedRefilledSpotGetsDefaultSlotAndDescription() {
+        DayPlan d1 = day(1);
+        SpotItem museum = spot("上海市历史博物馆", "南京西路325号"); // 补位景点：无时间无简介
+        d1.getSpots().add(museum);
+        MealItem lunch = meal("楼下本帮面馆");
+        lunch.setStartTime("11:30");
+        d1.setMeals(new ArrayList<>(List.of(lunch)));
+
+        Itinerary it = itineraryOf(d1, "上海");
+        validator.validateAndRepair(it, request("上海"), collectedWithPoi(Map.of(), null));
+
+        assertNotNull(museum.getStartTime(), "补位景点必须有时间，否则第 3 天只剩一顿饭的空洞观感");
+        assertNotNull(museum.getEndTime(), "结束时间也要补齐（前端按 start-end 展示）");
+        assertNotNull(museum.getDescription());
+        assertFalse(museum.getDescription().isBlank(), "空简介必须给兜底文案，不能光秃秃'暂无说明'");
+        // 与午餐（11:30 起，按 90 分钟占位到 13:00）不重叠：要么 11:30 前结束，要么 13:00 后开始
+        boolean beforeLunch = museum.getEndTime().compareTo("11:30") <= 0;
+        boolean afterLunch = museum.getStartTime().compareTo("13:00") >= 0;
+        assertTrue(beforeLunch || afterLunch, "补的档期不得与已有活动重叠，实际 " + museum.getStartTime() + "-" + museum.getEndTime());
+    }
+
+    /** ⑤ 全国连锁正餐/火锅品牌（海底捞等）应被本地候选替换——连锁不同分店按名称去重拦不住 */
+    @Test
+    void nationalChainRestaurant_replacedByLocalCandidate() {
+        DayPlan d1 = day(1);
+        d1.getSpots().add(spot("外滩", "中山东一路"));
+        d1.setMeals(new ArrayList<>(List.of(meal("海底捞火锅(外滩店)"))));
+
+        Itinerary it = itineraryOf(d1, "上海");
+        Map<String, Object> restaurants = Map.of("餐厅", List.of(
+                poiNoCoord("海底捞火锅(外滩店)"),
+                poiNoCoord("老正兴菜馆(福州路店)")));
+        validator.validateAndRepair(it, request("上海"), collectedWithPoi(restaurants, null));
+
+        assertEquals("老正兴菜馆(福州路店)", d1.getMeals().get(0).getName(),
+                "全国连锁（海底捞等）应被候选池里的本地餐厅替换");
+    }
 }
