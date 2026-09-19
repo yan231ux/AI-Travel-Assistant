@@ -197,20 +197,25 @@ async function save() {
   }
 }
 
-/* 可解释展示：偏好明细按「来源 → 分类」分组 */
+/* 可解释展示：偏好明细按「来源 → 分类」分组。
+   注意：后端按权重倒序返回，同组记录会被更高权重的其它分类打散，
+   必须按组键聚合（不能只合并相邻行），否则同一分类会重复出现多行。 */
 const preferenceLines = computed(() => {
-  const lines: { sourceLabel: string; categoryLabel: string; tags: string[] }[] = [];
+  const order: string[] = [];
+  const groups = new Map<string, { sourceLabel: string; categoryLabel: string; tags: string[] }>();
   for (const p of preferences.value) {
     const sourceLabel = SOURCE_LABELS[p.source] || p.source;
     const categoryLabel = CATEGORY_LABELS[p.category] || p.category;
-    const last = lines[lines.length - 1];
-    if (last && last.sourceLabel === sourceLabel && last.categoryLabel === categoryLabel) {
-      last.tags.push(p.tag);
+    const key = `${sourceLabel}||${categoryLabel}`;
+    const found = groups.get(key);
+    if (found) {
+      if (!found.tags.includes(p.tag)) found.tags.push(p.tag);
     } else {
-      lines.push({ sourceLabel, categoryLabel, tags: [p.tag] });
+      groups.set(key, { sourceLabel, categoryLabel, tags: [p.tag] });
+      order.push(key);
     }
   }
-  return lines;
+  return order.map((k) => groups.get(k)!);
 });
 
 /* 去过城市：summary 实时结果优先（Q5：不信 user_profile.visited_cities 快照） */
