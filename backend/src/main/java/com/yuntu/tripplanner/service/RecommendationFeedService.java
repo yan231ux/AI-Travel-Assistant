@@ -58,7 +58,7 @@ public class RecommendationFeedService {
     private final AmapClient amapClient;
     private final RagService ragService;
     private final UserProfileService userProfileService;
-    private final TripRecordService tripRecordService;
+    private final VisitedService visitedService;
     private final AbExperimentService abExperimentService;
     private final RecommendationInterventionService interventionService;
     /** 城市闸门：推荐/同步入口的前置校验，防止乱输入落库（2026-09-13 数据污染修复） */
@@ -70,7 +70,7 @@ public class RecommendationFeedService {
                                      AmapClient amapClient,
                                      RagService ragService,
                                      UserProfileService userProfileService,
-                                     TripRecordService tripRecordService,
+                                     VisitedService visitedService,
                                      AbExperimentService abExperimentService,
                                      RecommendationInterventionService interventionService,
                                      CityValidator cityValidator) {
@@ -80,7 +80,7 @@ public class RecommendationFeedService {
         this.amapClient = amapClient;
         this.ragService = ragService;
         this.userProfileService = userProfileService;
-        this.tripRecordService = tripRecordService;
+        this.visitedService = visitedService;
         this.abExperimentService = abExperimentService;
         this.interventionService = interventionService;
         this.cityValidator = cityValidator;
@@ -844,33 +844,9 @@ public class RecommendationFeedService {
         return qualityReason;
     }
 
-    /** 用户历史行程中出现过的景点名（新颖性/重复降权输入） */
+    /** 用户确认去过的景点名（新颖性/重复降权输入；统一走 VisitedService） */
     public Set<String> collectVisitedNames(String userId) {
-        if (userId == null || userId.isBlank()) {
-            return Set.of();
-        }
-        Set<String> names = new HashSet<>();
-        try {
-            for (TripRecord r : tripRecordService.getRecentTrips(userId, 20)) {
-                Itinerary it = r.getItinerary();
-                if (it == null || it.getDays() == null) {
-                    continue;
-                }
-                for (DayPlan d : it.getDays()) {
-                    if (d == null || d.getSpots() == null) {
-                        continue;
-                    }
-                    for (SpotItem s : d.getSpots()) {
-                        if (s != null && s.getName() != null && !s.getName().isBlank()) {
-                            names.add(s.getName());
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("读取历史景点名失败: {}", e.getMessage());
-        }
-        return names;
+        return visitedService.confirmedVisitedSpotNames(userId);
     }
 
     /** 当前用户收藏过的 spot_id 集合（isCollected 查询） */

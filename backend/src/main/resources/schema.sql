@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS trip_record (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted TINYINT DEFAULT 0 COMMENT '逻辑删除标记',
+    visited_confirmed TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已确认去过（默认0=仅规划，1=确认去过）',
     INDEX idx_trip_id (trip_id),
     INDEX idx_user_id (user_id),
     INDEX idx_created_at (created_at)

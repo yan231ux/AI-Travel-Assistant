@@ -37,18 +37,18 @@ public class SpotService {
 
     private final SpotRepository spotRepository;
     private final SpotFavoriteRepository spotFavoriteRepository;
-    private final TripRecordService tripRecordService;
+    private final VisitedService visitedService;
     private final UserProfileService userProfileService;
     private final TravelEventService travelEventService;
 
     public SpotService(SpotRepository spotRepository,
                        SpotFavoriteRepository spotFavoriteRepository,
-                       TripRecordService tripRecordService,
+                       VisitedService visitedService,
                        UserProfileService userProfileService,
                        TravelEventService travelEventService) {
         this.spotRepository = spotRepository;
         this.spotFavoriteRepository = spotFavoriteRepository;
-        this.tripRecordService = tripRecordService;
+        this.visitedService = visitedService;
         this.userProfileService = userProfileService;
         this.travelEventService = travelEventService;
     }
@@ -92,32 +92,12 @@ public class SpotService {
         return d;
     }
 
-    /** 是否在历史行程中出现过（名称命中；null/空 userId 恒 false） */
+    /** 是否在确认去过的行程中出现过（统一走 VisitedService；null/空 userId 恒 false） */
     private boolean isVisited(String userId, Spot spot) {
         if (userId == null || userId.isBlank() || spot == null || spot.getName() == null) {
             return false;
         }
-        try {
-            for (TripRecord r : tripRecordService.getRecentTrips(userId, 30)) {
-                Itinerary it = r.getItinerary();
-                if (it == null || it.getDays() == null) {
-                    continue;
-                }
-                for (DayPlan day : it.getDays()) {
-                    if (day == null || day.getSpots() == null) {
-                        continue;
-                    }
-                    for (SpotItem s : day.getSpots()) {
-                        if (s != null && spot.getName().equals(s.getName())) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.debug("visited 判定失败: {}", e.getMessage());
-        }
-        return false;
+        return visitedService.confirmedVisitedSpotNames(userId).contains(spot.getName());
     }
 
     private boolean isCollected(String userId, String spotId) {
@@ -182,33 +162,9 @@ public class SpotService {
         }).collect(Collectors.toList());
     }
 
-    /** 历史行程景点名集合（供相关推荐做"是否去过"标记/排序辅助） */
+    /** 确认去过的景点名集合（供相关推荐做"是否去过"标记/排序辅助；统一走 VisitedService） */
     private Set<String> collectVisitedNames(String userId) {
-        Set<String> names = new HashSet<>();
-        if (userId == null || userId.isBlank()) {
-            return names;
-        }
-        try {
-            for (TripRecord r : tripRecordService.getRecentTrips(userId, 20)) {
-                Itinerary it = r.getItinerary();
-                if (it == null || it.getDays() == null) {
-                    continue;
-                }
-                for (DayPlan d : it.getDays()) {
-                    if (d == null || d.getSpots() == null) {
-                        continue;
-                    }
-                    for (SpotItem s : d.getSpots()) {
-                        if (s != null && s.getName() != null && !s.getName().isBlank()) {
-                            names.add(s.getName());
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.debug("读取历史景点名失败: {}", e.getMessage());
-        }
-        return names;
+        return visitedService.confirmedVisitedSpotNames(userId);
     }
 
     /* ================= 收藏（独立表，幂等；与画像行为同事务） ================= */

@@ -57,6 +57,10 @@ public class SchemaAutoUpgrade implements ApplicationRunner {
                 "ALTER TABLE users ADD COLUMN violation_count INT DEFAULT 0 COMMENT '违规次数（举报成立累计）' AFTER comment_banned");
         checked += ensureColumn("users", "last_login_at",
                 "ALTER TABLE users ADD COLUMN last_login_at DATETIME COMMENT '最近登录时间' AFTER violation_count");
+        // 确认去过功能：trip_record 加 visited_confirmed 列（规划默认 0，用户确认后置 1）。
+        // 「去过」全系统只认确认过的行程，城市芯片/景点"你曾去过"/推荐去重统一走 VisitedService。
+        checked += ensureColumn("trip_record", "visited_confirmed",
+                "ALTER TABLE trip_record ADD COLUMN visited_confirmed TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已确认去过（0=仅规划，1=确认去过）' AFTER deleted");
         // 阶段四任务 5/8：帖子内容质量分与低质标记（存量库自动补列）
         checked += ensureColumn("travel_post", "quality_score",
                 "ALTER TABLE travel_post ADD COLUMN quality_score INT DEFAULT 0 COMMENT '内容质量分 0~100' AFTER reject_reason");

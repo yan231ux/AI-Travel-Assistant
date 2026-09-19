@@ -36,4 +36,8 @@ public class TripRecord {
     @TableLogic
     @TableField("deleted")
     private Integer deleted;
+
+    /** 是否已确认去过（确认去过功能：规划默认 0=仅规划；用户确认后置 1=去过） */
+    @TableField("visited_confirmed")
+    private Boolean visitedConfirmed;
 }

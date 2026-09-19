@@ -59,7 +59,7 @@ class RecommendationFeedServiceTest {
     @Mock
     private UserProfileService userProfileService;
     @Mock
-    private TripRecordService tripRecordService;
+    private VisitedService visitedService;
     @Mock
     private AbExperimentService abExperimentService;
     @Mock
@@ -80,7 +80,7 @@ class RecommendationFeedServiceTest {
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), SpotFeedLog.class);
         service = new RecommendationFeedService(spotRepository, spotFavoriteRepository,
                 spotFeedLogRepository, amapClient, ragService, userProfileService,
-                tripRecordService, abExperimentService, interventionService, cityValidator);
+                visitedService, abExperimentService, interventionService, cityValidator);
         lenient().when(interventionService.activeNow()).thenReturn(List.of());
         // 闸门 = 归一化 + 校验：默认恒等放行（"上海"→"上海"），非法/归一化场景在各自用例里覆盖
         lenient().when(cityValidator.canonicalCity(anyString()))

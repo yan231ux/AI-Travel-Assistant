@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { message } from "ant-design-vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import { POPULAR_CITIES } from "../constants/cities";
 import {
@@ -21,6 +21,7 @@ import type { PostPayload, PostSpotRef, RecommendationItem } from "../types";
  */
 const props = defineProps<{ id?: string }>();
 const router = useRouter();
+const route = useRoute();
 
 const editingId = ref<number | null>(props.id ? Number(props.id) : null);
 const loading = ref(true);
@@ -172,6 +173,12 @@ async function save() {
 
 async function loadForEdit() {
   if (editingId.value == null) {
+    // 确认去过 → 发帖引导带 ?city= 预填城市
+    const qCity = route.query.city;
+    if (typeof qCity === "string" && qCity.trim()) {
+      city.value = qCity.trim();
+      void loadSpotCandidates();
+    }
     loading.value = false;
     return;
   }

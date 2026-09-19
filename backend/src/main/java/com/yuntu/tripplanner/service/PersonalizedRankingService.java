@@ -46,12 +46,8 @@ import java.util.Set;
 @Service
 public class PersonalizedRankingService {
 
-    /** 每次最多读取多少条最近行程用于「已体验」判断 */
-    private static final int RECENT_LIMIT = 5;
-
     /** 总说明条数上限（防撑爆生成提示词） */
     private static final int MAX_NOTES_TOTAL = 10;
-
     /** 每桶正向匹配说明上限 */
     private static final int MAX_POSITIVE_NOTES_PER_BUCKET = 6;
 
@@ -63,12 +59,12 @@ public class PersonalizedRankingService {
     static final double SINK_RADIUS_KM = 45.0;
 
     private final UserProfileService userProfileService;
-    private final TripRecordService tripRecordService;
+    private final VisitedService visitedService;
 
     public PersonalizedRankingService(UserProfileService userProfileService,
-                                      TripRecordService tripRecordService) {
+                                      VisitedService visitedService) {
         this.userProfileService = userProfileService;
-        this.tripRecordService = tripRecordService;
+        this.visitedService = visitedService;
     }
 
     /**
@@ -243,31 +239,9 @@ public class PersonalizedRankingService {
         return true;
     }
 
-    /** 最近行程中出现过的景点名集合（新颖性判断；失败降级为空集） */
+    /** 确认去过的景点名集合（新颖性判断；统一走 VisitedService，失败降级为空集） */
     private Set<String> loadVisitedSpotNames(String userId) {
-        Set<String> names = new HashSet<>();
-        try {
-            List<TripRecord> recent = tripRecordService.getRecentTrips(userId, RECENT_LIMIT);
-            for (TripRecord r : recent) {
-                Itinerary it = r.getItinerary();
-                if (it == null || it.getDays() == null) {
-                    continue;
-                }
-                for (DayPlan d : it.getDays()) {
-                    if (d.getSpots() == null) {
-                        continue;
-                    }
-                    for (SpotItem s : d.getSpots()) {
-                        if (s.getName() != null && !s.getName().isBlank()) {
-                            names.add(s.getName());
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("读取历史行程景点失败（新颖性降级为空）: {}", e.getMessage());
-        }
-        return names;
+        return visitedService.confirmedVisitedSpotNames(userId);
     }
 
     /**

@@ -127,17 +127,21 @@ public class UserProfileService {
     private final UserBehaviorRepository userBehaviorRepository;
     /** 帖子标签读取（阶段三：POST 行为 → 画像标签，惰性补齐，与内容推荐同词表） */
     private final PostTagService postTagService;
+    /** 「去过」唯一数据源（确认去过功能：城市/景点口径统一） */
+    private final VisitedService visitedService;
 
     public UserProfileService(TripRecordService tripRecordService,
                               UserProfileRepository userProfileRepository,
                               UserPreferenceRepository userPreferenceRepository,
                               UserBehaviorRepository userBehaviorRepository,
-                              PostTagService postTagService) {
+                              PostTagService postTagService,
+                              VisitedService visitedService) {
         this.tripRecordService = tripRecordService;
         this.userProfileRepository = userProfileRepository;
         this.userPreferenceRepository = userPreferenceRepository;
         this.userBehaviorRepository = userBehaviorRepository;
         this.postTagService = postTagService;
+        this.visitedService = visitedService;
     }
 
     /* ================= 画像读取（幂等惰性构建） ================= */
@@ -453,15 +457,8 @@ public class UserProfileService {
             List<TripSummaryItem> trips = tripRecordService.getTripList(userId).getItems();
             summary.setTripCount(trips.size());
             summary.setProfileVersion(getProfileVersion(userId));
-            // 去重目的地（保序：按行程时间倒序里首次出现顺序 = 最近去过的城市在前）
-            List<String> cities = new ArrayList<>();
-            for (TripSummaryItem t : trips) {
-                String dest = t.getDestination();
-                if (dest != null && !dest.isBlank() && !cities.contains(dest)) {
-                    cities.add(dest);
-                }
-            }
-            summary.setVisitedCities(cities);
+            // 去重目的地（确认去过功能：只认 visited_confirmed=1 的行程，规划未确认不算去过）
+            summary.setVisitedCities(new ArrayList<>(visitedService.confirmedVisitedCities(userId)));
             if (!trips.isEmpty() && trips.get(0).getCreatedAt() != null) {
                 summary.setLatestTripAt(trips.get(0).getCreatedAt());
             }
@@ -723,7 +720,9 @@ public class UserProfileService {
         int budgetN = 0;
 
         for (TripRecord r : recent) {
-            if (r.getDestination() != null && !r.getDestination().isBlank()
+            // 确认去过功能：主档 visited_cities 只记确认去过的城市（与实时摘要同口径）
+            if (Boolean.TRUE.equals(r.getVisitedConfirmed())
+                    && r.getDestination() != null && !r.getDestination().isBlank()
                     && !cities.contains(r.getDestination())) {
                 cities.add(r.getDestination());
             }
@@ -825,7 +824,8 @@ public class UserProfileService {
 
         StringBuilder sb = new StringBuilder();
         sb.append("该用户的历史旅行与偏好（只供参考，未列出的经历不得编造）：\n");
-        String visited = profile.getVisitedCities();
+        // 确认去过功能：只注入确认去过的城市（与首页"去过"口径一致，不把规划当成经历）
+        String visited = join(new ArrayList<>(visitedService.confirmedVisitedCities(userId)));
         if (isNotBlank(visited)) {
             sb.append("- 曾去过：").append(visited).append("\n");
         }

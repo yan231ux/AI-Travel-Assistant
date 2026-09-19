@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,13 +38,13 @@ class PersonalizedRankingServiceTest {
     @Mock
     private UserProfileService userProfileService;
     @Mock
-    private TripRecordService tripRecordService;
+    private VisitedService visitedService;
 
     private PersonalizedRankingService service;
 
     @BeforeEach
     void setUp() {
-        service = new PersonalizedRankingService(userProfileService, tripRecordService);
+        service = new PersonalizedRankingService(userProfileService, visitedService);
     }
 
     /** 构造候选 POI（name + 高德 type 两键即可，与 AmapClient 返回字段一致） */
@@ -106,7 +107,7 @@ class PersonalizedRankingServiceTest {
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("历史文化", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE),
                 stylePref("自然风景", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = dataWithSpots(
                 poi("现代购物中心", "购物服务;商场"),
@@ -133,7 +134,7 @@ class PersonalizedRankingServiceTest {
         // 用户对"购物"类点过不感兴趣 → FEEDBACK 行 w0.2（跌破 0.45 阈值）→ 候选沉底
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("购物", 0.20, 0.6, UserPreference.SOURCE_FEEDBACK)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = dataWithSpots(
                 poi("故宫博物院", "科教文化;博物馆"),
@@ -156,7 +157,7 @@ class PersonalizedRankingServiceTest {
         // 用户点名要去的景点不受"近期不感兴趣"标签影响（豁免硬约束）
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("购物", 0.20, 0.6, UserPreference.SOURCE_FEEDBACK)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = dataWithSpots(
                 poi("星光购物中心", "购物服务;商场"),
@@ -174,20 +175,10 @@ class PersonalizedRankingServiceTest {
 
     @Test
     void visitedSpot_getsNewPlaceTip() {
-        // 上次行程已去过故宫 → 说明中提示"已体验过，建议同类新地点"
+        // 上次确认去过的行程已含故宫 → 说明中提示"已体验过，建议同类新地点"
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("历史文化", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
-
-        TripRecord visited = new TripRecord();
-        visited.setTripId("t-old");
-        Itinerary it = new Itinerary();
-        DayPlan day = new DayPlan();
-        SpotItem spot = new SpotItem();
-        spot.setName("故宫博物院");
-        day.setSpots(List.of(spot));
-        it.setDays(List.of(day));
-        visited.setItinerary(it);
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of(visited));
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of("故宫博物院"));
 
         CollectedData cd = dataWithSpots(
                 poi("故宫博物院", "科教文化;博物馆"),
@@ -205,7 +196,7 @@ class PersonalizedRankingServiceTest {
         // 餐厅桶按口味（food）域排序：火锅偏好 → 老北京火锅置顶
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 foodPref("火锅", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = new CollectedData();
         cd.getPoiResults().put("餐厅", List.of(
@@ -227,7 +218,7 @@ class PersonalizedRankingServiceTest {
         // 两家餐厅口味均无匹配、基础分相同：近的一家不受罚，远的一家（约 70km）应被罚到沉底。
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("历史文化", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = new CollectedData();
         // 景点群集中市中心（锚点 = 它们的中位中心）
@@ -272,7 +263,7 @@ class PersonalizedRankingServiceTest {
     void singleCandidate_skipsRanking() {
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("历史文化", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = dataWithSpots(poi("故宫博物院", "科教文化;博物馆"));
         assertFalse(service.rankAndFilter("user-1", null, cd), "仅 1 个候选无排序意义");
@@ -284,7 +275,7 @@ class PersonalizedRankingServiceTest {
         // 两个无匹配候选：同分 → 保持高德原序（稳定排序）
         when(userProfileService.listPreferences("user-1")).thenReturn(List.of(
                 stylePref("历史文化", 0.9, 0.95, UserPreference.SOURCE_QUESTIONNAIRE)));
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(Set.of());
 
         CollectedData cd = dataWithSpots(
                 poi("甲公园", "风景名胜;公园"),

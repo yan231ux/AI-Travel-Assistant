@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -192,6 +193,85 @@ public class TripRecordService {
         auditService.record(userId, AuditLog.CAT_TRIP, "trip_deleted",
                 "trip", tripId, null);
     }
+
+    /**
+     * 确认去过（确认去过功能）：校验归属 + 行程存在；未来行程拦截；置 visited_confirmed=1（幂等）。
+     *
+     * @return 行程目的地城市（供前端祝福语插值）
+     * @throws IllegalArgumentException 行程不存在 / 行程还未出发（未来行程不可确认）
+     */
+    @Transactional
+    public String confirmVisited(String tripId, String userId) {
+        TripRecord record = loadOwned(tripId, userId);
+        if (record == null) {
+            throw new IllegalArgumentException("行程不存在");
+        }
+        if (isFutureTrip(record)) {
+            throw new IllegalArgumentException("行程还未出发，无法确认去过");
+        }
+        if (!Boolean.TRUE.equals(record.getVisitedConfirmed())) {
+            TripRecord update = new TripRecord();
+            update.setId(record.getId());
+            update.setVisitedConfirmed(true);
+            tripRecordRepository.updateById(update);
+            auditService.record(userId, AuditLog.CAT_TRIP, "trip_visited_confirmed",
+                    "trip", tripId, null);
+        }
+        return record.getDestination();
+    }
+
+    /** 撤销"确认去过"（幂等：非本人/不存在/未确认均无副作用） */
+    @Transactional
+    public void unconfirmVisited(String tripId, String userId) {
+        TripRecord record = loadOwned(tripId, userId);
+        if (record == null || !Boolean.TRUE.equals(record.getVisitedConfirmed())) {
+            return;
+        }
+        TripRecord update = new TripRecord();
+        update.setId(record.getId());
+        update.setVisitedConfirmed(false);
+        tripRecordRepository.updateById(update);
+        auditService.record(userId, AuditLog.CAT_TRIP, "trip_visited_unconfirmed",
+                "trip", tripId, null);
+    }
+
+    private TripRecord loadOwned(String tripId, String userId) {
+        if (tripId == null || tripId.isBlank() || userId == null || userId.isBlank()) {
+            return null;
+        }
+        return tripRecordRepository.selectOne(new LambdaQueryWrapper<TripRecord>()
+                .eq(TripRecord::getTripId, tripId)
+                .eq(TripRecord::getUserId, userId));
+    }
+
+    /** 行程最后一天是否在将来（未来行程不可确认去过；无日期信息不拦截） */
+    private boolean isFutureTrip(TripRecord record) {
+        LocalDate max = maxTripDate(record);
+        return max != null && max.isAfter(LocalDate.now());
+    }
+
+    /** 行程 JSON 各天日期最大值；无有效日期返回 null */
+    private LocalDate maxTripDate(TripRecord record) {
+        Itinerary it = record.getItinerary();
+        if (it == null || it.getDays() == null) {
+            return null;
+        }
+        LocalDate max = null;
+        for (DayPlan d : it.getDays()) {
+            if (d == null || d.getDate() == null || d.getDate().isBlank()) {
+                continue;
+            }
+            try {
+                LocalDate day = LocalDate.parse(d.getDate().trim());
+                if (max == null || day.isAfter(max)) {
+                    max = day;
+                }
+            } catch (Exception ignored) {
+                // 非法日期忽略
+            }
+        }
+        return max;
+    }
     
     /**
      * 转换为摘要项
@@ -202,11 +282,14 @@ public class TripRecordService {
         item.setDestination(record.getDestination());
         item.setCreatedAt(record.getCreatedAt());
         item.setUpdatedAt(record.getUpdatedAt());
-        
+        item.setConfirmedVisited(Boolean.TRUE.equals(record.getVisitedConfirmed()));
+
         if (record.getItinerary() != null) {
             item.setSummary(record.getItinerary().getSummary());
         }
-        
+        LocalDate maxDate = maxTripDate(record);
+        item.setFuture(maxDate != null && maxDate.isAfter(LocalDate.now()));
+
         return item;
     }
     

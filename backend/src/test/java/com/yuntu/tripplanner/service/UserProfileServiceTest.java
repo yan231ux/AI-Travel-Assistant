@@ -60,6 +60,8 @@ class UserProfileServiceTest {
     private UserBehaviorRepository userBehaviorRepository;
     @Mock
     private PostTagService postTagService;
+    @Mock
+    private VisitedService visitedService;
 
     private UserProfileService service;
 
@@ -72,7 +74,7 @@ class UserProfileServiceTest {
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), UserBehavior.class);
         service = new UserProfileService(tripRecordService, userProfileRepository,
-                userPreferenceRepository, userBehaviorRepository, postTagService);
+                userPreferenceRepository, userBehaviorRepository, postTagService, visitedService);
     }
 
     private TripRecord trip(String dest, String summary, String hotelLevel, String mealName, double budget) {
@@ -109,10 +111,15 @@ class UserProfileServiceTest {
     @Test
     void historyOnly_firstVisitInfersStructuredProfile() {
         TripRecord beijing = trip("北京", "轻松三日的城市漫游", "舒适型", "老北京火锅", 3000);
+        beijing.setVisitedConfirmed(true);
         TripRecord dali = trip("大理", "洱海边的慢生活", "舒适型", "大理砂锅鱼", 2500);
+        dali.setVisitedConfirmed(true);
         when(tripRecordService.getRecentTrips(anyString(), anyInt()))
                 .thenReturn(List.of(beijing, dali));
         when(userPreferenceRepository.selectList(any())).thenReturn(List.of());
+        // 确认去过功能：buildMemoryText 的"曾去过"只认确认过的城市
+        when(visitedService.confirmedVisitedCities(anyString()))
+                .thenReturn(new java.util.LinkedHashSet<>(List.of("北京", "大理")));
 
         String memory = service.buildMemoryText("user-1", new TripRequest());
 

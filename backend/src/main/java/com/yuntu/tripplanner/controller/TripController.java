@@ -14,6 +14,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -251,6 +252,50 @@ public class TripController {
             response.put("trip_id", tripId);
             
             return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /**
+     * 确认去过（确认去过功能）：把该行程目的地计入"去过"。
+     * 未来行程会被服务端拦截（400，文案可读）。返回城市供前端祝福语插值。
+     */
+    @PostMapping("/{trip_id}/confirm-visited")
+    public ResponseEntity<Map<String, Object>> confirmVisited(@PathVariable("trip_id") String tripId) {
+        try {
+            String city = tripRecordService.confirmVisited(tripId, UserContext.getUserId());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("success", true);
+            body.put("city", city);
+            body.put("suggest_post", true);
+            return ResponseEntity.ok(body);
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("success", false);
+            body.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(body);
+        } catch (Exception e) {
+            log.error("确认去过失败", e);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("success", false);
+            body.put("message", "确认去过失败，请稍后重试");
+            return ResponseEntity.internalServerError().body(body);
+        }
+    }
+
+    /** 撤销"确认去过"（幂等） */
+    @PostMapping("/{trip_id}/unconfirm-visited")
+    public ResponseEntity<Map<String, Object>> unconfirmVisited(@PathVariable("trip_id") String tripId) {
+        try {
+            tripRecordService.unconfirmVisited(tripId, UserContext.getUserId());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("success", true);
+            return ResponseEntity.ok(body);
+        } catch (Exception e) {
+            log.error("撤销确认去过失败", e);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("success", false);
+            body.put("message", "撤销失败，请稍后重试");
+            return ResponseEntity.internalServerError().body(body);
         }
     }
 }

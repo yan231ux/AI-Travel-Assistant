@@ -43,7 +43,7 @@ class SpotServiceTest {
     @Mock
     private SpotFavoriteRepository spotFavoriteRepository;
     @Mock
-    private TripRecordService tripRecordService;
+    private VisitedService visitedService;
     @Mock
     private UserProfileService userProfileService;
     @Mock
@@ -58,7 +58,7 @@ class SpotServiceTest {
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), SpotFavorite.class);
         service = new SpotService(spotRepository, spotFavoriteRepository,
-                tripRecordService, userProfileService, travelEventService);
+                visitedService, userProfileService, travelEventService);
     }
 
     private Spot spot(String spotId) {
@@ -171,7 +171,7 @@ class SpotServiceTest {
         poiOnly.setDataQuality(Spot.QUALITY_POI_ONLY);
         when(spotRepository.selectOne(any())).thenReturn(poiOnly);
         when(spotRepository.selectList(any())).thenReturn(List.of()); // 无同城相关
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(java.util.Set.of());
 
         var detail = service.detail("u1", "spot_上海_无名景点");
 
@@ -190,7 +190,7 @@ class SpotServiceTest {
         when(spotRepository.selectOne(any())).thenReturn(current);
         when(spotRepository.selectList(any())).thenReturn(List.of(otherA, otherB));
         when(spotFavoriteRepository.selectList(any())).thenReturn(List.of());
-        when(tripRecordService.getRecentTrips(anyString(), anyInt())).thenReturn(List.of());
+        when(visitedService.confirmedVisitedSpotNames(anyString())).thenReturn(java.util.Set.of());
         when(userProfileService.listPreferences("u1")).thenReturn(List.of());
 
         var detail = service.detail("u1", "spot_上海_外滩");

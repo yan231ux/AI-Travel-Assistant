@@ -28,6 +28,7 @@ import type {
   ReportPayload,
   SpotDetail,
   SpotFavorite,
+  ConfirmVisitedResponse,
   TripDetailResponse,
   TripListResponse,
   TripRequestPayload,
@@ -277,6 +278,22 @@ export async function getTripDetail(tripId: string): Promise<TripDetailResponse>
 
 export async function deleteTrip(tripId: string): Promise<void> {
   await api.delete(`/trip/${tripId}`);
+}
+
+/** 确认去过（确认去过功能）：未来行程服务端会拦截回 400 */
+export async function confirmVisited(tripId: string): Promise<ConfirmVisitedResponse> {
+  const response = await api.post<ConfirmVisitedResponse>(
+    `/trip/${encodeURIComponent(tripId)}/confirm-visited`
+  );
+  return response.data;
+}
+
+/** 撤销"确认去过"（幂等） */
+export async function unconfirmVisited(tripId: string): Promise<{ success: boolean }> {
+  const response = await api.post<{ success: boolean }>(
+    `/trip/${encodeURIComponent(tripId)}/unconfirm-visited`
+  );
+  return response.data;
 }
 
 export async function fetchWeatherForecast(

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuntu.tripplanner.model.DayPlan;
 import com.yuntu.tripplanner.model.Itinerary;
 import com.yuntu.tripplanner.model.TripRecord;
 import com.yuntu.tripplanner.model.TripSaveRequest;
@@ -171,5 +172,72 @@ class TripRecordServiceTest {
 
         assertThrows(IllegalArgumentException.class, () -> service.saveTrip(req, "user-42"),
                 "行程内容为空应抛参数异常（控制器回 400），而不是 NPE 变成 500");
+    }
+
+    /* ================= 确认去过（确认去过功能） ================= */
+
+    private TripRecord ownedTrip(String tripId, String lastDate, boolean confirmed) {
+        TripRecord r = new TripRecord();
+        r.setId(1L);
+        r.setTripId(tripId);
+        r.setUserId("user-42");
+        r.setDestination("成都");
+        r.setVisitedConfirmed(confirmed);
+        Itinerary it = new Itinerary();
+        DayPlan day = new DayPlan();
+        day.setDate(lastDate);
+        it.setDays(List.of(day));
+        r.setItinerary(it);
+        return r;
+    }
+
+    @Test
+    void confirmVisited_setsFlagAndReturnsDestination() {
+        when(tripRecordRepository.selectOne(any())).thenReturn(ownedTrip("trip-1", "2020-01-01", false));
+
+        String city = service.confirmVisited("trip-1", "user-42");
+
+        assertEquals("成都", city);
+        ArgumentCaptor<TripRecord> captor = ArgumentCaptor.forClass(TripRecord.class);
+        verify(tripRecordRepository).updateById(captor.capture());
+        assertTrue(Boolean.TRUE.equals(captor.getValue().getVisitedConfirmed()), "确认后应置 visited_confirmed=true");
+    }
+
+    @Test
+    void confirmVisited_futureTrip_throws() {
+        when(tripRecordRepository.selectOne(any())).thenReturn(ownedTrip("trip-1", "2099-01-01", false));
+
+        assertThrows(IllegalArgumentException.class, () -> service.confirmVisited("trip-1", "user-42"),
+                "未来行程不可确认去过");
+        verify(tripRecordRepository, never()).updateById(any());
+    }
+
+    @Test
+    void confirmVisited_notFound_throws() {
+        when(tripRecordRepository.selectOne(any())).thenReturn(null);
+
+        assertThrows(IllegalArgumentException.class, () -> service.confirmVisited("trip-1", "user-42"),
+                "行程不存在应报错");
+        verify(tripRecordRepository, never()).updateById(any());
+    }
+
+    @Test
+    void unconfirmVisited_setsFlagFalse() {
+        when(tripRecordRepository.selectOne(any())).thenReturn(ownedTrip("trip-1", "2020-01-01", true));
+
+        service.unconfirmVisited("trip-1", "user-42");
+
+        ArgumentCaptor<TripRecord> captor = ArgumentCaptor.forClass(TripRecord.class);
+        verify(tripRecordRepository).updateById(captor.capture());
+        assertTrue(Boolean.FALSE.equals(captor.getValue().getVisitedConfirmed()), "撤销后应置 visited_confirmed=false");
+    }
+
+    @Test
+    void unconfirmVisited_alreadyUnconfirmed_noop() {
+        when(tripRecordRepository.selectOne(any())).thenReturn(ownedTrip("trip-1", "2020-01-01", false));
+
+        service.unconfirmVisited("trip-1", "user-42");
+
+        verify(tripRecordRepository, never()).updateById(any());
     }
 }

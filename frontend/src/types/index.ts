@@ -148,11 +148,23 @@ export interface TripSummaryItem {
   summary: string;
   created_at?: string | null;
   updated_at?: string | null;
+  /** 是否已确认去过（确认去过功能） */
+  confirmed_visited?: boolean | null;
+  /** 行程最后一天是否在将来（前端禁用"确认去过"） */
+  future?: boolean | null;
 }
 
 export interface TripListResponse {
   total: number;
   items: TripSummaryItem[];
+}
+
+/** 确认去过响应（POST /trip/{id}/confirm-visited） */
+export interface ConfirmVisitedResponse {
+  success: boolean;
+  city?: string | null;
+  suggest_post?: boolean | null;
+  message?: string | null;
 }
 
 export interface TripDetailResponse {
