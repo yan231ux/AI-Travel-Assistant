@@ -60,6 +60,14 @@ async function toggleFollow() {
 onMounted(() => {
   void load();
 });
+
+function openFollows(tab: "following" | "followers") {
+  router.push({
+    name: "user-follows",
+    params: { id: home.value?.user_id },
+    query: { tab },
+  });
+}
 </script>
 
 <template>
@@ -76,8 +84,12 @@ onMounted(() => {
             @{{ home.user_id }}<template v-if="home.created_at"> · {{ home.created_at.slice(0, 10) }} 加入</template>
           </p>
           <div class="uh-card__stats">
-            <div class="uh-stat"><b>{{ home.follower_count }}</b><span>粉丝</span></div>
-            <div class="uh-stat"><b>{{ home.following_count }}</b><span>关注</span></div>
+            <div class="uh-stat uh-stat--link" @click="openFollows('followers')">
+              <b>{{ home.follower_count }}</b><span>粉丝</span>
+            </div>
+            <div class="uh-stat uh-stat--link" @click="openFollows('following')">
+              <b>{{ home.following_count }}</b><span>关注</span>
+            </div>
             <div class="uh-stat"><b>{{ home.post_count }}</b><span>攻略</span></div>
           </div>
         </div>
@@ -176,6 +188,12 @@ onMounted(() => {
 .uh-stat span {
   font-size: 12px;
   color: var(--text-muted);
+}
+.uh-stat--link {
+  cursor: pointer;
+}
+.uh-stat--link:hover b {
+  color: var(--brand-teal);
 }
 .uh-btn {
   border: none;

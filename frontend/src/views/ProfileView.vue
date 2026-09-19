@@ -271,6 +271,24 @@ onMounted(() => {
         <span class="hub__icon">👤</span>
         <span class="hub__text">我的主页</span>
       </button>
+      <button
+        v-if="currentUserId"
+        type="button"
+        class="hub"
+        @click="router.push({ name: 'user-follows', params: { id: currentUserId }, query: { tab: 'following' } })"
+      >
+        <span class="hub__icon">➕</span>
+        <span class="hub__text">我的关注</span>
+      </button>
+      <button
+        v-if="currentUserId"
+        type="button"
+        class="hub"
+        @click="router.push({ name: 'user-follows', params: { id: currentUserId }, query: { tab: 'followers' } })"
+      >
+        <span class="hub__icon">👥</span>
+        <span class="hub__text">我的粉丝</span>
+      </button>
       <button type="button" class="hub" @click="go('dashboard')">
         <span class="hub__icon">🏠</span>
         <span class="hub__text">返回首页</span>

@@ -135,4 +135,56 @@ class FollowServiceTest {
         assertEquals("u1", list.get(0).getId());
         assertEquals("粉丝一号", list.get(0).getNickname());
     }
+
+    @Test
+    void listFollowing_marksAllAsFollowedTrue() {
+        UserFollow row = new UserFollow();
+        row.setUserId("u9");
+        row.setFollowUserId("u2");
+        when(followRepository.selectList(any())).thenReturn(java.util.List.of(row));
+        when(communityUserService.nicknamesOf(any())).thenReturn(java.util.Map.of("u2", "阿明"));
+
+        var list = service.listFollowing("u9", "u9", 10);
+
+        assertEquals(1, list.size());
+        assertEquals("u2", list.get(0).getId());
+        assertTrue(list.get(0).isFollowing());
+    }
+
+    @Test
+    void listFollowers_batchResolvesMutualFlag() {
+        // 第一次 selectList：u9 的粉丝 —— u1 关注了 u9
+        UserFollow followerRow = new UserFollow();
+        followerRow.setUserId("u1");
+        followerRow.setFollowUserId("u9");
+        // 第二次 selectList：viewer(u9) 关注了哪些粉丝 —— u9 关注了 u1（互关）
+        UserFollow mutualRow = new UserFollow();
+        mutualRow.setUserId("u9");
+        mutualRow.setFollowUserId("u1");
+        when(followRepository.selectList(any()))
+                .thenReturn(java.util.List.of(followerRow), java.util.List.of(mutualRow));
+        when(communityUserService.nicknamesOf(any())).thenReturn(java.util.Map.of("u1", "粉丝一号"));
+
+        var list = service.listFollowers("u9", "u9", 10);
+
+        assertEquals(1, list.size());
+        assertEquals("u1", list.get(0).getId());
+        assertTrue(list.get(0).isFollowing());
+    }
+
+    @Test
+    void listFollowers_nonMutualFlagFalse() {
+        UserFollow followerRow = new UserFollow();
+        followerRow.setUserId("u1");
+        followerRow.setFollowUserId("u9");
+        // 第二次查询：viewer 没有关注 u1 → 返回空
+        when(followRepository.selectList(any()))
+                .thenReturn(java.util.List.of(followerRow), java.util.List.of());
+        when(communityUserService.nicknamesOf(any())).thenReturn(java.util.Map.of("u1", "粉丝一号"));
+
+        var list = service.listFollowers("u9", "u9", 10);
+
+        assertEquals(1, list.size());
+        assertFalse(list.get(0).isFollowing());
+    }
 }

@@ -3,6 +3,7 @@ package com.yuntu.tripplanner.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yuntu.tripplanner.exception.ForbiddenException;
 import com.yuntu.tripplanner.model.AuditLog;
+import com.yuntu.tripplanner.model.FollowUserVO;
 import com.yuntu.tripplanner.model.PostAuthor;
 import com.yuntu.tripplanner.model.UserFollow;
 import com.yuntu.tripplanner.repository.UserFollowRepository;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -104,18 +106,64 @@ public class FollowService {
         return listAuthors(null, userId, limit);
     }
 
+    /**
+     * 查看某用户的「关注列表」（viewer 视角，following 表示「viewer 是否也关注了这些人」）。
+     *
+     * <p>返回的是 targetUserId 关注的人；following 字段统一表示 viewer 对这些人的关注状态，
+     * 由一次 IN 反查批量填充（与粉丝列表语义一致，便于前端用同一个按钮逻辑做关注/取关）。
+     * 当 viewer == target（看自己的关注）时 following 恒为 true。
+     */
+    public List<FollowUserVO> listFollowing(String viewerId, String targetUserId, int limit) {
+        List<UserFollow> rows = queryRows(targetUserId, null, limit);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        List<String> userIds = rows.stream()
+                .map(UserFollow::getFollowUserId).collect(Collectors.toList());
+        Map<String, String> nicknames = communityUserService.nicknamesOf(userIds);
+        Set<String> viewerFollowed = viewerFollowedSet(viewerId, userIds);
+        return userIds.stream()
+                .map(id -> new FollowUserVO(id, nicknames.getOrDefault(id, id),
+                        viewerFollowed.contains(id)))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 查看某用户的「粉丝列表」（viewer 视角，批量反查互关状态，避免 N+1）。
+     *
+     * <p>返回的是关注了 targetUserId 的人；following 字段表示「viewer 是否也关注了这位粉丝」
+     * （互关标识），由一次 IN 反查批量填充。
+     */
+    public List<FollowUserVO> listFollowers(String viewerId, String targetUserId, int limit) {
+        List<UserFollow> rows = queryRows(null, targetUserId, limit);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        List<String> userIds = rows.stream()
+                .map(UserFollow::getUserId).collect(Collectors.toList());
+        Map<String, String> nicknames = communityUserService.nicknamesOf(userIds);
+        // 批量反查 viewer 关注了哪些粉丝（互关标识），一次 IN 查询
+        Set<String> viewerFollowed = viewerFollowedSet(viewerId, userIds);
+        return userIds.stream()
+                .map(id -> new FollowUserVO(id, nicknames.getOrDefault(id, id),
+                        viewerFollowed.contains(id)))
+                .collect(Collectors.toList());
+    }
+
+    /** 批量反查 viewer 已关注的 userId 集合（避免前端逐条查状态产生 N+1） */
+    private Set<String> viewerFollowedSet(String viewerId, List<String> userIds) {
+        if (viewerId == null || viewerId.isBlank() || userIds.isEmpty()) {
+            return Set.of();
+        }
+        List<UserFollow> mine = followRepository.selectList(new LambdaQueryWrapper<UserFollow>()
+                .eq(UserFollow::getUserId, viewerId)
+                .in(UserFollow::getFollowUserId, userIds));
+        return mine.stream().map(UserFollow::getFollowUserId).collect(Collectors.toSet());
+    }
+
     /** 批量昵称解析后的关注/粉丝列表（避免 N+1） */
     private List<PostAuthor> listAuthors(String byUser, String targetUser, int limit) {
-        LambdaQueryWrapper<UserFollow> w = new LambdaQueryWrapper<UserFollow>()
-                .orderByDesc(UserFollow::getCreatedAt);
-        if (byUser != null) {
-            w.eq(UserFollow::getUserId, byUser);
-        }
-        if (targetUser != null) {
-            w.eq(UserFollow::getFollowUserId, targetUser);
-        }
-        List<UserFollow> rows = followRepository.selectList(w.last(
-                "LIMIT " + Math.max(1, Math.min(limit <= 0 ? 50 : limit, 100))));
+        List<UserFollow> rows = queryRows(byUser, targetUser, limit);
         if (rows.isEmpty()) {
             return List.of();
         }
@@ -129,6 +177,20 @@ public class FollowService {
             a.setNickname(nicknames.getOrDefault(id, id));
             return a;
         }).collect(Collectors.toList());
+    }
+
+    /** 关注/粉丝关系行查询（按时间倒序，分页上限 100） */
+    private List<UserFollow> queryRows(String byUser, String targetUser, int limit) {
+        LambdaQueryWrapper<UserFollow> w = new LambdaQueryWrapper<UserFollow>()
+                .orderByDesc(UserFollow::getCreatedAt);
+        if (byUser != null) {
+            w.eq(UserFollow::getUserId, byUser);
+        }
+        if (targetUser != null) {
+            w.eq(UserFollow::getFollowUserId, targetUser);
+        }
+        return followRepository.selectList(w.last(
+                "LIMIT " + Math.max(1, Math.min(limit <= 0 ? 50 : limit, 100))));
     }
 
     private void validate(String userId, String targetId) {

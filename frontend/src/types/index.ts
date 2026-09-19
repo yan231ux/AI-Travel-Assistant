@@ -725,3 +725,11 @@ export interface FollowResponse {
   following?: boolean | null;
   created?: boolean | null;
 }
+
+/** 关注/粉丝列表条目（GET /users/{id}/following|followers items） */
+export interface FollowUserVO {
+  id: string;
+  nickname?: string | null;
+  /** viewer 是否已关注该用户（粉丝列表里表示是否互关） */
+  following: boolean;
+}

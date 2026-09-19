@@ -36,6 +36,7 @@ import type {
   User,
   UserHome,
   WeatherForecastResponse,
+  FollowUserVO,
 } from "../types";
 
 export const API_BASE_URL =
@@ -477,6 +478,24 @@ export async function getUserHome(userId: string): Promise<UserHome> {
     `/users/${encodeURIComponent(userId)}/home`
   );
   return response.data.data;
+}
+
+/** 关注列表（查看某用户关注了谁；following 恒为 true） */
+export async function getFollowing(userId: string, limit = 50): Promise<FollowUserVO[]> {
+  const response = await api.get<{ success: boolean; items: FollowUserVO[] }>(
+    `/users/${encodeURIComponent(userId)}/following`,
+    { params: { limit } }
+  );
+  return response.data.items ?? [];
+}
+
+/** 粉丝列表（查看某用户的粉丝；following 表示我是否也关注了对方，用于互关标识） */
+export async function getFollowers(userId: string, limit = 50): Promise<FollowUserVO[]> {
+  const response = await api.get<{ success: boolean; items: FollowUserVO[] }>(
+    `/users/${encodeURIComponent(userId)}/followers`,
+    { params: { limit } }
+  );
+  return response.data.items ?? [];
 }
 
 /* ---------- 认证 API ---------- */

@@ -58,6 +58,12 @@ const router = createRouter({
           props: true,
         },
         {
+          path: "users/:id/follows",
+          name: "user-follows",
+          component: () => import("../views/FollowListView.vue"),
+          props: true,
+        },
+        {
           path: "community/posts/:id",
           name: "post-detail",
           component: () => import("../views/PostDetail.vue"),

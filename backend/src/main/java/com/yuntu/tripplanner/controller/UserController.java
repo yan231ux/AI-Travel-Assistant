@@ -1,5 +1,6 @@
 package com.yuntu.tripplanner.controller;
 
+import com.yuntu.tripplanner.model.FollowUserVO;
 import com.yuntu.tripplanner.model.PostAuthor;
 import com.yuntu.tripplanner.model.UserHome;
 import com.yuntu.tripplanner.security.UserContext;
@@ -86,6 +87,40 @@ public class UserController {
     public ResponseEntity<Map<String, Object>> myFollowing(
             @RequestParam(defaultValue = "50") int limit) {
         List<PostAuthor> list = followService.following(UserContext.getUserId(), limit);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", true);
+        body.put("items", list);
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 查看某用户（含自己）的「关注列表」。
+     *
+     * <p>公开社交图谱：任何登录用户都能查看他人关注（与用户主页一致）；following 字段恒为 true。
+     */
+    @GetMapping("/{userId}/following")
+    public ResponseEntity<Map<String, Object>> userFollowing(
+            @PathVariable String userId,
+            @RequestParam(defaultValue = "50") int limit) {
+        List<FollowUserVO> list = followService.listFollowing(
+                UserContext.getUserId(), userId, limit);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", true);
+        body.put("items", list);
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 查看某用户（含自己）的「粉丝列表」。
+     *
+     * <p>following 字段表示「当前登录者是否也关注了这位粉丝」（互关标识）。
+     */
+    @GetMapping("/{userId}/followers")
+    public ResponseEntity<Map<String, Object>> userFollowers(
+            @PathVariable String userId,
+            @RequestParam(defaultValue = "50") int limit) {
+        List<FollowUserVO> list = followService.listFollowers(
+                UserContext.getUserId(), userId, limit);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("success", true);
         body.put("items", list);
