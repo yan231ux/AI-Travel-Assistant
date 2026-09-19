@@ -129,6 +129,26 @@ class RecommendationFeedServiceTest {
         assertFalse(feed.getItems().get(1).getRecommendReason().contains("匹配你的偏好"));
     }
 
+    /** 列表卡片：无真实简介 → description=null（前端隐藏该行），免责声明只留给详情页。
+     *  实测深圳等未覆盖攻略的城市，每张卡都显示同一句兜底文案，观感像数据坏了。 */
+    @Test
+    void feedItem_withoutRealDescription_isNull_notFallbackText() {
+        when(spotRepository.selectCount(any())).thenReturn(50L);
+        Spot withDesc = spot("外滩", "风景名胜;风景名胜", Spot.QUALITY_GUIDE_MATCHED);
+        withDesc.setDescription("外滩是上海近代城市历史的起点。");
+        Spot noDesc = spot("人才公园", "公园;公园", Spot.QUALITY_POI_ONLY);
+        noDesc.setDescription(null);
+        when(spotRepository.selectList(any())).thenReturn(List.of(withDesc, noDesc));
+        when(userProfileService.listPreferences("u1")).thenReturn(List.of());
+
+        var feed = service.feed("u1", "上海", 1, 12, "popular");
+
+        assertEquals("外滩是上海近代城市历史的起点。", feed.getItems().get(0).getDescription(),
+                "真实简介原样展示");
+        assertNull(feed.getItems().get(1).getDescription(),
+                "无简介应返回 null 让前端隐藏整行，不能每张卡都刷同一段兜底免责文案");
+    }
+
     /** 有 travel_style 画像：命中偏好景点 personalized=true 且排最前 */
     @Test
     void withStyleProfile_personalizedRanking_hitPrefFirst() {

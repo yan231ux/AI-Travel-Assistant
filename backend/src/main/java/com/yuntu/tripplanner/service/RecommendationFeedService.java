@@ -5,7 +5,6 @@ import com.yuntu.tripplanner.client.AmapClient;
 import com.yuntu.tripplanner.common.AbBucket;
 import com.yuntu.tripplanner.common.SpotNameUtil;
 import com.yuntu.tripplanner.common.SpotTagMapper;
-import com.yuntu.tripplanner.common.SpotText;
 import com.yuntu.tripplanner.common.SpotVisibility;
 import com.yuntu.tripplanner.model.*;
 import com.yuntu.tripplanner.repository.SpotFavoriteRepository;
@@ -733,7 +732,12 @@ public class RecommendationFeedService {
         item.setCity(spot.getCity());
         item.setCategory(spot.getCategory());
         item.setImageUrl(spot.getImageUrl());
-        item.setDescription(SpotText.safeDescription(spot));
+        // 列表卡片：无真实简介就不展示（前端 v-if 隐藏该行）。
+        // 之前用 safeDescription 兜底，实测深圳等未覆盖攻略的城市"全城每张卡都显示
+        // 同一句（该景点简介暂未匹配到真实资料…）"，观感像数据坏了；免责声明留给
+        // 详情页（SpotService）才说得通——用户点进来时解释一句是诚实，列表上刷屏是噪音。
+        item.setDescription(spot.getDescription() != null && !spot.getDescription().isBlank()
+                ? spot.getDescription() : null);
         // 标签与评分器同源（PersonalizedScoreCalculator 内部用同一映射）：type+名称 → 旅行风格标签
         item.setTags(SpotTagMapper.styleTags(spot.getCategory(), spot.getName()));
         item.setSource(spot.getSource());
