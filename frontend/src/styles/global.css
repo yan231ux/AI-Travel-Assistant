@@ -79,7 +79,11 @@ img {
   background: rgba(23, 33, 31, 0.3);
 }
 
-/* 尊重系统减弱动效设置（方案 §7） */
+/* 尊重系统减弱动效设置（方案 §7）。
+   ⚠️ antd 反馈弹层（message/notification/modal 等）的自动关闭依赖进出场动画事件；
+   若它们的动画时长也被压到 0，动画事件与内部 motion 状态机会竞争，历史上出现过
+   "登录成功提示不自动消失"的卡死表现（dev 热更新后更易触发）。因此弹层类豁免本覆盖，
+   保留原动画时长——弹层动画只是一次 0.2~0.3s 的淡入淡出，不影响"减弱动效"的本意。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -87,6 +91,20 @@ img {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .ant-message,
+  .ant-message *,
+  .ant-notification,
+  .ant-notification *,
+  .ant-modal,
+  .ant-modal *,
+  .ant-popover,
+  .ant-popover *,
+  .ant-tooltip,
+  .ant-tooltip * {
+    animation-duration: 0.25s !important;
+    transition-duration: 0.15s !important;
   }
 }
 
