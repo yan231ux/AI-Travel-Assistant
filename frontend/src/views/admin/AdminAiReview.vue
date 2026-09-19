@@ -251,7 +251,9 @@ onMounted(load);
             <span v-if="t.rule_hit_count > 0" class="ad-badge ad-badge--warn">
               规则命中 {{ t.rule_hit_count }}
             </span>
-            <span v-if="t.decision" class="ad-badge ad-badge--info">
+            <!-- 结论徽章只在「真有人工决策」时显示：自动放行由 system:ai 写入 decision，
+                 但其结论已由状态徽章「已自动放行」表达，此处若再写死「人工」会与状态打架。 -->
+            <span v-if="t.decision && t.decision_by !== 'system:ai'" class="ad-badge ad-badge--info">
               人工{{ t.decision === "APPROVE" ? "通过" : "拒绝" }}
             </span>
           </p>
