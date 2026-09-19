@@ -287,46 +287,58 @@ function buildDayTimeline(day: DayPlan): DayTimeline {
     .sort((a, b) => (parseClock(a.start_time) ?? 0) - (parseClock(b.start_time) ?? 0));
   const untimed = spots.filter((s) => parseClock(s.start_time) == null);
 
-  // —— 交通锚定：to_place 命中景点 → 放在该景点前；from_place 命中 → 紧随其后；都未命中 → 衔接段
-  const anchors = timed.map((spot) => ({ spot, pre: [] as TransportItem[], post: [] as TransportItem[] }));
+  // —— 交通锚定：每条段就近归位（起点优先）：from 命中活动 → 紧随其后；to 命中 → 排其前。
+  //    活动 = 有时间的景点 + 餐。此前只认景点，导致"酒店→午餐 / 晚餐→酒店"这类以餐厅为端点的段
+  //    两端都不是景点，被丢进衔接段沉底（实测三亚 D2："酒店→人人捞"排到晚餐之后，时间倒流）。
+  type Anchor = {
+    minute: number;
+    kind: "spot" | "meal";
+    pre: TransportItem[];
+    post: TransportItem[];
+    spot?: SpotItem;
+    meal?: MealItem;
+  };
+  const anchors: Anchor[] = timed.map((s) => ({
+    minute: parseClock(s.start_time) ?? 0,
+    kind: "spot",
+    pre: [],
+    post: [],
+    spot: s,
+  }));
+  for (const m of meals.filter((m) => parseClock(m.start_time) != null)) {
+    anchors.push({ minute: parseClock(m.start_time) ?? 0, kind: "meal", pre: [], post: [], meal: m });
+  }
+  const anchorFor = (name?: string | null): Anchor | undefined => {
+    if (!name) return undefined;
+    return anchors.find((a) => relateName(name, a.spot?.name ?? a.meal?.name ?? ""));
+  };
+  const hotelName = day.hotel?.name;
+  const headTransports: TransportItem[] = [];
+  const tailTransports: TransportItem[] = [];
   const looseTransports: TransportItem[] = [];
   for (const t of transports) {
-    const toSpot = anchors.find((en) => relateName(t.to_place, en.spot.name));
-    if (toSpot) {
-      toSpot.pre.push(t);
+    const fromA = anchorFor(t.from_place);
+    if (fromA) {
+      fromA.post.push(t);
       continue;
     }
-    const fromSpot = anchors.find((en) => relateName(t.from_place, en.spot.name));
-    if (fromSpot) {
-      fromSpot.post.push(t);
+    const toA = anchorFor(t.to_place);
+    if (toA) {
+      toA.pre.push(t);
+      continue;
+    }
+    if (hotelName && relateName(t.from_place, hotelName)) {
+      headTransports.push(t);
+      continue;
+    }
+    if (hotelName && relateName(t.to_place, hotelName)) {
+      tailTransports.push(t);
       continue;
     }
     looseTransports.push(t);
   }
-
-  /**
-   * 餐饮与景点按分钟交错排序（OPTIMIZATION_TODO P0①）：
-   * 有 start_time 的餐饮与景点合并成同一时间线，按分钟稳定排序输出 ——
-   * 示例 09:00景点 → 12:00午餐 → 14:00景点 → 18:00晚餐 得以真实交错；
-   * 无时间的餐饮不猜测，按餐次顺序降级排在"有时间的条目"之后（旧行程兼容）。
-   */
-  interface TimedNode {
-    minute: number;
-    kind: "spot" | "meal";
-    anchor?: { spot: SpotItem; pre: TransportItem[]; post: TransportItem[] };
-    meal?: MealItem;
-  }
-  const spotNodes: TimedNode[] = anchors.map((a) => ({
-    minute: parseClock(a.spot.start_time) ?? 0,
-    kind: "spot" as const,
-    anchor: a,
-  }));
-  const timedMeals: MealItem[] = meals.filter((m) => parseClock(m.start_time) != null);
-  const mealNodes: TimedNode[] = timedMeals
-    .sort((a, b) => (parseClock(a.start_time) ?? 0) - (parseClock(b.start_time) ?? 0))
-    .map((m) => ({ minute: parseClock(m.start_time) ?? 0, kind: "meal" as const, meal: m }));
-  // 合并后按分钟稳定排序（同分钟景点在前，保持原顺序；现代 JS sort 稳定）
-  const merged: TimedNode[] = [...spotNodes, ...mealNodes].sort((a, b) => a.minute - b.minute);
+  // 景点 + 餐按分钟交错排序（同分钟景点在前；现代 JS sort 稳定）
+  anchors.sort((a, b) => a.minute - b.minute || (a.kind === "spot" ? -1 : 1));
   const untimedMeals: MealItem[] = meals
     .filter((m) => parseClock(m.start_time) == null)
     .sort((a, b) => mealOrder(a.meal_type) - mealOrder(b.meal_type));
@@ -344,30 +356,46 @@ function buildDayTimeline(day: DayPlan): DayTimeline {
     tone: sourceTone(m.source),
     personalNote: m.personal_note ?? null,
   });
-  for (const node of merged) {
-    if (node.kind === "meal") {
-      if (node.meal) timeline.push(mealEntry(node.meal));
-      continue;
-    }
-    const a = node.anchor!;
+  const transportEntry = (t: TransportItem): TimelineEntry => ({
+    kind: "transport",
+    tag: t.mode || "交通",
+    title: transportText(t),
+    timeLabel: "",
+    sub: null,
+    desc: null,
+    fee: fee(t.estimated_cost),
+    source: t.source ?? null,
+    tone: sourceTone(t.source),
+    personalNote: null,
+  });
+  // 酒店出发段（排最前）
+  for (const t of headTransports) {
+    timeline.push(transportEntry(t));
+  }
+  // 景点 + 餐按分钟交错，各自前后挂交通段
+  for (const a of anchors) {
     for (const t of a.pre) {
-      timeline.push({ kind: "transport", tag: t.mode || "交通", title: transportText(t), timeLabel: "", sub: null, desc: null, fee: fee(t.estimated_cost), source: t.source ?? null, tone: sourceTone(t.source), personalNote: null });
+      timeline.push(transportEntry(t));
     }
-    const sp = a.spot;
-    timeline.push({
-      kind: "spot",
-      tag: "景点",
-      title: sp.name,
-      timeLabel: spotTimeLabel(sp),
-      sub: sp.address || sp.location || null,
-      desc: sp.description || null,
-      fee: fee(sp.estimated_cost),
-      source: sp.source ?? null,
-      tone: sourceTone(sp.source),
-      personalNote: sp.personal_note ?? null,
-    });
+    if (a.kind === "meal") {
+      timeline.push(mealEntry(a.meal!));
+    } else {
+      const sp = a.spot!;
+      timeline.push({
+        kind: "spot",
+        tag: "景点",
+        title: sp.name,
+        timeLabel: spotTimeLabel(sp),
+        sub: sp.address || sp.location || null,
+        desc: sp.description || null,
+        fee: fee(sp.estimated_cost),
+        source: sp.source ?? null,
+        tone: sourceTone(sp.source),
+        personalNote: sp.personal_note ?? null,
+      });
+    }
     for (const t of a.post) {
-      timeline.push({ kind: "transport", tag: t.mode || "交通", title: transportText(t), timeLabel: "", sub: null, desc: null, fee: fee(t.estimated_cost), source: t.source ?? null, tone: sourceTone(t.source), personalNote: null });
+      timeline.push(transportEntry(t));
     }
   }
   // —— 无开始时间的餐饮（旧数据/LLM 未给时间）：不编造钟点，按餐次顺序完整展示
@@ -391,9 +419,12 @@ function buildDayTimeline(day: DayPlan): DayTimeline {
   if (transports.length && mins.length === transports.length) {
     stats.totalMinutes = mins.reduce((a, b) => a + b, 0);
   }
-  // —— 未锚定交通衔接段（保持原始顺序，完整展示）
+  // —— 返回酒店段 / 未锚定衔接段（保持原始顺序，完整展示）
+  for (const t of tailTransports) {
+    timeline.push(transportEntry(t));
+  }
   for (const t of looseTransports) {
-    timeline.push({ kind: "transport", tag: t.mode || "衔接", title: transportText(t), timeLabel: "", sub: null, desc: null, fee: fee(t.estimated_cost), source: t.source ?? null, tone: sourceTone(t.source), personalNote: null });
+    timeline.push(transportEntry(t));
   }
   // —— 住宿
   const hotel = day.hotel;
