@@ -427,6 +427,24 @@ export interface RecommendationFeed {
   page?: number | null;
   page_size?: number | null;
   total?: number | null;
+  /**
+   * 本页卡片命中的运营干预（{spot_id, action: PIN|DEMOTE, reason}），无干预为空数组。
+   * ⚠️ 只用于给用户补"运营精选"标识，**只消费 PIN**：DEMOTE 是压制动作，
+   * 把"这条被降权了"展示给用户既无意义又泄漏运营内部；BLACKLIST 已被后端从候选池剔除、不会出现在 items。
+   */
+  interventions?: RecommendationInterventionMeta[] | null;
+  /** 当前城市是否有"城市精选"运营标记 */
+  featured_city?: boolean | null;
+  /** 城市精选的运营原因（featured_city 为 true 时展示） */
+  featured_reason?: string | null;
+}
+
+/** 运营干预载荷（与算法分严格分离的独立 meta，见 RecommendationFeed.java） */
+export interface RecommendationInterventionMeta {
+  spot_id: string;
+  /** PIN（置顶）/ DEMOTE（降权） */
+  action: string;
+  reason?: string | null;
 }
 
 /**

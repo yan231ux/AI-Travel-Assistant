@@ -24,6 +24,13 @@ const props = defineProps<{
   compact?: boolean;
   /** 反馈后由父页面重新拉取推荐流（收藏/不感兴趣都会改变个性化排序） */
   reloadOnChange?: boolean;
+  /**
+   * 运营精选标签（该卡片命中运营置顶时由父页面传入）。
+   * 缺口修复：运营置顶原本只改顺序、用户端看不到任何标识，用户不知道"为什么它在最前"。
+   */
+  operationTag?: string;
+  /** 运营精选原因（展示给用户，回答"凭什么是它"；为空则只显示标签） */
+  operationReason?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -176,6 +183,10 @@ function addToPlan() {
         <span>{{ item.name.slice(0, 1) }}</span>
       </div>
       <span :class="['badge', quality.cls]">{{ quality.label }}</span>
+      <!-- 运营精选（右上）：运营置顶是排序层动作、不改算法分，所以这里只用独立角标标注，不混进匹配度 -->
+      <span v-if="operationTag" class="badge badge--ops" :title="operationReason || undefined">
+        ★ {{ operationTag }}
+      </span>
     </div>
 
     <!-- 标题区（点击进详情） -->
@@ -196,6 +207,7 @@ function addToPlan() {
       <p v-if="item.description && !compact" class="spot-card__desc">{{ item.description }}</p>
 
       <p v-if="item.recommend_reason" class="spot-card__reason">{{ item.recommend_reason }}</p>
+      <p v-if="operationTag && operationReason" class="spot-card__ops-reason">运营精选：{{ operationReason }}</p>
     </div>
 
     <!-- 反馈操作条 -->
@@ -301,6 +313,12 @@ function addToPlan() {
 .badge--verified { background: var(--success); }
 .badge--guide { background: var(--brand-teal); }
 .badge--poi { background: rgba(23, 33, 31, 0.55); }
+/* 运营精选：与可信度角标分居两侧，颜色用珊瑚色区别于"数据质量"语义 */
+.badge--ops {
+  left: auto;
+  right: 10px;
+  background: var(--brand-coral);
+}
 
 .spot-card__body {
   padding: 12px 14px 6px;
@@ -376,6 +394,17 @@ function addToPlan() {
   line-height: 1.5;
   color: var(--brand-deep);
   background: rgba(47, 119, 112, 0.06);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+
+/* 运营精选原因：与"推荐理由"区分开，避免用户把运营标记误读成算法推荐理由 */
+.spot-card__ops-reason {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--brand-coral);
+  background: rgba(217, 119, 93, 0.08);
   border-radius: 8px;
   padding: 5px 8px;
 }

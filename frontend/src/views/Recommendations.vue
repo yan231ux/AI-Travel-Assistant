@@ -5,7 +5,7 @@ import { useRoute } from "vue-router";
 import SpotCard from "../components/SpotCard.vue";
 import { POPULAR_CITIES } from "../constants/cities";
 import { getRecommendations, newFeedTrace } from "../services/api";
-import type { RecommendationItem } from "../types";
+import type { RecommendationFeed, RecommendationItem } from "../types";
 
 /**
  * 发现页（产品化阶段一 /recommendations，PLAN §5/§11）。
@@ -38,6 +38,12 @@ const loading = ref(false);
 const loadingMore = ref(false);
 const error = ref("");
 const personalized = ref(false);
+// §6.3 运营干预对用户可见（缺口修复）：后端一直有返回 interventions/featured_city，
+// 但用户端从未消费 → 运营置顶了景点、用户看到它排最前却不知道"为什么"。
+// 这里只消费 PIN（置顶）与城市精选：DEMOTE 是压制动作，展示给用户无意义且泄漏运营内部。
+const pinMeta = ref<Record<string, string>>({});
+const featuredCity = ref(false);
+const featuredReason = ref("");
 // P1-5：当前推荐上下文（城市/排序变化会重建）的曝光幂等键，防重复请求双写曝光
 let feedTrace = newFeedTrace();
 
@@ -62,6 +68,23 @@ async function loadMore() {
   await fetchPage(false);
 }
 
+/**
+ * 接住后端下发的运营元信息（§6.3）。
+ * 干预是按"本页 items"下发的，翻页追加时要合并而不是覆盖，否则前一页的角标会丢。
+ * 只收 PIN：DEMOTE 不外显。
+ */
+function applyOpsMeta(feed: RecommendationFeed, append: boolean) {
+  const next = append ? { ...pinMeta.value } : {};
+  for (const m of feed.interventions || []) {
+    if (m && m.action === "PIN" && m.spot_id) {
+      next[m.spot_id] = m.reason || "";
+    }
+  }
+  pinMeta.value = next;
+  featuredCity.value = feed.featured_city === true;
+  featuredReason.value = feed.featured_city ? feed.featured_reason || "" : "";
+}
+
 async function fetchPage(first: boolean) {
   if (first) {
     loading.value = true;
@@ -74,6 +97,7 @@ async function fetchPage(first: boolean) {
     page.value = first ? 1 : page.value + 1;
     total.value = feed.total ?? 0;
     personalized.value = !!feed.personalized;
+    applyOpsMeta(feed, !first);
     items.value = first ? feed.items : [...items.value, ...feed.items];
   } catch (err: unknown) {
     // 非法城市由后端白名单返回 400 + 可读文案（含形近纠错建议）：直接透出，
@@ -83,6 +107,10 @@ async function fetchPage(first: boolean) {
       error.value = resp.data?.message || "城市名不合法，请检查后重试。";
       items.value = [];
       total.value = 0;
+      // 城市非法 → 页面清空，运营角标也必须一起清（不能留下上一个城市的运营标记）
+      pinMeta.value = {};
+      featuredCity.value = false;
+      featuredReason.value = "";
     } else {
       error.value = "推荐加载失败，请稍后重试。";
       if (!first) items.value = items.value; // 保持已有内容
@@ -180,6 +208,11 @@ function skeletons(n: number) {
       <span v-if="personalized" class="sort-tabs__tip">已按你的画像排序</span>
     </div>
 
+    <!-- 城市精选（§6.3 运营标记，对用户可见）：说清"这个城市是被运营挑出来的，以及为什么" -->
+    <p v-if="featuredCity" class="featured-note">
+      ⭐ 城市精选 · {{ city }}<span v-if="featuredReason">：{{ featuredReason }}</span>
+    </p>
+
     <div v-if="loading" class="spot-grid">
       <div v-for="i in skeletons(12)" :key="i" class="skel" />
     </div>
@@ -198,6 +231,8 @@ function skeletons(n: number) {
           :key="item.spot_id"
           :item="item"
           :reload-on-change="true"
+          :operation-tag="pinMeta[item.spot_id] !== undefined ? '运营精选' : undefined"
+          :operation-reason="pinMeta[item.spot_id] || null"
           @changed="onChanged"
         />
       </div>
@@ -315,6 +350,18 @@ function skeletons(n: number) {
   margin-left: 8px;
   font-size: 12px;
   color: var(--success);
+}
+
+/* 城市精选提示条（运营标记，与"已按画像排序"这类个性化提示并列但视觉可区分） */
+.featured-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(217, 119, 93, 0.09);
+  border: 1px solid rgba(217, 119, 93, 0.22);
+  color: var(--brand-coral);
+  font-size: 12.5px;
+  font-weight: 550;
 }
 
 .spot-grid {

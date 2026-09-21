@@ -56,5 +56,11 @@ _probe_ps.txt
 # 统一用下划线前缀兜住，避免每加一次验证就漏一个（真实的探针资产不带下划线前缀，不受影响）
 backend/_*.txt
 backend/_*.py
+# 根目录的一次性辅助脚本 / 验证产物同理兜住（_serve_backend.py、_ui_ops_check.* 等）
+/_*.py
+/_*.mjs
+/_*.txt
+/_*.log
+/_*.png
 frontend/dist_verify/
 frontend/dist_old_*/

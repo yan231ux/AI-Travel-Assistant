@@ -87,6 +87,14 @@ const previewCity = ref("");
 const feed = ref<RecommendationFeed | null>(null);
 const feedLoading = ref(false);
 const feedError = ref("");
+/**
+ * §6.3 运营干预对用户可见（缺口修复）：后端一直下发 interventions/featured_city，
+ * 但用户端从未消费 → 运营置顶后用户只看到"它莫名排最前"。
+ * 只消费 PIN（置顶）与城市精选；DEMOTE 是压制动作，不外显。
+ */
+const pinMeta = ref<Record<string, string>>({});
+const featuredCity = ref(false);
+const featuredReason = ref("");
 
 const recommendedCities = computed(() => {
   const set = new Set(DASHBOARD_CITY_SHORTCUTS);
@@ -102,6 +110,14 @@ async function loadFeed() {
   feedError.value = "";
   try {
     feed.value = await getRecommendations(previewCity.value, 1, 8, "personalized");
+    // 运营元信息（与算法分分离）：只把 PIN 转成对用户可见的"运营精选"标记
+    const next: Record<string, string> = {};
+    for (const m of feed.value.interventions || []) {
+      if (m && m.action === "PIN" && m.spot_id) next[m.spot_id] = m.reason || "";
+    }
+    pinMeta.value = next;
+    featuredCity.value = feed.value.featured_city === true;
+    featuredReason.value = feed.value.featured_city ? feed.value.featured_reason || "" : "";
   } catch {
     feedError.value = "推荐加载失败，请稍后重试。";
   } finally {
@@ -288,6 +304,11 @@ function skeletons(n: number) {
         </button>
       </div>
 
+      <!-- 城市精选（§6.3 运营标记对用户可见）：把"城市精选"与"为你推荐"明确区分开 -->
+      <p v-if="featuredCity" class="rec-featured">
+        ⭐ 城市精选 · {{ previewCity }}<span v-if="featuredReason">：{{ featuredReason }}</span>
+      </p>
+
       <div v-if="feedLoading" class="spot-grid">
         <div v-for="i in skeletons(4)" :key="i" class="skel" />
       </div>
@@ -298,6 +319,8 @@ function skeletons(n: number) {
           :key="item.spot_id"
           :item="item"
           :reload-on-change="true"
+          :operation-tag="pinMeta[item.spot_id] !== undefined ? '运营精选' : undefined"
+          :operation-reason="pinMeta[item.spot_id] || null"
           @changed="onFeedChanged"
         />
       </div>
@@ -724,6 +747,18 @@ function skeletons(n: number) {
   background: var(--surface-white);
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* 城市精选提示条：§6.1 要求首页把"城市精选"与"个性化推荐"分开标注 */
+.rec-featured {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(217, 119, 93, 0.09);
+  border: 1px solid rgba(217, 119, 93, 0.22);
+  color: var(--brand-coral);
+  font-size: 12.5px;
+  font-weight: 550;
 }
 
 .rec-empty__link {
