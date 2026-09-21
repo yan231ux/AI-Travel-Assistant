@@ -234,6 +234,36 @@ function rateOf(part: number, total: number): string {
   return total <= 0 ? "—" : `${Math.round((part / total) * 1000) / 10}%`;
 }
 
+/**
+ * A/B 效果对照行：从 by_variant_metrics 取对照/处理组各自的曝光与率。
+ * 只有曝光分布（by_variant）回答不了"新策略有没有更好"，必须按变体拆开命中率/收藏率。
+ * 没有曝光的组不显示（避免展示 0% 被误读成"该组表现差"）。
+ */
+function variantCompare(m: FeedMetricsItem): {
+  key: string;
+  label: string;
+  exposures: number;
+  hitRate: number;
+  saveRate: number;
+  dislikeRate: number;
+}[] {
+  const src = m.by_variant_metrics || {};
+  const order = [
+    { key: "CONTROL", label: "对照（现状）" },
+    { key: "TREATMENT", label: "处理组（新策略）" },
+  ];
+  return order
+    .filter((o) => src[o.key] && src[o.key].exposures > 0)
+    .map((o) => ({
+      key: o.key,
+      label: o.label,
+      exposures: src[o.key].exposures,
+      hitRate: src[o.key].hit_rate,
+      saveRate: src[o.key].save_rate,
+      dislikeRate: src[o.key].dislike_rate,
+    }));
+}
+
 async function loadAll() {
   await Promise.all([loadExperiments(), loadMonitor(), loadQuality(), loadInterventions()]);
 }
@@ -424,6 +454,32 @@ onMounted(loadAll);
               {{ v === "NONE" ? "无实验" : v === "CONTROL" ? "对照" : "处理组" }} {{ n }}
             </span>
           </p>
+          <!-- A/B 效果对照：曝光分布之外，按变体看命中率/收藏率才知道新策略有没有更好 -->
+          <div v-if="variantCompare(m).length" style="margin-top: 10px">
+            <p class="ad-item__meta" style="margin-bottom: 4px">A/B 效果对照（按变体）：</p>
+            <div class="ad-table-wrap">
+              <table class="ad-table">
+                <thead>
+                  <tr>
+                    <th>分组</th>
+                    <th>曝光</th>
+                    <th>命中率</th>
+                    <th>收藏率</th>
+                    <th>负反馈率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in variantCompare(m)" :key="r.key">
+                    <td><b>{{ r.label }}</b></td>
+                    <td>{{ r.exposures }}</td>
+                    <td>{{ r.hitRate }}%</td>
+                    <td>{{ r.saveRate }}%</td>
+                    <td>{{ r.dislikeRate }}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
           <p v-if="feed === 'SPOT_FEED'" class="ad-item__meta">
             内容质量构成：
             <span v-for="(n, q) in m.by_quality" :key="q" class="ad-badge ad-badge--muted">

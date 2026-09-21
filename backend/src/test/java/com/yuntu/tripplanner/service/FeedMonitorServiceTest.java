@@ -18,6 +18,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -115,9 +116,50 @@ class FeedMonitorServiceTest {
         assertEquals(1L, spot.byQuality.get(Spot.QUALITY_POI_ONLY));
     }
 
+    /**
+     * A/B 效果对照（缺口修复）：命中率与反馈率必须按变体各自算，
+     * 否则实验只能看曝光分布、回答不了"新策略到底有没有更好"。
+     * CONTROL：2 曝光全不命中、1 收藏 → 命中 0% / 收藏 50%；TREATMENT：2 曝光全命中、0 收藏。
+     */
     @Test
-    void feedbackFunnel_onlyCountsInteractionsOnExposedItems() {
-        // u1 曝光 poi_a（收藏算数），u3 对 poi_x 的收藏未曝光过 → 不进漏斗
+    void spotFeed_splitsHitRateAndFeedbackByVariant() {
+        when(spotFeedLogRepository.selectList(any())).thenReturn(List.of(
+                spotLog("u1", "poi_a", 0, Spot.QUALITY_POI_ONLY, "CONTROL", 0.4),
+                spotLog("u1", "poi_b", 0, Spot.QUALITY_POI_ONLY, "CONTROL", 0.4),
+                spotLog("u1", "poi_c", 1, Spot.QUALITY_GUIDE_MATCHED, "TREATMENT", 0.9),
+                spotLog("u1", "poi_d", 1, Spot.QUALITY_GUIDE_MATCHED, "TREATMENT", 0.9)));
+        when(postFeedLogRepository.selectList(any())).thenReturn(List.of());
+        when(userBehaviorRepository.selectList(any())).thenReturn(List.of(
+                behavior("u1", UserBehavior.ITEM_TYPE_SPOT, "poi_a", UserBehavior.ACTION_SAVE)));
+
+        var spot = service.report(7).feeds().get(FeedMonitorService.FEED_SPOT);
+
+        var control = spot.byVariantMetrics.get("CONTROL");
+        assertNotNull(control);
+        assertEquals(2, control.exposures);
+        assertEquals(0, control.hits);
+        assertEquals(0.0, control.hitRate * 100, 1e-6);
+        assertEquals(1L, control.save);
+        assertEquals(50.0, control.saveRate * 100, 1e-6);
+
+        var treatment = spot.byVariantMetrics.get("TREATMENT");
+        assertNotNull(treatment);
+        assertEquals(2, treatment.exposures);
+        assertEquals(2, treatment.hits);
+        assertEquals(100.0, treatment.hitRate * 100, 1e-6);
+        assertEquals(0L, treatment.save);
+
+        // 载体序列化必须带上 by_variant_metrics，否则前端拿不到对照读数
+        Map<String, Object> asMap = spot.toMap();
+        assertTrue(asMap.containsKey("by_variant_metrics"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> vm = (Map<String, Object>) asMap.get("by_variant_metrics");
+        assertTrue(vm.containsKey("CONTROL"));
+        assertTrue(vm.containsKey("TREATMENT"));
+    }
+
+    @Test
+    void feedbackFunnel_onlyCountsInteractionsOnExposedItems() {        // u1 曝光 poi_a（收藏算数），u3 对 poi_x 的收藏未曝光过 → 不进漏斗
         when(spotFeedLogRepository.selectList(any())).thenReturn(List.of(
                 spotLog("u1", "poi_a", 1, Spot.QUALITY_GUIDE_MATCHED, null, 0.9)));
         when(postFeedLogRepository.selectList(any())).thenReturn(List.of());

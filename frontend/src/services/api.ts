@@ -896,6 +896,19 @@ export interface FeedMetricsItem {
   hit_rate: number;
   avg_score: number;
   by_variant: Record<string, number>;
+  /** A/B 变体对照读数：每个变体各自的曝光/命中率/收藏率/负反馈率（实验效果判定看这里） */
+  by_variant_metrics: Record<
+    string,
+    {
+      exposures: number;
+      hits: number;
+      hit_rate: number;
+      save: number;
+      dislike: number;
+      save_rate: number;
+      dislike_rate: number;
+    }
+  >;
   by_quality: Record<string, number>;
   /** 各城市推荐量（曝光行按城市聚合；帖子流无城市维度，恒为空表） */
   by_city: Record<string, number>;
@@ -938,6 +951,7 @@ function emptyFeed(): FeedMetricsItem {
     hit_rate: 0,
     avg_score: 0,
     by_variant: {},
+    by_variant_metrics: {},
     by_quality: {},
     by_city: {},
     feedbacks: {},
