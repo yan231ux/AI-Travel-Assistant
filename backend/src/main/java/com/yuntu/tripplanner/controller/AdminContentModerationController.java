@@ -40,15 +40,22 @@ public class AdminContentModerationController {
         this.communityUserService = communityUserService;
     }
 
-    /** 审核队列分页（可按状态/对象类型过滤） */
+    /**
+     * 审核队列分页（可按状态/对象类型/是否已决策过滤）。
+     *
+     * <p>{@code decisionState=PENDING} 才是"真正待人工处理"的队列：
+     * status=REVIEW 只说明 AI 初筛要求复核，人工决策写在 decision 列，不回收 status，
+     * 所以不加这一层过滤会把已处理完的任务一直挂在待办里。
+     */
     @GetMapping
     public ResponseEntity<Map<String, Object>> queue(
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String targetType,
+            @RequestParam(required = false) String decisionState,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "12") int pageSize) {
         communityUserService.requirePermission(UserContext.getUserId(), AdminPermission.CONTENT_REVIEW);
-        Page<ContentModerationTask> result = moderationService.page(status, targetType, page, pageSize);
+        Page<ContentModerationTask> result = moderationService.page(status, targetType, decisionState, page, pageSize);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("success", true);
         body.put("items", result.getRecords());

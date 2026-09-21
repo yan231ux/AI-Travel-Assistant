@@ -20,7 +20,13 @@ const total = ref(0);
 const page = ref(1);
 const pageSize = 12;
 const loading = ref(true);
-const statusFilter = ref<string>("");
+/**
+ * 默认落到"AI 要求复核 且 尚无人工决策"——这才是真正的待办队列。
+ * 任务的 status 只表达 AI 初筛结论，人工决策写在 decision 列且不回收 status，
+ * 所以只按 status=REVIEW 查会把已决策的任务永远挂在队列里（与"内容审核"页对不上）。
+ */
+const statusFilter = ref<string>("REVIEW");
+const decisionFilter = ref<string>("PENDING");
 const typeFilter = ref<string>("");
 
 const detail = ref<ModerationTask | null>(null);
@@ -59,6 +65,10 @@ async function load() {
     const resp = await listModerationTasks({
       status: statusFilter.value || undefined,
       targetType: typeFilter.value || undefined,
+      decisionState:
+        decisionFilter.value === "PENDING" || decisionFilter.value === "DONE"
+          ? decisionFilter.value
+          : undefined,
       page: page.value,
       pageSize,
     });
@@ -227,6 +237,11 @@ onMounted(load);
         <option value="PASSED">已自动放行</option>
         <option value="FAILED">AI 失败</option>
         <option value="RUNNING">初筛中</option>
+      </select>
+      <select v-model="decisionFilter" class="air-select" @change="switchFilter">
+        <option value="PENDING">待处理（未决策）</option>
+        <option value="DONE">已决策（留痕）</option>
+        <option value="">不限决策</option>
       </select>
       <select v-model="typeFilter" class="air-select" @change="switchFilter">
         <option value="">全部类型</option>

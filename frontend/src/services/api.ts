@@ -1757,10 +1757,12 @@ export interface ModerationPage {
   page: number;
 }
 
-/** AI 审核队列分页（status/targetType 可选过滤） */
+/** AI 审核队列分页（status/targetType/decisionState 可选过滤） */
 export async function listModerationTasks(params: {
   status?: string;
   targetType?: string;
+  /** PENDING=只看未人工决策的（真正待办）/ DONE=只看已决策的 / 不传=全量留痕 */
+  decisionState?: "PENDING" | "DONE";
   page?: number;
   pageSize?: number;
 }): Promise<ModerationPage> {

@@ -1,12 +1,18 @@
 package com.yuntu.tripplanner.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuntu.tripplanner.client.LlmClient;
 import com.yuntu.tripplanner.common.ContentModerationRuleEngine;
 import com.yuntu.tripplanner.config.LLMConfig;
 import com.yuntu.tripplanner.model.AuditLog;
 import com.yuntu.tripplanner.model.ContentModerationTask;
 import com.yuntu.tripplanner.repository.ContentModerationTaskRepository;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,6 +24,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -52,6 +59,24 @@ class ContentModerationServiceTest {
 
     /** 同步执行器：异步路径在测试里直接跑完，便于断言终态 */
     private static final Executor DIRECT = Runnable::run;
+
+    /** 纯 mock 单测没有 MyBatis 会话 → Lambda 列缓存为空，读 wrapper SQL 会报
+     *  "can not find lambda cache for this entity"；这里手工装填一份即可。 */
+    private static boolean lambdaCacheReady;
+
+    @BeforeAll
+    static void installLambdaCache() {
+        try {
+            MapperBuilderAssistant assistant =
+                    new MapperBuilderAssistant(new MybatisConfiguration(), "unit-test");
+            assistant.setCurrentNamespace(
+                    "com.yuntu.tripplanner.repository.ContentModerationTaskRepository");
+            TableInfoHelper.initTableInfo(assistant, ContentModerationTask.class);
+            lambdaCacheReady = true;
+        } catch (Throwable ignored) {
+            lambdaCacheReady = false;
+        }
+    }
 
     @BeforeEach
     void setUp() {
@@ -336,5 +361,88 @@ class ContentModerationServiceTest {
         ArgumentCaptor<String> cat = ArgumentCaptor.forClass(String.class);
         verify(auditService, times(1)).record(any(), cat.capture(), any(), any(), any(), any());
         assertEquals(AuditLog.CAT_CONTENT, cat.getValue());
+    }
+
+    /* ================= A1：队列口径与"随版本归档"（内容审核 / AI 筛选对不上） ================= */
+
+    @Test
+    void closeForRevision_archivesUndecidedReviewTask() {
+        // 场景：帖子修改稿在内容侧被驳回/通过 → 绑定其上的审核任务本身已经没意义了，
+        // 但它既不是 PENDING/RUNNING（流水线不收尾），也没有 decision（人工过滤也捞不到），
+        // 只能由内容侧显式归档，否则永远挂在"待人工复核"里。
+        ContentModerationTask stale = new ContentModerationTask();
+        stale.setId(31L);
+        stale.setTargetType(ContentModerationTask.TARGET_POST);
+        stale.setTargetId("40");
+        stale.setRevisionId(555L);
+        stale.setStatus(ContentModerationTask.STATUS_REVIEW);
+        when(taskRepository.selectList(any())).thenReturn(List.of(stale));
+
+        int closed = service.closeForRevision(555L, "REJECT", "修改稿被驳回");
+
+        assertEquals(1, closed);
+        assertEquals("REJECT", stale.getDecision());
+        assertEquals(ContentModerationService.ACTOR_SYSTEM_REVISION, stale.getDecisionBy());
+        assertNotNull(stale.getDecidedAt());
+        verify(taskRepository).updateById(stale);
+
+        // 归档范围必须收紧：只挑"该版本 + status=REVIEW + 尚无决策"
+        // ——不抢流水线里正在跑的任务，也不覆盖人工已有留痕。
+        String sql = capturedSelectListSql();
+        assertTrue(sql.contains("revision_id"), sql);
+        assertTrue(sql.contains("status"), sql);
+        assertTrue(sql.contains("IS NULL"), sql);
+    }
+
+    @Test
+    void closeForRevision_nullRevision_isNoop() {
+        assertEquals(0, service.closeForRevision(null, "APPROVE", null));
+        verify(taskRepository, never()).selectList(any());
+    }
+
+    @Test
+    void page_pendingDecisionState_filtersUndecidedOnly() {
+        // "待人工复核"必须带 decisionState=PENDING：status 只表达 AI 初筛结论，
+        // 人工决策写在 decision 列且不回收 status —— 只按 status=REVIEW 查会把处理完的任务一直留着。
+        service.page(ContentModerationTask.STATUS_REVIEW, null,
+                ContentModerationService.DECISION_STATE_PENDING, 1, 12);
+
+        String sql = capturedPageSql();
+        assertTrue(sql.contains("IS NULL"), sql);
+    }
+
+    @Test
+    void page_doneDecisionState_filtersDecidedOnly() {
+        service.page(null, null, ContentModerationService.DECISION_STATE_DONE, 1, 12);
+
+        String sql = capturedPageSql();
+        assertTrue(sql.contains("IS NOT NULL"), sql);
+    }
+
+    @Test
+    void page_noDecisionState_keepsFullHistoryView() {
+        // 不传口径 = 全量留痕视图，不得自行加决策过滤（历史调用方行为不变）
+        service.page(null, null, null, 1, 12);
+
+        assertFalse(capturedPageSql().contains("decision"),
+                "不传 decisionState 时不应产生决策过滤条件");
+    }
+
+    /** 捕获最近一次 selectPage 的 wrapper SQL 片段。 */
+    @SuppressWarnings("rawtypes")
+    private String capturedPageSql() {
+        assertTrue(lambdaCacheReady, "Lambda 列缓存未装填，无法读取 wrapper SQL");
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(taskRepository, times(1)).selectPage(any(), captor.capture());
+        return captor.getValue().getSqlSegment();
+    }
+
+    /** 捕获最近一次 selectList 的 wrapper SQL 片段。 */
+    @SuppressWarnings("rawtypes")
+    private String capturedSelectListSql() {
+        assertTrue(lambdaCacheReady, "Lambda 列缓存未装填，无法读取 wrapper SQL");
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(taskRepository, times(1)).selectList(captor.capture());
+        return captor.getValue().getSqlSegment();
     }
 }

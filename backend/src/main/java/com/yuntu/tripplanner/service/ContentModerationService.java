@@ -57,6 +57,19 @@ public class ContentModerationService {
     /** 自动发布时写入 decision_by 的系统主体（与管理员人工决策可区分，便于审计与追责） */
     public static final String ACTOR_SYSTEM_AI = "system:ai";
 
+    /**
+     * 内容侧处置（帖子修改版本被通过/驳回）后归档任务时写入 decision_by 的系统主体。
+     * 与 ACTOR_SYSTEM_AI 分开，是因为二者语义不同：前者是"AI 判定不用人工"，
+     * 后者是"任务主体已被内容侧处置、不再需要人工复核"。
+     */
+    public static final String ACTOR_SYSTEM_REVISION = "system:revision";
+
+    /* ---- 队列的"是否已有人工决策"过滤口径（A1：不改状态语义，只改查询口径） ---- */
+    /** 只取还没有决策的任务（= 真正待人工处理的） */
+    public static final String DECISION_STATE_PENDING = "PENDING";
+    /** 只取已经决策过的任务（= 复核完的历史留痕） */
+    public static final String DECISION_STATE_DONE = "DONE";
+
     /** 模型判定：明确通过 / 需复核 / 明确违规 */
     public static final String AI_DECISION_PASS = "PASS";
     public static final String AI_DECISION_REVIEW = "REVIEW";
@@ -431,8 +444,25 @@ public class ContentModerationService {
         });
     }
 
-    /** 分页查询（管理端列表） */
+    /** 分页查询（管理端列表）。保留 4 参重载：不改口径的历史调用方行为不变。 */
     public Page<ContentModerationTask> page(String status, String targetType, int page, int pageSize) {
+        return page(status, targetType, null, page, pageSize);
+    }
+
+    /**
+     * 分页查询（管理端列表）。
+     *
+     * <p><b>为什么要有 decisionState</b>：任务的 status 表达的是"AI 初筛结论"
+     * （PASSED=AI 放行 / REVIEW=需人工复核），人工决策写在 decision 列。
+     * 因此"待人工复核"若只按 {@code status=REVIEW} 查，会把**已经决策过**的任务
+     * 一直留在队列里清不掉（决策不回收 status），管理员看到的待办数虚高、
+     * 与"内容审核"页（按帖子状态查）对不上。
+     *
+     * @param decisionState {@link #DECISION_STATE_PENDING} 只看未决策 /
+     *                      {@link #DECISION_STATE_DONE} 只看已决策 / null 不限（全量留痕视图）
+     */
+    public Page<ContentModerationTask> page(String status, String targetType, String decisionState,
+                                            int page, int pageSize) {
         LambdaQueryWrapper<ContentModerationTask> qw = new LambdaQueryWrapper<>();
         if (status != null && !status.isBlank()) {
             qw.eq(ContentModerationTask::getStatus, status);
@@ -440,8 +470,52 @@ public class ContentModerationService {
         if (targetType != null && !targetType.isBlank()) {
             qw.eq(ContentModerationTask::getTargetType, targetType);
         }
+        if (DECISION_STATE_PENDING.equalsIgnoreCase(decisionState)) {
+            qw.isNull(ContentModerationTask::getDecision);
+        } else if (DECISION_STATE_DONE.equalsIgnoreCase(decisionState)) {
+            qw.isNotNull(ContentModerationTask::getDecision);
+        }
         qw.orderByDesc(ContentModerationTask::getCreatedAt);
         return taskRepository.selectPage(new Page<>(page, pageSize), qw);
+    }
+
+    /**
+     * 内容侧已处置 → 归档挂在该版本上的待审任务（P1-2）。
+     *
+     * <p>任务主体是"待审内容"。当帖子修改版本在内容侧被通过/驳回后，这个版本已经不存在了，
+     * 任务若继续留在 REVIEW，队列就永远清不干净（A1 的"未决策"过滤也救不了它——它压根没决策）。
+     *
+     * <p>只动 <b>status=REVIEW 且尚无决策</b> 的任务：
+     * <ul>
+     *   <li>PENDING/RUNNING 的任务还在流水线里，由 {@link #finish} 自己收尾，不能抢；
+     *   <li>已有决策的任务是人工留痕，不覆盖。
+     * </ul>
+     *
+     * @return 实际归档的任务数
+     */
+    public int closeForRevision(Long revisionId, String decision, String reason) {
+        if (revisionId == null) {
+            return 0;
+        }
+        List<ContentModerationTask> rows = taskRepository.selectList(
+                new LambdaQueryWrapper<ContentModerationTask>()
+                        .eq(ContentModerationTask::getRevisionId, revisionId)
+                        .eq(ContentModerationTask::getStatus, ContentModerationTask.STATUS_REVIEW)
+                        .isNull(ContentModerationTask::getDecision));
+        for (ContentModerationTask t : rows) {
+            t.setDecision(decision);
+            t.setDecisionBy(ACTOR_SYSTEM_REVISION);
+            t.setDecisionReason(reason);
+            t.setDecidedAt(LocalDateTime.now());
+            taskRepository.updateById(t);
+            auditService.record(ACTOR_SYSTEM_REVISION, AuditLog.CAT_CONTENT, "moderation_closed_by_revision",
+                    "moderation", String.valueOf(t.getId()),
+                    AuditService.detailOf("target", t.getTargetType() + ":" + t.getTargetId(),
+                            "revision", revisionId, "decision", decision));
+            log.info("修改版本已处置，归档对应审核任务：taskId={} revisionId={} decision={}",
+                    t.getId(), revisionId, decision);
+        }
+        return rows.size();
     }
 
     public ContentModerationTask get(Long id) {

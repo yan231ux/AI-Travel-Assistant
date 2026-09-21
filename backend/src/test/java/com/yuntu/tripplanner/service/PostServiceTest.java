@@ -577,6 +577,9 @@ class PostServiceTest {
         assertEquals("admin", rev.getReviewedBy());
         assertNotNull(rev.getReviewedAt());
         verify(postRepository).update(isNull(), any(LambdaUpdateWrapper.class));
+        // A1 缺陷②：版本被处置 → 绑定其上的 AI 审核任务必须一并终结，
+        // 否则任务永远停在 REVIEW 且无决策，赖在人工复核队列里清不掉。
+        verify(moderationService).closeForRevision(77L, "APPROVE", null);
     }
 
     @Test
@@ -599,6 +602,8 @@ class PostServiceTest {
         assertEquals(TravelPost.STATUS_PUBLISHED, published.getStatus());
         assertEquals("原始线上正文", published.getContent());
         assertNull(published.getRejectReason());
+        // A1 缺陷②：驳回修改稿同样要终结绑定任务（决策=REJECT，附驳回原因）
+        verify(moderationService).closeForRevision(77L, "REJECT", "含未核实门票价格");
     }
 
     @Test

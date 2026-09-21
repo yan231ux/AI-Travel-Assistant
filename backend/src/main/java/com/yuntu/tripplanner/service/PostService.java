@@ -375,6 +375,9 @@ public class PostService {
         rev.setReviewedAt(LocalDateTime.now());
         rev.setRejectReason(null);
         revisionRepository.updateById(rev);
+        // 该修改稿的 AI 审核任务已随版本处置终结：补一条"系统：随版本关闭"的决策，
+        // 否则任务永远停在 REVIEW 且无决策 → 一直赖在人工复核队列里（A1 缺陷②）。
+        closeModerationTaskOfRevision(rev.getId(), "APPROVE", null);
     }
 
     /** 审核拒绝修改稿：只处置版本（主表仍是原公开版本，作者可再次编辑）。 */
@@ -388,6 +391,23 @@ public class PostService {
                 .eq(TravelPost::getId, post.getId())
                 .set(TravelPost::getPendingRevisionId, null));
         post.setPendingRevisionId(null);
+        // 同 applyPendingRevision：版本被拒 → 绑定任务一并终结，别让它赖在待复核队列。
+        closeModerationTaskOfRevision(rev.getId(), "REJECT", rev.getRejectReason());
+    }
+
+    /**
+     * 把"绑定在该修改稿上的 AI 审核任务"标记为已决策（决策方=系统：随版本处置）。
+     * 找不到任务（如历史脏数据）或审核服务不可用时静默跳过 —— 归档是补偿动作，不能反过来阻断版本处置。
+     */
+    private void closeModerationTaskOfRevision(Long revisionId, String decision, String reason) {
+        if (moderationService == null || revisionId == null) {
+            return;
+        }
+        try {
+            moderationService.closeForRevision(revisionId, decision, reason);
+        } catch (RuntimeException ignored) {
+            // 归档失败不影响版本本身的审核结果（可后续由运营在队列里处置）
+        }
     }
 
     /** 取某帖当前待审版本（指针存在但记录已被清理 → null）。 */
