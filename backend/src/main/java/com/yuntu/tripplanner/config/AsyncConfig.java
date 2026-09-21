@@ -45,9 +45,8 @@ public class AsyncConfig implements AsyncConfigurer {
 
     /**
      * Agent 生成执行线程池（SSE 流式端点用）。
-     *
-     * 与 toolExecutor 分离：生成任务是长阻塞型（LLM 最多 60s/次），
-     * 若复用到 toolExecutor 会占满线程导致内部工具任务排队超时。
+     * 与 toolExecutor 分离：生成任务是长阻塞型（LLM 读超时上限 180s，见
+     * {@code llm.timeout-seconds}），若复用到 toolExecutor 会占满线程导致内部工具任务排队超时。
      * 默认 waitForTasksToCompleteOnShutdown=false，dev 重启不被长生成卡住。
      */
     @Bean(name = "agentExecutor")
