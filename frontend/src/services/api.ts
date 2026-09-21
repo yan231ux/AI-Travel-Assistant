@@ -667,10 +667,23 @@ export async function deletePost(postId: number): Promise<void> {
 export async function submitPost(
   postId: number
 ): Promise<{ success: boolean; violations?: string[]; message?: string }> {
-  const response = await api.post<{ success: boolean; violations?: string[]; message?: string }>(
-    `/community/posts/${postId}/submit`
-  );
-  return response.data;
+  type SubmitResult = { success: boolean; violations?: string[]; message?: string };
+  try {
+    const response = await api.post<SubmitResult>(`/community/posts/${postId}/submit`);
+    return response.data;
+  } catch (error) {
+    // 规则拦截（内容含手机号/外链/导流词，或疑似重复）走 HTTP 400，但**响应体里带着
+    // "具体违反了哪一条"**（violations + message）。若原样抛出，调用方的 catch 只会显示
+    // 兜底文案「提交失败，请稍后重试」——用户永远不知道原因。
+    // 而这份可读原因恰恰是这个接口最有价值的输出，必须透传给调用方，让它落在 if(!resp.success) 分支里。
+    if (axios.isAxiosError<SubmitResult>(error) && error.response?.status === 400) {
+      const data = error.response.data;
+      if (data && Array.isArray(data.violations)) {
+        return { success: false, violations: data.violations, message: data.message };
+      }
+    }
+    throw error; // 401/403/5xx/网络异常等仍按失败抛出，交给统一拦截器与调用方处理
+  }
 }
 
 /** 作者查看自己某条帖子的最新 AI 审核细分状态（PENDING/RUNNING/PASSED/REVIEW/FAILED）。无任务返回 null。 */
