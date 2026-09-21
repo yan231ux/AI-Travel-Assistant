@@ -1,6 +1,7 @@
 import { ref } from "vue";
 
 import type { AgentTraceStep, Itinerary, TripRequestPayload } from "../types";
+import { clearPlannerDraft } from "./plannerDraft";
 
 /**
  * 行程工作区状态单例。
@@ -56,7 +57,11 @@ export function openSaved(itinerary: Itinerary, trace?: AgentTraceStep[]) {
   latestTokenUsage.value = null;
 }
 
-/** 退出登录时清空工作区 */
+/**
+ * 退出登录 / 登录失效时清空工作区。
+ * 规划页草稿（stores/plannerDraft）同属"本账号的临时状态"，一并清掉：
+ * 否则换个账号登录进来，还会看到上一个账号填了一半的规划条件。
+ */
 export function clearAll() {
   latestItinerary.value = null;
   latestTrace.value = undefined;
@@ -65,4 +70,5 @@ export function clearAll() {
   pendingPayload.value = null;
   replayItinerary.value = null;
   replayTrace.value = null;
+  clearPlannerDraft();
 }

@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { message } from "ant-design-vue";
 import dayjs, { type Dayjs } from "dayjs";
 import { useRoute, useRouter } from "vue-router";
 
 import { beginLive } from "../stores/trip";
+import {
+  clearPlannerDraft,
+  plannerDraft,
+  plannerDraftHasContent,
+  type PlannerDraftSpot,
+} from "../stores/plannerDraft";
 import type { TripRequestPayload } from "../types";
 
 /**
@@ -14,30 +20,50 @@ import type { TripRequestPayload } from "../types";
  * 加入行程闭环（排查报告 P0-2）：query 携带 city + spot + spot_id + poi_id 进入时，
  * 页面显示可删除的"已加入景点"标签；提交时合并进 special_notes（"务必安排：景点名"，
  * 不覆盖用户自己填的备注、同一景点不重复），复用后端 TravelAgent 对点名景点的解析能力。
+ *
+ * 草稿不丢（本次改动）：表单字段与"已加入景点"挂在 stores/plannerDraft 单例上，
+ * 组件卸载不再清空 —— 跳到首页/发现/社区，或生成完行程去结果页再回来，已填内容原样还在；
+ * 只有退出账号、关闭标签页/重启浏览器、或手动点"清空"才复位。本页只负责绑定与校验。
  */
 const router = useRouter();
 const route = useRoute();
 
-/** 从景点卡/详情页"加入行程"带入的指定景点；支持多个累加，重复同名入栈去重（点击多家不同景点可一起规划） */
-interface JoinedSpot {
-  name: string;
-  spotId?: string;
-  poiId?: string;
-}
-const joinedSpots = ref<JoinedSpot[]>([]);
+/**
+ * 从景点卡/详情页"加入行程"带入的指定景点；支持多个累加，重复同名入栈去重（点击多家不同景点可一起规划）。
+ * 直接绑定草稿单例里的数组（不再是页面局部 ref）：跳走再回来不会被清掉。
+ * ⚠️ 因此所有改动都必须原地改数组（push / splice），不能整体重新赋值，否则会与草稿脱钩。
+ */
+const joinedSpots = plannerDraft.spots;
 
 /** 入栈：同名视为同一请求（不重复提示也不重复文本），返回 true=新增，false=去重命中 */
-function pushJoinedSpot(next: JoinedSpot): boolean {
-  if (joinedSpots.value.find((x) => x.name === next.name)) {
+function pushJoinedSpot(next: PlannerDraftSpot): boolean {
+  if (joinedSpots.find((x) => x.name === next.name)) {
     return false;
   }
-  joinedSpots.value.push(next);
+  joinedSpots.push(next);
   return true;
 }
 
 /** 移除某个已加入景点（按 name 定位）；URL query 不再回写以免覆盖后续其它"加入行程"导航 */
 function removeJoinedSpot(name: string) {
-  joinedSpots.value = joinedSpots.value.filter((x) => x.name !== name);
+  const idx = joinedSpots.findIndex((x) => x.name === name);
+  if (idx >= 0) {
+    joinedSpots.splice(idx, 1);
+  }
+}
+
+/**
+ * 是否提示"已恢复上次填写的内容"：进入页面时取一次快照。
+ * 用快照而不是实时判断 —— 用户随后边填边改时提示条不该突然冒出来；
+ * 只有"一进来就发现内容还在"才需要解释来历，顺带给出清空入口。
+ */
+const showDraftTip = ref(plannerDraftHasContent());
+
+/** 手动清空草稿：内存草稿与存储一起复位（退出登录清的是同一份数据） */
+function resetDraft() {
+  clearPlannerDraft();
+  showDraftTip.value = false;
+  message.success("已清空，可重新填写");
 }
 
 const preferenceOptions = [
@@ -61,22 +87,11 @@ function formatDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-const today = new Date();
-const todayPlus2 = new Date(today);
-todayPlus2.setDate(todayPlus2.getDate() + 2);
-
-const formState = reactive({
-  destination: "",
-  startDate: formatDate(today),
-  endDate: formatDate(todayPlus2),
-  travelers: 2,
-  budget: 3200,
-  hotelLevel: "舒适型",
-  pace: "轻松",
-  preferences: [] as string[],
-  dietaryPreferences: [] as string[],
-  notes: "",
-});
+/**
+ * 表单字段直接绑定草稿单例（默认值生成与持久化都在 stores/plannerDraft 内）：
+ * 页面只读写这一份数据，因此挂载时拿到的就是"上次离开时填的值"，不再随组件卸载消失。
+ */
+const formState = plannerDraft.form;
 
 const MAX_DAYS = 7;
 
@@ -90,9 +105,10 @@ function calcDays(start: string, end: string): number {
 
 const todayStart = dayjs().startOf("day");
 
-// 日历选择器绑定的 dayjs 值（与 formState 字符串双向联动）
-const startDate = ref<Dayjs>(dayjs());
-const endDate = ref<Dayjs>(dayjs().add(2, "day"));
+// 日历选择器绑定的 dayjs 值（与 formState 字符串双向联动）——
+// 初值从草稿的日期反解：恢复草稿时日历要停在同一段日期上，而不是跳回"今天"。
+const startDate = ref<Dayjs>(dayjs(formState.startDate));
+const endDate = ref<Dayjs>(dayjs(formState.endDate));
 
 // 开始日期：今天及以后可选（不能选过去时间）
 function disabledStartDate(current: Dayjs | null): boolean {
@@ -139,14 +155,20 @@ function applyPlanPrefill() {
   const q = route.query;
   const qCity = q.city;
   if (qCity && typeof qCity === "string" && qCity.trim()) {
-    formState.destination = qCity.trim();
+    const city = qCity.trim();
+    // 换城市 = 换了一次规划意图：上一个城市累积的"已加入景点"不再适用，
+    // 若沿用会让"上海的行程"里冒出三亚的景点，所以只在换城市时清空它们（其余字段保留）。
+    if (formState.destination.trim() && formState.destination.trim() !== city) {
+      joinedSpots.splice(0, joinedSpots.length);
+    }
+    formState.destination = city;
   }
   const qSpot = q.spot;
   if (qSpot && typeof qSpot === "string" && qSpot.trim()) {
     const name = qSpot.trim();
     const sid = q.spot_id;
     const pid = q.poi_id;
-    const next: JoinedSpot = {
+    const next: PlannerDraftSpot = {
       name,
       spotId: typeof sid === "string" && sid ? sid : undefined,
       poiId: typeof pid === "string" && pid ? pid : undefined,
@@ -164,7 +186,7 @@ function buildSpecialNotes(): string {
   if (formState.notes.trim()) {
     parts.push(formState.notes.trim());
   }
-  for (const spot of joinedSpots.value) {
+  for (const spot of joinedSpots) {
     if (!spot.name) continue;
     const line = `务必安排：${spot.name}`;
     if (!parts.some((t) => t.includes(`务必安排：${spot.name}`))) {
@@ -217,6 +239,14 @@ function handleSubmit() {
     <div class="plan-head">
       <h2 class="plan-head__title">✈️ 生成我的行程</h2>
       <p class="plan-head__desc">告诉我想去哪、怎么玩 —— 提交后实时展示 AI 思考过程</p>
+    </div>
+
+    <!-- 草稿恢复提示：让"内容还在"这件事被看见（否则用户会以为是缓存出错），并给出明确的清空入口 -->
+    <div v-if="showDraftTip" class="draft-tip">
+      <span class="draft-tip__text">
+        已恢复上次填写的内容（退出登录或关闭浏览器后自动清空）
+      </span>
+      <button type="button" class="draft-tip__clear" @click="resetDraft">清空重填</button>
     </div>
 
     <!-- 目的地与日期 -->
@@ -397,6 +427,38 @@ function handleSubmit() {
   margin: 6px 0 0;
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* 草稿恢复提示条：与下方表单卡片区分开，浅卡片 + 细边框，不抢主流程视觉 */
+.draft-tip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--surface-white);
+  border: 1px solid var(--border-soft);
+}
+
+.draft-tip__text {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.draft-tip__clear {
+  flex: none;
+  border: none;
+  padding: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-teal);
+  cursor: pointer;
+}
+
+.draft-tip__clear:hover {
+  text-decoration: underline;
 }
 
 /* iOS 卡片 */

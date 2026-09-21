@@ -64,3 +64,5 @@ backend/_*.py
 /_*.png
 frontend/dist_verify/
 frontend/dist_old_*/
+# 前端端到端探针（frontend/probe/*.mjs）的截图产物：探针脚本入库，截图只作本地证据
+frontend/probe/shots/
