@@ -100,19 +100,25 @@ def reg_or_login(uname, pwd="test1234"):
 
 
 def reset_demo_data():
-    """清掉历史演示痕迹（只动 abdemo_% 账号自己的曝光/行为/分桶/账号，不碰真实数据）。
+    """清掉历史演示痕迹（只动演示账号自己的曝光/行为/分桶/干预/账号，不碰真实数据）。
 
+    覆盖 abdemo_%（本脚本注册）与 ivdemo_%（干预探针注册）两类前缀账号。
     答辩前跑一次，可让监控页只剩本次演示的干净读数。
     """
     import subprocess
-    where = "user_id IN (SELECT id FROM users WHERE username LIKE 'abdemo_%')"
-    sql = ("DELETE FROM spot_feed_log WHERE %s;"
-           "DELETE FROM post_feed_log WHERE %s;"
-           "DELETE FROM user_behavior WHERE %s;"
-           "DELETE FROM ab_assignment WHERE user_id IN (SELECT id FROM users WHERE username LIKE 'abdemo_%%');"
-           "DELETE FROM user_preference WHERE %s;"
-           "DELETE FROM user_profile WHERE user_id IN (SELECT id FROM users WHERE username LIKE 'abdemo_%%');"
-           "DELETE FROM users WHERE username LIKE 'abdemo_%%';" % (where, where, where, where))
+    pred = "(username LIKE 'abdemo_%' OR username LIKE 'ivdemo_%')"
+    uid = "user_id IN (SELECT id FROM users WHERE " + pred + ")"
+    stmts = [
+        "DELETE FROM spot_feed_log WHERE " + uid,
+        "DELETE FROM post_feed_log WHERE " + uid,
+        "DELETE FROM user_behavior WHERE " + uid,
+        "DELETE FROM ab_assignment WHERE " + uid,
+        "DELETE FROM user_preference WHERE " + uid,
+        "DELETE FROM user_profile WHERE " + uid,
+        "DELETE FROM recommendation_intervention WHERE reason LIKE '演示：%'",
+        "DELETE FROM users WHERE " + pred,
+    ]
+    sql = ";".join(stmts) + ";"
     r = subprocess.run(["docker", "exec", "trip-planner-mysql", "mysql", "-uroot", "-proot",
                         "--default-character-set=utf8mb4", "-D", "trip_planner", "-e", sql],
                        capture_output=True)
