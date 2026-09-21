@@ -2,14 +2,16 @@
  * 结果页（生成完的行程）持久化 —— 端到端回归探针（真实 Chromium + 真实前端/后端）。
  *
  * 复验目标：生成/打开一份行程后，那页行程不能"跳走或刷新一下就没了"。
- * 口径与规划页草稿一致：同一标签页内跳页面、F5 刷新都还在；
- * 只有退出登录（或登录失效）、关闭标签页/重启浏览器才清空。
+ * 口径：同一标签页内跳页面、F5 刷新、关掉标签页/新开标签页/浏览器重启都还在；
+ * 只有退出登录（或登录失效）才清空。
+ * ⚠️ 持久数据按账号隔离 —— 换个账号登录不能看到上一个人的行程（step 4/7 专门验这个）。
  *
  * 数据来源说明（不跑真实生成，避免消耗模型额度/时间）：
  *   用真实已保存行程做种子 —— 由 `frontend/probe/seed_trip.py` 从 trip_record 导出一份真实行程 JSON 到
  *   `_seed_trip.txt`，本探针注册一个一次性账号把它存成自己的行程，再经「历史列表 → 查看详情」
- *   走真实写入口（openSaved）。跑完执行 `python frontend/probe/seed_trip.py --clean` 清掉该账号与其数据。
- *   ⚠️ 生成侧写入口 setFinished 与 openSaved 共用同一个落盘函数，本探针只覆盖后者。
+ *   走真实写入口（openSaved）。跑完执行 `python frontend/probe/seed_trip.py --clean` 清掉账号与其数据。
+ *   ⚠️ 生成侧写入口 setFinished 与 openSaved 共用同一个落盘函数，本探针只覆盖后者；
+ *      真实生成路径由 _probe_real_gen.mjs 覆盖。
  *
  * 前置：后端 8080、前端 5173 在跑；playwright-core 已装（见 windows-sandbox-shell-workarounds §10）。
  *
@@ -25,12 +27,17 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
 const APP = process.env.APP_URL || "http://127.0.0.1:5173";
 const API = process.env.API_URL || "http://127.0.0.1:8080";
+/** 会话级键（同标签页导航/刷新） */
 const KEY = "ai_travel_trip_workspace";
+/** 持久级键（关标签页/新标签页/浏览器重启） */
+const DURABLE_KEY = "ai_travel_trip_workspace_durable";
 const SEED_FILE = process.env.SEED_FILE || path.join(REPO, "_seed_trip.txt");
 const SHOT_DIR = path.join(HERE, "shots");
 
 const SUFFIX = String(Date.now()).slice(-8);
 const PROBE_USER = `rdprobe_${SUFFIX}`;
+/** 第二个账号：只用来验"换账号看不到上一个人的行程" */
+const PROBE_USER_B = `rdprobe_b_${SUFFIX}`;
 const PROBE_PWD = "test1234";
 const TRIP_ID = `probe-trip-${SUFFIX}`;
 
@@ -67,6 +74,7 @@ function check(name, ok, extra = "") {
 }
 
 const readKey = (page) => page.evaluate((k) => sessionStorage.getItem(k), KEY);
+const readDurable = (page) => page.evaluate((k) => localStorage.getItem(k), DURABLE_KEY);
 const readWorkspace = (page) =>
   page.evaluate((k) => {
     const raw = sessionStorage.getItem(k);
@@ -101,6 +109,15 @@ async function api(path, { method = "GET", token, body } = {}) {
   return { status: r.status, data };
 }
 
+async function register(username) {
+  const reg = await api("/auth/register", {
+    method: "POST",
+    body: { username, password: PROBE_PWD, nickname: "结果页持久化探针" },
+  });
+  if (!reg.data?.token) throw new Error(`账号注册失败 ${username}：` + JSON.stringify(reg).slice(0, 200));
+  return reg.data;
+}
+
 /* ---------- 0. 种子数据：一次性账号 + 一份真实行程 ---------- */
 if (!fs.existsSync(SEED_FILE)) {
   console.error(`缺少种子文件 ${SEED_FILE}，先跑：python frontend/probe/seed_trip.py`);
@@ -111,13 +128,10 @@ seed.itinerary.trip_id = TRIP_ID;
 const seedDestination = seed.itinerary.destination;
 const seedDays = seed.itinerary.days.length;
 
-const reg = await api("/auth/register", {
-  method: "POST",
-  body: { username: PROBE_USER, password: PROBE_PWD, nickname: "结果页持久化探针" },
-});
-if (!reg.data?.token) throw new Error("探针账号注册失败：" + JSON.stringify(reg).slice(0, 200));
-const token = reg.data.token;
-const userId = reg.data.user?.id ?? reg.data.user_id ?? "";
+const regA = await register(PROBE_USER);
+const token = regA.token;
+const userId = regA.user?.id ?? regA.user_id ?? "";
+const regB = await register(PROBE_USER_B);
 
 const saved = await api("/trip/save", {
   method: "POST",
@@ -134,7 +148,7 @@ await ctx.addInitScript(
     localStorage.setItem("ai_travel_token", t);
     localStorage.setItem("ai_travel_user", u);
   },
-  [token, JSON.stringify(reg.data.user ?? {})]
+  [token, JSON.stringify(regA.user ?? {})]
 );
 const page = await ctx.newPage();
 const errors = [];
@@ -161,7 +175,11 @@ try {
     ws?.itinerary?.trip_id === TRIP_ID && ws?.itinerary?.days?.length === seedDays,
     ws ? `trip_id=${ws.itinerary.trip_id} days=${ws.itinerary.days.length}` : "key 不存在");
 
-  /* ---- 2. F5 刷新（本次修复的核心） ---- */
+  const durableRaw = await readDurable(page);
+  check("1. 产物同时落到持久镜像（关标签页也不丢的基础）",
+    !!durableRaw && durableRaw.includes(TRIP_ID), durableRaw ? `${durableRaw.length} 字符` : "key 不存在");
+
+  /* ---- 2. F5 刷新（会话级就能覆盖的核心场景） ---- */
   await page.reload();
   await page.waitForSelector(".result-page", { timeout: 15000 });
   s = await resultSnapshot(page);
@@ -170,7 +188,7 @@ try {
     `title=${s.title} days=${s.dayCount}`);
   await page.screenshot({ path: path.join(SHOT_DIR, "trip_result_restored.png"), fullPage: false });
 
-  /* ---- 3. 跳走再回来：首页出现「最近生成的行程」入口 ---- */
+  /* ---- 3. 跳走再回来：首页「最近生成的行程」入口 ---- */
   await page.locator(".nav-tab", { hasText: "首页" }).click();
   await page.waitForURL(/\/$|\/dashboard/, { timeout: 15000 }).catch(() => {});
   await page.waitForSelector(".resume", { timeout: 15000 });
@@ -183,33 +201,107 @@ try {
   s = await resultSnapshot(page);
   check("3. 从首页入口能回到结果页且内容一致", s.dayCount === seedDays && s.title.includes(seedDestination));
 
-  /* ---- 4. 反证：去掉会话存储后刷新 → 正是修复前"被踢回规划页"的行为 ---- */
-  await page.evaluate((k) => sessionStorage.removeItem(k), KEY);
-  await page.reload();
+  /* ---- 3b. 跳走再回来：规划页「上次生成的行程」入口（用户最常回到的 tab） ---- */
+  await page.locator(".nav-tab", { hasText: "规划" }).click();
   await page.waitForURL(/\/plan/, { timeout: 15000 });
-  check("4. 反证：无会话存储时刷新结果页 → 被踢回规划页（修复前行为）", /\/plan/.test(page.url()),
+  await page.waitForSelector(".last-trip", { timeout: 15000 });
+  const planResumeText = await page.locator(".last-trip").innerText();
+  check("3b. 规划页出现「上次生成的行程」入口", planResumeText.includes(seedDestination),
+    planResumeText.replace(/\s+/g, " "));
+  await page.locator(".last-trip__go").click();
+  await page.waitForURL(/\/result/, { timeout: 15000 });
+  await page.waitForSelector(".result-page", { timeout: 15000 });
+  s = await resultSnapshot(page);
+  check("3b. 从规划页入口能回到结果页且内容一致", s.dayCount === seedDays && s.title.includes(seedDestination));
+
+  /* ---- 4. 新标签页（没有会话存储）→ 只能靠持久镜像恢复 ---- */
+  const tab2 = await ctx.newPage();
+  // 新标签页在应用脚本跑起来之前就把会话级数据抹掉并记下当时状态：
+  // 这样"结果页仍能渲染"就只可能来自持久镜像（否则这条测试证明不了持久级在起作用）。
+  await tab2.addInitScript((k) => {
+    window.__initialSession = sessionStorage.getItem(k);
+    sessionStorage.removeItem(k);
+  }, KEY);
+  await tab2.goto(APP + "/plan");
+  await tab2.waitForSelector(".plan-page", { timeout: 20000 });
+  check("4. 新标签页开局没有会话级数据（证明下面靠的不是会话级）",
+    (await tab2.evaluate(() => window.__initialSession)) === null);
+  check("4. 新标签页读得到同一账号的持久镜像",
+    (await tab2.evaluate((k) => localStorage.getItem(k), DURABLE_KEY)) !== null);
+  await tab2.goto(APP + "/result");
+  await tab2.waitForSelector(".result-page", { timeout: 15000 });
+  const s2 = await resultSnapshot(tab2);
+  check("4. 新标签页直接打开结果页也能渲染出行程（关标签页后不丢）",
+    s2.onResult && s2.dayCount === seedDays && s2.title.includes(seedDestination),
+    `title=${s2.title} days=${s2.dayCount}`);
+  await tab2.close();
+
+  /* ---- 5. 换账号：持久镜像里还是 A 的数据，但 B 不该看到 ---- */
+  const state = await ctx.storageState();
+  const ctxB = await browser.newContext({ viewport: { width: 1280, height: 900 }, storageState: state });
+  await ctxB.addInitScript(
+    ([t, u]) => {
+      localStorage.setItem("ai_travel_token", t);
+      localStorage.setItem("ai_travel_user", u);
+    },
+    [regB.token, JSON.stringify(regB.user ?? {})]
+  );
+  const tabB = await ctxB.newPage();
+  // 抢在应用脚本之前看一眼 localStorage：那会儿 A 的镜像还在。
+  // （页面加载后会被 ownerId 校验判定"不是我的"并顺手清掉，所以必须在 init 脚本里取。）
+  await tabB.addInitScript((k) => {
+    window.__durableBefore = localStorage.getItem(k);
+  }, DURABLE_KEY);
+  await tabB.goto(APP + "/plan");
+  await tabB.waitForSelector(".plan-page", { timeout: 20000 });
+  check("5. 前提：B 的浏览器里确实躺着 A 的持久镜像（否则这条测试没意义）",
+    (await tabB.evaluate(() => window.__durableBefore))?.includes(TRIP_ID) === true);
+  check("5. 不属于自己的镜像会被顺手清掉（不留痕）",
+    (await tabB.evaluate((k) => localStorage.getItem(k), DURABLE_KEY)) === null);
+  await tabB.goto(APP + "/result");
+  await tabB.waitForURL(/\/plan/, { timeout: 15000 });
+  check("5. 换账号 B 打不开 A 的结果页（按账号隔离生效）", /\/plan/.test(tabB.url()), `url=${tabB.url()}`);
+  await tabB.goto(APP + "/");
+  await tabB.waitForSelector(".hero", { timeout: 20000 });
+  check("5. 换账号 B 的首页不出现 A 的「最近生成的行程」",
+    (await tabB.locator(".resume").count()) === 0);
+  await ctxB.close();
+
+  /* ---- 6. 反证：两级存储都清掉 → 正是修复前"被踢回规划页"的行为 ---- */
+  await page.evaluate(
+    ([a, b]) => {
+      sessionStorage.removeItem(a);
+      localStorage.removeItem(b);
+    },
+    [KEY, DURABLE_KEY]
+  );
+  await page.goto(APP + "/result");
+  await page.waitForURL(/\/plan/, { timeout: 15000 });
+  check("6. 反证：无任何持久数据时打开结果页 → 被踢回规划页（修复前行为）", /\/plan/.test(page.url()),
     `url=${page.url()}`);
 
-  /* ---- 5. 退出登录：产物必须一起清（换账号不会看到别人的行程） ---- */
+  /* ---- 7. 退出登录：产物必须一起清（换账号不会看到别人的行程） ---- */
   await page.goto(APP + "/history");
   await page.waitForSelector(".history-card", { timeout: 20000 });
   await page.locator(".history-card").first().getByRole("button", { name: "查看详情" }).click();
   await page.waitForURL(/\/result/, { timeout: 15000 });
-  check("5. 重新打开后存储再次写入", (await readKey(page)) !== null);
+  check("7. 重新打开后会话级与持久级都已写入",
+    (await readKey(page)) !== null && (await readDurable(page)) !== null);
   await page.locator(".nav-bar__logout").click();
   await page.waitForURL(/\/login/, { timeout: 15000 });
-  check("5. 退出登录后行程产物被清除", (await readKey(page)) === null);
+  check("7. 退出登录后会话级清空", (await readKey(page)) === null);
+  check("7. 退出登录后持久镜像也清空（下次登录不会诈尸）", (await readDurable(page)) === null);
   await page.goto(APP + "/result");
   await page.waitForURL(/\/plan|\/login/, { timeout: 15000 });
-  check("5. 退出后直接打开结果页也进不去", /\/plan|\/login/.test(page.url()), `url=${page.url()}`);
+  check("7. 退出后直接打开结果页也进不去", /\/plan|\/login/.test(page.url()), `url=${page.url()}`);
 
-  check("6. 全流程无页面级 JS 异常", errors.length === 0, errors.slice(0, 3).join(" || "));
+  check("8. 全流程无页面级 JS 异常", errors.length === 0, errors.slice(0, 3).join(" || "));
 } catch (e) {
   check("流程执行完整", false, String(e).slice(0, 500));
 } finally {
   await browser.close();
 }
 
-console.log(`\n探针账号（跑完请执行 python frontend/probe/seed_trip.py --clean 清理）：${PROBE_USER}`);
+console.log(`\n探针账号（跑完请执行 python frontend/probe/seed_trip.py --clean 清理）：${PROBE_USER}, ${PROBE_USER_B}`);
 console.log(`\nRESULT ${pass} PASS / ${fail} FAIL`);
 process.exit(fail === 0 ? 0 : 1);

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { message } from "ant-design-vue";
 import dayjs, { type Dayjs } from "dayjs";
 import { useRoute, useRouter } from "vue-router";
 
-import { beginLive } from "../stores/trip";
+import { beginLive, latestItinerary } from "../stores/trip";
 import {
   clearPlannerDraft,
   plannerDraft,
@@ -64,6 +64,27 @@ function resetDraft() {
   clearPlannerDraft();
   showDraftTip.value = false;
   message.success("已清空，可重新填写");
+}
+
+/**
+ * 「上次生成的行程」入口（本次改动）。
+ * 产物本身已经能在刷新、关标签页、新标签页之后保留，但结果页**不在主导航里**（导航固定 5 项），
+ * 用户从结果页跳走一次、尤其是回到「规划」这个最自然的 tab，就找不到回结果页的路了 ——
+ * 眼前只有一张空表单，很容易误判成"刚生成好的行程又没了"。这里补一条显式入口。
+ * 只在真有一份产物时出现（退出登录即消失，不会变成"常驻历史"）。
+ */
+const lastTripMeta = computed(() => {
+  const it = latestItinerary.value;
+  if (!it) return "";
+  const days = it.days?.length ?? 0;
+  const dates = it.days?.length
+    ? [it.days[0]?.date, it.days[it.days.length - 1]?.date].filter(Boolean).join(" ~ ")
+    : "";
+  return [days ? `${days} 天` : "", dates].filter(Boolean).join(" · ");
+});
+
+function openLastTrip() {
+  void router.push({ name: "result" });
 }
 
 const preferenceOptions = [
@@ -239,6 +260,16 @@ function handleSubmit() {
     <div class="plan-head">
       <h2 class="plan-head__title">✈️ 生成我的行程</h2>
       <p class="plan-head__desc">告诉我想去哪、怎么玩 —— 提交后实时展示 AI 思考过程</p>
+    </div>
+
+    <!-- 上次生成的行程：结果页不在主导航里，从结果页跳走（尤其回到本页）最容易找不到回去的路，这里补一条显式入口 -->
+    <div v-if="latestItinerary" class="last-trip">
+      <span class="last-trip__text">
+        <span class="last-trip__chip">上次生成的行程</span>
+        <span class="last-trip__strong">{{ latestItinerary.destination }}</span>
+        <template v-if="lastTripMeta"> · {{ lastTripMeta }}</template>
+      </span>
+      <button type="button" class="last-trip__go" @click="openLastTrip">继续查看 ›</button>
     </div>
 
     <!-- 草稿恢复提示：让"内容还在"这件事被看见（否则用户会以为是缓存出错），并给出明确的清空入口 -->
@@ -459,6 +490,61 @@ function handleSubmit() {
 
 .draft-tip__clear:hover {
   text-decoration: underline;
+}
+
+/* 「上次生成的行程」入口条：与草稿提示条区分开（主题色描边 + 浅底），点"继续查看"直接回结果页 */
+.last-trip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(47, 119, 112, 0.06);
+  border: 1px solid rgba(47, 119, 112, 0.28);
+}
+
+.last-trip__text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.last-trip__chip {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(47, 119, 112, 0.12);
+  color: var(--brand-deep);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.last-trip__strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.last-trip__go {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--brand-teal);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.last-trip__go:hover {
+  color: var(--brand-deep);
 }
 
 /* iOS 卡片 */

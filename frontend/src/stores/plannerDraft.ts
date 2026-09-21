@@ -1,24 +1,26 @@
 import { reactive, watch } from "vue";
 
+import { clearTwoTier, readTwoTier, writeTwoTier } from "./scopedStorage";
+
 /**
  * 规划页（/plan）草稿单例：跨页面导航保留用户已经填好的规划条件。
  *
  * 背景：表单原先整块放在 PlannerView 组件里（本地 reactive），组件一卸载就没了——
  * 点顶部导航去首页/发现/社区、或生成完行程跳到结果页再回来，目的地、日期、人数、
  * 预算、偏好、备注、"已加入景点"全部清空，只能重填。现把这份状态收敛到本模块，
- * 组件只做绑定，卸载不再丢：
- * - 保留时机：同一标签页内任意页面跳转、浏览器刷新；
- * - 清空时机：① 退出登录 / 登录失效（stores/trip.ts 的 clearAll → clearPlannerDraft）
- *             ② 关闭标签页或重启浏览器（sessionStorage 天然清空）
- *             ③ 用户在规划页点"清空"
+ * 组件只做绑定，卸载不再丢。
  *
- * 为什么用 sessionStorage 而不是 localStorage：需求是"只有退出账号或系统重启才丢"。
- * sessionStorage 恰好是"同一标签页内导航/刷新都在、关掉页面即清空"，而且按标签页隔离，
- * 天然不会出现 A 账号草稿被 B 账号看到的串号问题。若要连浏览器重启也保留，
- * 只需把下面的 storage 换成 localStorage（一处改动，语义随之变化）。
+ * 保留时机（本次改动）：同一标签页内任意页面跳转、浏览器刷新、**关闭标签页/新开标签页/浏览器重启**；
+ * 清空时机：① 退出登录 / 登录失效（stores/trip.ts 的 clearAll → clearPlannerDraft）
+ *          ② 用户在规划页点"清空"
+ * 存储口径与行程产物（stores/trip.ts）完全一致：都走 stores/scopedStorage 的两级存储 ——
+ * 会话级 + 按账号隔离的持久级。为什么持久级必须按账号隔离：localStorage 是跨标签页共享的，
+ * 不记"主人"就会出现 A 账号草稿被 B 账号看到的串号问题。
  */
 
 const STORAGE_KEY = "ai_travel_plan_draft";
+/** 持久级镜像键（结构外面多包一层 ownerId / savedAt，见 scopedStorage） */
+const DRAFT_DURABLE_KEY = "ai_travel_plan_draft_durable";
 
 /** 规划页"已加入行程"的景点（来源：景点卡/热门榜的"加入行程"深链） */
 export interface PlannerDraftSpot {
@@ -96,58 +98,44 @@ function sanitizeSpot(v: unknown): PlannerDraftSpot | null {
 }
 
 /**
- * 读取并逐字段校正草稿。存储不可用（隐私模式/超配额）、没有草稿、结构损坏 → null，
- * 调用方退回默认值。逐字段校正而不是整体信任 JSON：草稿是跨版本存活的数据，
+ * 逐字段校正草稿。没有草稿、结构损坏 → null，调用方退回默认值。
+ * 逐字段校正而不是整体信任 JSON：草稿是跨版本存活的数据，
  * 老版本字段缺失/类型变化不能让页面直接崩。
  */
-function load(): PlannerDraft | null {
-  let raw: string | null = null;
-  try {
-    raw = sessionStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    const root = parsed as Record<string, unknown>;
-    const src = (root.form ?? {}) as Record<string, unknown>;
-    const def = defaultForm();
+function sanitizeDraft(raw: unknown): PlannerDraft | null {
+  if (!raw || typeof raw !== "object") return null;
+  const root = raw as Record<string, unknown>;
+  const src = (root.form ?? {}) as Record<string, unknown>;
+  const def = defaultForm();
 
-    const startDate =
-      typeof src.startDate === "string" && DATE_RE.test(src.startDate)
-        ? src.startDate
-        : def.startDate;
-    let endDate =
-      typeof src.endDate === "string" && DATE_RE.test(src.endDate) ? src.endDate : def.endDate;
-    // ISO 日期字符串可直接按字典序比大小；结束早于开始 → 收敛成同一天
-    if (endDate < startDate) endDate = startDate;
+  const startDate =
+    typeof src.startDate === "string" && DATE_RE.test(src.startDate)
+      ? src.startDate
+      : def.startDate;
+  let endDate =
+    typeof src.endDate === "string" && DATE_RE.test(src.endDate) ? src.endDate : def.endDate;
+  // ISO 日期字符串可直接按字典序比大小；结束早于开始 → 收敛成同一天
+  if (endDate < startDate) endDate = startDate;
 
-    const form: PlannerDraftForm = {
-      destination: typeof src.destination === "string" ? src.destination : def.destination,
-      startDate,
-      endDate,
-      travelers: toNum(src.travelers, def.travelers, 1, 99),
-      budget: toNum(src.budget, def.budget, 0, 1000000),
-      hotelLevel:
-        typeof src.hotelLevel === "string" && src.hotelLevel ? src.hotelLevel : def.hotelLevel,
-      pace: typeof src.pace === "string" && src.pace ? src.pace : def.pace,
-      preferences: toStrArray(src.preferences),
-      dietaryPreferences: toStrArray(src.dietaryPreferences),
-      notes: typeof src.notes === "string" ? src.notes : def.notes,
-    };
+  const form: PlannerDraftForm = {
+    destination: typeof src.destination === "string" ? src.destination : def.destination,
+    startDate,
+    endDate,
+    travelers: toNum(src.travelers, def.travelers, 1, 99),
+    budget: toNum(src.budget, def.budget, 0, 1000000),
+    hotelLevel:
+      typeof src.hotelLevel === "string" && src.hotelLevel ? src.hotelLevel : def.hotelLevel,
+    pace: typeof src.pace === "string" && src.pace ? src.pace : def.pace,
+    preferences: toStrArray(src.preferences),
+    dietaryPreferences: toStrArray(src.dietaryPreferences),
+    notes: typeof src.notes === "string" ? src.notes : def.notes,
+  };
 
-    const spots = Array.isArray(root.spots)
-      ? root.spots
-          .map(sanitizeSpot)
-          .filter((x): x is PlannerDraftSpot => x !== null)
-      : [];
+  const spots = Array.isArray(root.spots)
+    ? root.spots.map(sanitizeSpot).filter((x): x is PlannerDraftSpot => x !== null)
+    : [];
 
-    return { form, spots };
-  } catch {
-    return null;
-  }
+  return { form, spots };
 }
 
 /** 草稿里是否有"用户动过"的内容（决定要不要显示"已恢复上次填写"提示，避免空白表单也弹提示） */
@@ -169,7 +157,7 @@ function hasContent(d: PlannerDraft): boolean {
   );
 }
 
-const restored = load();
+const restored = readTwoTier(STORAGE_KEY, DRAFT_DURABLE_KEY, sanitizeDraft);
 
 /** 规划表单 + 已加入景点（单例；页面直接绑定，卸载不清） */
 export const plannerDraft = reactive<PlannerDraft>(
@@ -189,16 +177,12 @@ let saveTimer: number | undefined;
 
 function save() {
   saveTimer = undefined;
-  try {
-    if (hasContent(plannerDraft)) {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(plannerDraft));
-    } else {
-      // 空草稿不落存储：用户清空 / 退出登录后，复位动作本身也会触发本回调，
-      // 若这里无条件写回，刚删掉的键会被"把默认值又存回去"复活，下次进来还会误报"已恢复"。
-      sessionStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {
-    /* 存储不可用/超配额：降级为"本次不持久化"，不影响表单正常使用 */
+  if (hasContent(plannerDraft)) {
+    writeTwoTier(STORAGE_KEY, DRAFT_DURABLE_KEY, plannerDraft);
+  } else {
+    // 空草稿不落存储：用户清空 / 退出登录后，复位动作本身也会触发本回调，
+    // 若这里无条件写回，刚删掉的键会被"把默认值又存回去"复活，下次进来还会误报"已恢复"。
+    clearTwoTier(STORAGE_KEY, DRAFT_DURABLE_KEY);
   }
 }
 
@@ -213,7 +197,7 @@ watch(
   { deep: true }
 );
 
-/** 清空草稿（退出登录 / 登录失效 / 用户手动清空）：内存态与存储一起复位 */
+/** 清空草稿（退出登录 / 登录失效 / 用户手动清空）：内存态与两级存储一起复位 */
 export function clearPlannerDraft() {
   if (saveTimer !== undefined) {
     window.clearTimeout(saveTimer);
@@ -221,9 +205,5 @@ export function clearPlannerDraft() {
   }
   Object.assign(plannerDraft.form, defaultForm());
   plannerDraft.spots.splice(0, plannerDraft.spots.length);
-  try {
-    sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* 同上：存储不可用时无所谓，内存已复位 */
-  }
+  clearTwoTier(STORAGE_KEY, DRAFT_DURABLE_KEY);
 }

@@ -141,9 +141,13 @@ try {
   await page.goto(APP + "/plan");
   await page.waitForSelector(".plan-page", { timeout: 20000 });
   let s = await formSnapshot(page);
+  /** 持久级镜像（关标签页 / 新标签页也能恢复的那一层）；键与 stores/plannerDraft.ts 的 DRAFT_DURABLE_KEY 对齐 */
+  const readDurable = (p) => p.evaluate(() => localStorage.getItem("ai_travel_plan_draft_durable"));
+
   check("1. 首次进入表单为空（未预填目的地）", s.destination === "", `destination=${JSON.stringify(s.destination)}`);
   check("1. 首次进入不显示“已恢复”提示", s.tipShown === false);
-  check("1. 首次进入无草稿存储", (await readKey(page)) === null);
+  check("1. 首次进入无草稿存储（会话级 + 持久级都没有）",
+    (await readKey(page)) === null && (await readDurable(page)) === null);
 
   /* ---- 2. 填写表单：是否真的落盘 ---- */
   await page.locator(".ios-card >> nth=0 >> .ios-field--full input").fill("三亚");
@@ -157,6 +161,7 @@ try {
 
   const stored = await readDraft(page);
   check("2. 填写后草稿已写入 sessionStorage", !!stored, stored ? `destination=${stored.form.destination}` : "null");
+  check("2. 草稿同时落到持久镜像（关标签页/新标签页也不丢）", (await readDurable(page)) !== null);
   check(
     "2. 草稿字段完整（目的地/人数/预算/偏好/备注）",
     stored?.form?.destination === "三亚" &&
@@ -195,6 +200,22 @@ try {
   check("4. 刷新后目的地仍保留", s.destination === "三亚", `destination=${JSON.stringify(s.destination)}`);
   check("4. 刷新后备注仍保留", s.notes === NOTES);
 
+  /* ---- 4b. 新标签页（开局没有会话存储）→ 只能靠持久镜像恢复 ---- */
+  const tab2 = await ctx.newPage();
+  await tab2.addInitScript((k) => {
+    window.__initialSession = sessionStorage.getItem(k);
+    sessionStorage.removeItem(k);
+  }, DRAFT_KEY);
+  await tab2.goto(APP + "/plan");
+  await tab2.waitForSelector(".plan-page", { timeout: 20000 });
+  check("4b. 新标签页开局没有会话级草稿（证明下面靠的不是会话级）",
+    (await tab2.evaluate(() => window.__initialSession)) === null);
+  const s2 = await formSnapshot(tab2);
+  check("4b. 新标签页里草稿仍被恢复（目的地/备注）",
+    s2.destination === "三亚" && s2.notes === NOTES,
+    `destination=${JSON.stringify(s2.destination)} notes=${JSON.stringify(s2.notes)}`);
+  await tab2.close();
+
   /* ---- 5. 深链“加入行程”的景点标签也要跨页面保留 ---- */
   await page.goto(APP + "/plan?city=三亚&spot=天涯海角&spot_id=spot_三亚_1");
   await page.waitForSelector(".plan-page", { timeout: 20000 });
@@ -223,15 +244,18 @@ try {
   check("7. 清空后备注复位", s.notes === "");
   check("7. 清空后标签复位", s.chips.length === 0, `chips=${JSON.stringify(s.chips)}`);
   check("7. 清空后提示条消失", s.tipShown === false);
-  check("7. 清空后存储被移除", (await readKey(page)) === null);
+  check("7. 清空后存储被移除（会话级 + 持久级一起清）",
+    (await readKey(page)) === null && (await readDurable(page)) === null);
 
   /* ---- 8. 退出登录：草稿必须一起清（换账号不串号） ---- */
   await page.locator(".ios-card >> nth=0 >> .ios-field--full input").fill("成都");
   await page.waitForTimeout(400);
-  check("8. 退出前草稿已在存储中", (await readKey(page)) !== null);
+  check("8. 退出前草稿已在两级存储中",
+    (await readKey(page)) !== null && (await readDurable(page)) !== null);
   await page.locator(".nav-bar__logout").click();
   await page.waitForURL(/\/login/, { timeout: 15000 });
   check("8. 退出登录后草稿被清除", (await readKey(page)) === null);
+  check("8. 退出登录后持久镜像也清空（下次登录不会诈尸）", (await readDurable(page)) === null);
 
   check("9. 全流程无页面级 JS 异常", errors.length === 0, errors.slice(0, 3).join(" || "));
 } catch (e) {
