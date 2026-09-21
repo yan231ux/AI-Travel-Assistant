@@ -14,6 +14,7 @@ import {
   newFeedTrace,
 } from "../services/api";
 import { displayName } from "../stores/session";
+import { latestItinerary } from "../stores/trip";
 import type {
   PostItem,
   ProfileSummary,
@@ -179,6 +180,21 @@ function go(name: string, query?: Record<string, string>) {
   void router.push(query ? { name, query } : { name });
 }
 
+/**
+ * 「最近生成的行程」入口（本次改动）：产物本身已经能在会话内跨页面/刷新保留，
+ * 但结果页不在主导航里，用户跳走一次就找不到回去的路 → 首页给一个显式入口。
+ * 只在会话里真有一份产物时出现（退出登录即消失，不会变成"常驻历史"）。
+ */
+const lastTripMeta = computed(() => {
+  const it = latestItinerary.value;
+  if (!it) return "";
+  const days = it.days?.length ?? 0;
+  const dates = it.days?.length
+    ? [it.days[0]?.date, it.days[it.days.length - 1]?.date].filter(Boolean).join(" ~ ")
+    : "";
+  return [days ? `${days} 天` : "", dates].filter(Boolean).join(" · ");
+});
+
 function goCityTopic(c: string) {
   void router.push({ name: "city-topic", params: { name: c } });
 }
@@ -246,6 +262,17 @@ function skeletons(n: number) {
           <div class="stat__label">最近去过</div>
         </div>
       </div>
+    </div>
+
+    <!-- 最近生成的行程（本次改动）：产物本身跨页面/刷新都保留，这里补一条"回到结果页"的路 -->
+    <div v-if="latestItinerary" class="resume">
+      <div class="resume__main">
+        <span class="resume__label">最近生成的行程</span>
+        <span class="resume__title">
+          {{ latestItinerary.destination }}<template v-if="lastTripMeta"> · {{ lastTripMeta }}</template>
+        </span>
+      </div>
+      <button type="button" class="resume__go" @click="go('result')">继续查看 ›</button>
     </div>
 
     <!-- ===== 四个入口（一级任务延伸） ===== -->
@@ -566,6 +593,60 @@ function skeletons(n: number) {
   width: 1px;
   align-self: stretch;
   background: rgba(247, 245, 239, 0.15);
+}
+
+/* ===== 最近生成的行程（本次改动：补一条回结果页的路） ===== */
+.resume {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  background: var(--surface-white);
+  border: 1px solid rgba(47, 119, 112, 0.28);
+  box-shadow: var(--shadow-sm);
+}
+
+.resume__main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.resume__label {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(47, 119, 112, 0.12);
+  color: var(--brand-deep);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.resume__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume__go {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--brand-teal);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s var(--ease);
+}
+.resume__go:hover {
+  color: var(--brand-deep);
 }
 
 /* ===== 入口 ===== */
